@@ -52,9 +52,27 @@ pub struct Library {
 pub struct Hidden {
     /// Source ids.
     pub sources: Vec<String>,
-    /// Folders or addresses (`/media/x/Private`, `smb://nas/share/dir`):
-    /// the location itself and everything under it, ignoring ASCII case.
-    pub locations: Vec<String>,
+    pub locations: Vec<HiddenRoot>,
+}
+
+/// A folder or address whose videos are hidden whichever source added them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HiddenRoot {
+    /// `/media/x/Private`, `smb://nas/share/dir`: the location itself and
+    /// everything under it, ignoring ASCII case.
+    pub root: String,
+    /// Sources whose videos stay listed although they are under `root`.
+    pub except: Vec<String>,
+}
+
+impl HiddenRoot {
+    /// Hides everything under `root`.
+    pub fn new(root: impl Into<String>) -> HiddenRoot {
+        HiddenRoot {
+            root: root.into(),
+            except: Vec::new(),
+        }
+    }
 }
 
 impl Hidden {
@@ -67,7 +85,10 @@ impl Hidden {
     /// test as the SQL from `hidden_sql`.
     pub fn hides(&self, source_id: &str, location: &str) -> bool {
         self.sources.iter().any(|s| s == source_id)
-            || self.locations.iter().any(|root| under(root, location))
+            || self
+                .locations
+                .iter()
+                .any(|h| under(&h.root, location) && !h.except.iter().any(|s| s == source_id))
     }
 }
 
@@ -109,17 +130,24 @@ pub(crate) fn hidden_sql(prefix: &str, hidden: &Hidden) -> Option<(String, Vec<V
         ));
         args.extend(hidden.sources.iter().cloned().map(Value::Text));
     }
-    for root in &hidden.locations {
-        let root = like_literal(root.trim_end_matches('/'));
+    for h in &hidden.locations {
+        let root = like_literal(h.root.trim_end_matches('/'));
         if root.is_empty() {
             continue;
         }
         // LIKE ignores ASCII case, as SMB and DLNA hosts and SMB paths do.
-        clauses.push(format!(
-            "NOT ({prefix}location LIKE ? ESCAPE '\\' OR {prefix}location LIKE ? ESCAPE '\\')"
-        ));
+        let mut clause =
+            format!("({prefix}location LIKE ? ESCAPE '\\' OR {prefix}location LIKE ? ESCAPE '\\')");
         args.push(Value::Text(root.clone()));
         args.push(Value::Text(format!("{root}/%")));
+        if !h.except.is_empty() {
+            clause += &format!(
+                " AND {prefix}source_id NOT IN ({})",
+                vec!["?"; h.except.len()].join(",")
+            );
+            args.extend(h.except.iter().cloned().map(Value::Text));
+        }
+        clauses.push(format!("NOT ({clause})"));
     }
     if clauses.is_empty() {
         return None;
@@ -1755,7 +1783,10 @@ mod tests {
         }
         lib.set_hidden(Hidden {
             sources: vec!["private".into()],
-            locations: vec!["smb://nas/Videos/Private/".into(), "/media/x_y%".into()],
+            locations: vec![
+                HiddenRoot::new("smb://nas/Videos/Private/"),
+                HiddenRoot::new("/media/x_y%"),
+            ],
         });
         let mut ids: Vec<MediaId> = lib
             .search(&crate::Query::default())
@@ -1774,6 +1805,35 @@ mod tests {
         assert!(h.hides("share", "smb://NAS/videos/private"));
         assert!(!h.hides("share", "smb://nas/Videos/PrivateParty/e.mp4"));
         assert!(h.hides("private", "anything"));
+    }
+
+    #[test]
+    fn hidden_folders_spare_the_sources_excepted() {
+        let lib = lib();
+        let up = |loc: &str, source: &str| lib.upsert(&MediaUpsert::new(loc, source)).unwrap().id;
+        // A DeoVR feed and a HereSphere API of one server: the same address.
+        let feed = up("http://xbvr:9999/deovr/1", "deovr");
+        let api = up("http://xbvr:9999/heresphere/2", "heresphere");
+        let scanned = up("http://xbvr:9999/files/3.mp4", "local");
+        lib.set_hidden(Hidden {
+            sources: vec!["heresphere".into()],
+            locations: vec![HiddenRoot {
+                root: "http://xbvr:9999".into(),
+                except: vec!["deovr".into()],
+            }],
+        });
+        let ids: Vec<MediaId> = lib
+            .search(&crate::Query::default())
+            .unwrap()
+            .iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(ids, vec![feed]);
+        let h = lib.hidden();
+        assert!(!h.hides("deovr", "http://xbvr:9999/deovr/1"));
+        assert!(h.hides("heresphere", "http://xbvr:9999/heresphere/2"));
+        assert!(h.hides("local", "http://xbvr:9999/files/3.mp4"));
+        assert!(lib.get(api).unwrap().is_some() && lib.get(scanned).unwrap().is_some());
     }
 
     #[test]

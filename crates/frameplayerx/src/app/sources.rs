@@ -32,19 +32,33 @@ impl App {
         });
     }
 
-    /// The locked source whose folder or address `location` is under.
-    pub(super) fn locked_by(&self, location: &str) -> Option<String> {
+    /// The locked source whose folder or address `location` is under, when
+    /// reached through source `via` (whose own PIN may have let the user
+    /// past it, see [`crate::pin::exempt_from`]).
+    pub(super) fn locked_by(&self, location: &str, via: Option<&str>) -> Option<String> {
         self.services
             .source_configs
             .iter()
             .filter(|c| self.source_locked(c.id()))
-            .find(|c| crate::pin::source_contains(c, location))
+            .filter(|c| crate::pin::source_contains(c, location))
+            .find(|c| !via.is_some_and(|v| self.exempt_from(c).iter().any(|e| e == v)))
             .map(|c| c.id().to_string())
+    }
+
+    /// The sources whose own PIN lets them past `locked`'s lock.
+    fn exempt_from(&self, locked: &fp_sources::SourceConfig) -> Vec<String> {
+        crate::pin::exempt_from(
+            locked,
+            &self.services.source_configs,
+            &self.settings.source_pins,
+            &self.ui.unlocked_sources,
+        )
     }
 
     /// The locked source keeping `source` shut: itself, or a locked source
     /// its folder or address is inside (the share a locked folder is in
-    /// stays open, a folder inside a locked share does not).
+    /// stays open, a folder inside a locked share does not, unless it was
+    /// unlocked with a PIN of its own).
     pub(super) fn lock_on(&self, source: &str) -> Option<String> {
         if self.source_locked(source) {
             return Some(source.to_string());
@@ -53,7 +67,7 @@ impl App {
             .services
             .source_config(source)
             .map(crate::pin::source_root)?;
-        self.locked_by(&root)
+        self.locked_by(&root, Some(source))
     }
 
     /// The locked source a video belongs to, if any: the one it was opened
@@ -70,15 +84,17 @@ impl App {
             .ok()
             .flatten()
             .map(|r| r.source_id);
+        let via = req.source_id.clone().or_else(|| from_library.clone());
         [req.source_id.clone(), from_library]
             .into_iter()
             .flatten()
             .find(|id| self.source_locked(id))
-            .or_else(|| self.locked_by(&req.location))
+            .or_else(|| self.locked_by(&req.location, via.as_deref()))
     }
 
     /// What locked sources hide: their videos, and everything under their
-    /// folders or addresses whichever source lists or added it.
+    /// folders or addresses whichever source lists or added it, except
+    /// sources their own PIN let the user into.
     pub(super) fn locked_hidden(&self) -> fp_library::Hidden {
         let sources = crate::pin::locked_ids(&self.settings.source_pins, &self.ui.unlocked_sources);
         let locations = self
@@ -86,8 +102,11 @@ impl App {
             .source_configs
             .iter()
             .filter(|c| sources.iter().any(|s| s == c.id()))
-            .map(crate::pin::source_root)
-            .filter(|r| !r.is_empty())
+            .map(|c| fp_library::HiddenRoot {
+                root: crate::pin::source_root(c),
+                except: self.exempt_from(c),
+            })
+            .filter(|h| !h.root.is_empty())
             .collect();
         fp_library::Hidden { sources, locations }
     }

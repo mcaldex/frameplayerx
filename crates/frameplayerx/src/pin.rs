@@ -28,10 +28,29 @@ pub fn locked_ids(pins: &BTreeMap<String, String>, unlocked: &HashSet<String>) -
 /// Whether `location` is a video of source `cfg` (see [`source_root`]).
 pub fn source_contains(cfg: &fp_sources::SourceConfig, location: &str) -> bool {
     fp_library::Hidden {
-        locations: vec![source_root(cfg)],
+        locations: vec![fp_library::HiddenRoot::new(source_root(cfg))],
         ..Default::default()
     }
     .hides("", location)
+}
+
+/// The sources the lock of `locked` does not cover although their folder
+/// or address is at or inside its own: those unlocked with a PIN of their
+/// own. (Two sources of one server, say its DeoVR feed and its HereSphere
+/// API, have the same address; each PIN opens its own source.)
+pub fn exempt_from(
+    locked: &fp_sources::SourceConfig,
+    configs: &[fp_sources::SourceConfig],
+    pins: &BTreeMap<String, String>,
+    unlocked: &HashSet<String>,
+) -> Vec<String> {
+    configs
+        .iter()
+        .filter(|c| c.id() != locked.id())
+        .filter(|c| pins.contains_key(c.id()) && unlocked.contains(c.id()))
+        .filter(|c| source_contains(locked, &source_root(c)))
+        .map(|c| c.id().to_string())
+        .collect()
 }
 
 /// The folder or address a source's videos are under: its folder or
@@ -178,6 +197,49 @@ mod tests {
         ));
         assert!(!source_contains(&feed, "http://10.0.0.2:99990/x"));
         assert!(!source_contains(&feed, "http://10.0.0.3:9999/x"));
+    }
+
+    #[test]
+    fn own_pins_open_their_own_sources() {
+        use fp_sources::{FeedConfig, LocalConfig, SourceConfig};
+        let feed = |id: &str, path: &str| {
+            SourceConfig::DeoVr(FeedConfig {
+                id: id.into(),
+                name: id.into(),
+                url: format!("http://xbvr:9999/{path}"),
+                credentials: None,
+                insecure_tls: false,
+                max_height: None,
+            })
+        };
+        let local = |id: &str, root: &str| {
+            SourceConfig::Local(LocalConfig {
+                id: id.into(),
+                name: id.into(),
+                root: root.into(),
+            })
+        };
+        // Two feeds of one server, a share and a folder inside it.
+        let configs = [
+            feed("deovr", "deovr"),
+            feed("heresphere", "heresphere"),
+            feed("open", "other"),
+            local("share", "/media/share"),
+            local("inner", "/media/share/private"),
+        ];
+        let pins: BTreeMap<String, String> = ["deovr", "heresphere", "share", "inner"]
+            .map(|id| (id.to_string(), "hash".to_string()))
+            .into();
+        let unlocked: HashSet<String> = ["deovr".to_string(), "share".to_string()].into();
+        let exempt = |id: &str| {
+            let locked = configs.iter().find(|c| c.id() == id).unwrap();
+            exempt_from(locked, &configs, &pins, &unlocked)
+        };
+        // The unlocked feed is not kept shut by the other one, still locked;
+        // the feed without a PIN of its own is.
+        assert_eq!(exempt("heresphere"), ["deovr"]);
+        // A locked folder inside an unlocked share stays hidden from it.
+        assert!(exempt("inner").is_empty());
     }
 
     #[test]
