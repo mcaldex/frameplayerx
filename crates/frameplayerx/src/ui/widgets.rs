@@ -586,65 +586,118 @@ pub fn rows(ui: &mut Ui, add: impl FnOnce(&mut Rows)) {
     card(ui, |ui| add(&mut Rows { ui, n: 0 }));
 }
 
+const ROW_MARGIN: egui::Margin = egui::Margin::symmetric(16, 12);
+const ROW_MIN_HEIGHT: f32 = 48.0;
+const CONTROL_GAP: f32 = 12.0;
+
+/// Width of a row's text column, leaving room for a slider row's control.
+fn text_column(row_width: f32) -> f32 {
+    (row_width - 420.0).max(row_width * 0.4)
+}
+
 impl Rows<'_> {
+    /// The next row's frame, after a separator from the previous one.
+    fn next_row<R>(&mut self, add: impl FnOnce(&mut Ui) -> R) -> R {
+        if self.n > 0 {
+            separator(self.ui);
+        }
+        self.n += 1;
+        egui::Frame::new()
+            .inner_margin(ROW_MARGIN)
+            .show(self.ui, add)
+            .inner
+    }
+
     pub fn row<R>(
         &mut self,
         title: &str,
         desc: Option<&str>,
         control: impl FnOnce(&mut Ui) -> R,
     ) -> R {
-        let ui = &mut *self.ui;
-        if self.n > 0 {
-            separator(ui);
-        }
-        self.n += 1;
-        egui::Frame::new()
-            .inner_margin(egui::Margin::symmetric(16, 12))
-            .show(ui, |ui| {
-                // Text on the left (leaving room for a slider row's control,
-                // wrapping if longer) and the control on the right, both
-                // centred on the row's height.
-                let w = ui.available_width();
-                let text_w = (w - 420.0).max(w * 0.4);
-                let title_g = ui.painter().layout(
-                    title.to_string(),
-                    theme::font(Weight::Medium, 18.0),
-                    theme::TEXT,
+        self.next_row(|ui| {
+            // Text on the left and the control on the right, both
+            // centred on the row's height.
+            let w = ui.available_width();
+            let text_w = text_column(w);
+            let title_g = ui.painter().layout(
+                title.to_string(),
+                theme::font(Weight::Medium, 18.0),
+                theme::TEXT,
+                text_w,
+            );
+            let desc_g = desc.map(|d| {
+                ui.painter().layout(
+                    d.to_string(),
+                    theme::font(Weight::Regular, 15.0),
+                    theme::TEXT_2,
                     text_w,
-                );
-                let desc_g = desc.map(|d| {
-                    ui.painter().layout(
-                        d.to_string(),
-                        theme::font(Weight::Regular, 15.0),
-                        theme::TEXT_2,
-                        text_w,
-                    )
-                });
-                let text_h =
-                    title_g.size().y + desc_g.as_ref().map(|g| 3.0 + g.size().y).unwrap_or(0.0);
-                let (rect, _) =
-                    ui.allocate_exact_size(Vec2::new(w, text_h.max(48.0)), Sense::hover());
-                let mut y = rect.center().y - text_h / 2.0;
-                let p = ui.painter();
-                let title_h = title_g.size().y;
-                p.galley(Pos2::new(rect.left(), y), title_g, theme::TEXT);
-                y += title_h + 3.0;
-                if let Some(g) = desc_g {
-                    p.galley(Pos2::new(rect.left(), y), g, theme::TEXT_2);
-                }
-                let control_rect = Rect::from_min_max(
-                    Pos2::new(rect.left() + text_w + 12.0, rect.top()),
-                    rect.max,
-                );
-                let mut c = ui.new_child(
-                    egui::UiBuilder::new()
-                        .max_rect(control_rect)
-                        .layout(Layout::right_to_left(Align::Center)),
-                );
-                c.spacing_mut().item_spacing.x = 10.0;
-                control(&mut c)
-            })
-            .inner
+                )
+            });
+            let text_h =
+                title_g.size().y + desc_g.as_ref().map(|g| 3.0 + g.size().y).unwrap_or(0.0);
+            let (rect, _) =
+                ui.allocate_exact_size(Vec2::new(w, text_h.max(ROW_MIN_HEIGHT)), Sense::hover());
+            let mut y = rect.center().y - text_h / 2.0;
+            let p = ui.painter();
+            let title_h = title_g.size().y;
+            p.galley(Pos2::new(rect.left(), y), title_g, theme::TEXT);
+            y += title_h + 3.0;
+            if let Some(g) = desc_g {
+                p.galley(Pos2::new(rect.left(), y), g, theme::TEXT_2);
+            }
+            let control_rect = Rect::from_min_max(
+                Pos2::new(rect.left() + text_w + CONTROL_GAP, rect.top()),
+                rect.max,
+            );
+            let mut c = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(control_rect)
+                    .layout(Layout::right_to_left(Align::Center)),
+            );
+            c.spacing_mut().item_spacing.x = 10.0;
+            control(&mut c)
+        })
+    }
+
+    /// A row with a read-only value on the right. A long value (a path, a
+    /// list) wraps within its column and the row grows to fit.
+    pub fn info(&mut self, title: &str, value: &str) {
+        self.next_row(|ui| {
+            let w = ui.available_width();
+            let title_g = ui.painter().layout(
+                title.to_string(),
+                theme::font(Weight::Medium, 18.0),
+                theme::TEXT,
+                text_column(w),
+            );
+            // The value takes what the title leaves, unlike a control's
+            // fixed column.
+            let value_w = w - title_g.size().x - 4.0 * CONTROL_GAP;
+            let mut job = LayoutJob::simple(
+                value.to_string(),
+                theme::font(Weight::Regular, 18.0),
+                theme::TEXT_2,
+                value_w,
+            );
+            job.halign = Align::RIGHT;
+            let value_g = ui.painter().layout_job(job);
+            let (title_h, value_h) = (title_g.size().y, value_g.size().y);
+            let h = title_h.max(value_h).max(ROW_MIN_HEIGHT);
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover());
+            let p = ui.painter();
+            let mid = rect.center().y;
+            p.galley(
+                Pos2::new(rect.left(), mid - title_h / 2.0),
+                title_g,
+                theme::TEXT,
+            );
+            // Right-aligned rows lie left of x = 0: anchor at the right edge.
+            p.galley(
+                Pos2::new(rect.right(), mid - value_h / 2.0),
+                value_g,
+                theme::TEXT_2,
+            );
+        });
     }
 
     /// A row with a switch; true when it changed.
@@ -671,18 +724,10 @@ impl Rows<'_> {
 
     /// A full-width line of content (a hint, a list) inside the card.
     pub fn content<R>(&mut self, add: impl FnOnce(&mut Ui) -> R) -> R {
-        let ui = &mut *self.ui;
-        if self.n > 0 {
-            separator(ui);
-        }
-        self.n += 1;
-        egui::Frame::new()
-            .inner_margin(egui::Margin::symmetric(16, 12))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                add(ui)
-            })
-            .inner
+        self.next_row(|ui| {
+            ui.set_width(ui.available_width());
+            add(ui)
+        })
     }
 }
 

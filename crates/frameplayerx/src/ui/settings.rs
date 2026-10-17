@@ -833,21 +833,13 @@ fn about(ui: &mut egui::Ui, v: &mut View) {
     heading(ui, "This headset");
     widgets::rows(ui, |r| {
         for (k, val) in &v.state.about {
-            r.row(k, None, |ui| {
-                ui.label(RichText::new(val).color(theme::TEXT_2));
-            });
+            r.info(k, val);
         }
-        r.row("Settings file", None, |ui| {
-            ui.label(
-                RichText::new(crate::settings::Settings::path().display().to_string())
-                    .color(theme::TEXT_2),
-            );
-        });
-        r.row("Log", None, |ui| {
-            ui.label(
-                RichText::new(crate::logger::log_path().display().to_string()).color(theme::TEXT_2),
-            );
-        });
+        r.info(
+            "Settings file",
+            &crate::settings::Settings::path().display().to_string(),
+        );
+        r.info("Log", &crate::logger::log_path().display().to_string());
     });
     ui.add_space(6.0);
     note(

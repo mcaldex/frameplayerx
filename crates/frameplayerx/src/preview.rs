@@ -542,11 +542,16 @@ pub fn run(args: &Args, out: &Path) -> Result<(), Error> {
     let size = args.size.unwrap_or(1024);
     let eyes = OffscreenEyes::new(&renderer, size, size)?;
     let mut app = crate::make_app()?;
+    // The rows a Steam Frame shows, so screenshots cover long values.
     app.set_about(vec![
         ("Mode".into(), "Preview (no headset)".into()),
         (
             "GPU".into(),
             format!("{} ({})", gpu.device_name, gpu.driver),
+        ),
+        (
+            "Controllers".into(),
+            "Steam Frame, Touch, Simple controller, Hand tracking".into(),
         ),
     ]);
     if let Some(o) = &args.open {

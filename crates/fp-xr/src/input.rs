@@ -41,6 +41,16 @@ pub struct InputState {
     pub hands: [Hand; 2],
 }
 
+/// An interaction profile the runtime accepted bindings for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BoundProfile {
+    /// OpenXR path, e.g. `/interaction_profiles/khr/simple_controller`.
+    pub path: &'static str,
+    /// Short name for people, e.g. "Simple controller".
+    pub name: &'static str,
+    pub bindings: usize,
+}
+
 pub(crate) struct Actions {
     pub set: xr::ActionSet,
     aim: xr::Action<xr::Posef>,
@@ -57,7 +67,7 @@ pub(crate) struct Actions {
     haptic: xr::Action<xr::Haptic>,
     pub hands: [xr::Path; 2],
     aim_spaces: Option<[xr::Space; 2]>,
-    pub bound: Vec<(String, usize)>,
+    pub bound: Vec<BoundProfile>,
     /// `FRAMEPLAYERX_DEBUG_INPUT=1`: log each hand's input when it changes,
     /// and errors reading action states (normally ignored).
     debug: bool,
@@ -84,13 +94,14 @@ enum Kind {
 /// hand mask (1 left, 2 right, 3 both).
 type Candidate = (&'static str, Kind, u8);
 
-/// Candidate bindings per interaction profile.
-const PROFILES: &[(&str, &[Candidate])] = &[
+/// Candidate bindings per interaction profile: path, display name, bindings.
+const PROFILES: &[(&str, &str, &[Candidate])] = &[
     (
         // Valve's published Frame profile (ValveSoftware/Unity,
         // SteamFrameControllerProfile.cs); needs
         // XR_VALVE_frame_controller_interaction, enabled in context.rs.
         "/interaction_profiles/valve/frame_controller_valve",
+        "Steam Frame",
         &[
             ("input/aim/pose", Kind::Aim, 3),
             ("input/trigger/value", Kind::Trigger, 3),
@@ -116,6 +127,7 @@ const PROFILES: &[(&str, &[Candidate])] = &[
     ),
     (
         "/interaction_profiles/oculus/touch_controller",
+        "Touch",
         &[
             ("input/aim/pose", Kind::Aim, 3),
             ("input/trigger/value", Kind::Trigger, 3),
@@ -132,6 +144,7 @@ const PROFILES: &[(&str, &[Candidate])] = &[
     ),
     (
         "/interaction_profiles/khr/simple_controller",
+        "Simple controller",
         &[
             ("input/aim/pose", Kind::Aim, 3),
             ("input/select/click", Kind::Trigger, 3),
@@ -141,6 +154,7 @@ const PROFILES: &[(&str, &[Candidate])] = &[
     ),
     (
         "/interaction_profiles/ext/hand_interaction_ext",
+        "Hand tracking",
         &[
             ("input/aim/pose", Kind::Aim, 3),
             ("input/pinch_ext/value", Kind::Trigger, 3),
@@ -206,7 +220,7 @@ impl Actions {
             debug: std::env::var_os("FRAMEPLAYERX_DEBUG_INPUT").is_some_and(|v| v != "0"),
             last_logged: Default::default(),
         };
-        for (profile, candidates) in PROFILES {
+        for &(profile, name, candidates) in PROFILES {
             let Ok(profile_path) = instance.string_to_path(profile) else {
                 continue;
             };
@@ -244,7 +258,11 @@ impl Actions {
             }
             // De-duplicate: one binding per (path) is enough.
             if actions.suggest(instance, profile_path, &accepted).is_ok() {
-                actions.bound.push((profile.to_string(), accepted.len()));
+                actions.bound.push(BoundProfile {
+                    path: profile,
+                    name,
+                    bindings: accepted.len(),
+                });
             }
         }
         log::info!("input bindings: {:?}", actions.bound);

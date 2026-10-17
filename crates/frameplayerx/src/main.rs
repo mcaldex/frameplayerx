@@ -397,7 +397,7 @@ fn run_xr(args: &Args) -> Result<(), Error> {
             session
                 .bindings()
                 .iter()
-                .map(|b| b.0.clone())
+                .map(|b| b.name)
                 .collect::<Vec<_>>()
                 .join(", "),
         ),

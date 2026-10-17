@@ -14,7 +14,7 @@ pub mod loader;
 pub mod session;
 
 pub use context::XrContext;
-pub use input::{Hand, InputState};
+pub use input::{BoundProfile, Hand, InputState};
 pub use session::{FrameCtx, QuadSubmit, SessionEvent, XrSession};
 
 /// OpenXR errors with the failing call named.

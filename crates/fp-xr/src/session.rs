@@ -520,7 +520,7 @@ impl XrSession {
     }
 
     /// Interaction profiles that accepted bindings.
-    pub fn bindings(&self) -> &[(String, usize)] {
+    pub fn bindings(&self) -> &[crate::BoundProfile] {
         &self.actions.bound
     }
 
