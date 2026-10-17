@@ -135,7 +135,7 @@ fn untagged(name: &str) -> &str {
 }
 
 /// A scan's duration in seconds. A video's own document gives milliseconds,
-/// but stash-vr's scan gives seconds (4893.57 for 4893570): a day or more
+/// but some servers' scans give seconds (4893.57 for 4893570): a day or more
 /// can only be milliseconds, anything less is read as seconds (milliseconds
 /// would be a clip of under a minute and a half).
 fn scan_seconds(d: f64) -> f64 {
@@ -223,11 +223,11 @@ mod tests {
     #[test]
     fn heresphere_library_and_video() {
         let lib = json!({"access": 1, "library": [
-            {"name": "All", "list": ["http://xbvr:9999/heresphere/1", "/heresphere/2"]}
+            {"name": "All", "list": ["http://vr:9999/heresphere/1", "/heresphere/2"]}
         ]});
-        let g = parse_heresphere_library(&lib, "http://xbvr:9999/heresphere").unwrap();
+        let g = parse_heresphere_library(&lib, "http://vr:9999/heresphere").unwrap();
         assert_eq!(g[0].scenes.len(), 2);
-        assert_eq!(g[0].scenes[1].location, "http://xbvr:9999/heresphere/2");
+        assert_eq!(g[0].scenes[1].location, "http://vr:9999/heresphere/2");
         assert_eq!(g[0].scenes[1].name, "2");
         assert!(matches!(
             parse_heresphere_library(&json!({"access": -1}), "http://h/"),
@@ -342,7 +342,7 @@ mod tests {
                  "dateReleased": "2022-01-01", "isFavorite": true,
                  "tags": [{"name": "Talent:Jane"}, {"name": "Category:Nature"}]},
                 {"title": "no link"},
-                // stash-vr's scan gives seconds where the video's own
+                // Some servers' scans give seconds where the video's own
                 // document gives milliseconds.
                 {"link": "/heresphere/3", "duration": 4893.57}
             ]}),

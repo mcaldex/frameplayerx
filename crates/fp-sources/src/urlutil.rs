@@ -143,8 +143,8 @@ pub fn split_credentials(url: &str) -> Result<(String, Option<Credentials>)> {
     Ok((parsed.to_string(), Some(creds)))
 }
 
-/// Query parameters whose values are secrets (Stash and others put API keys
-/// in feed URLs).
+/// Query parameters whose values are secrets (servers put API keys in
+/// feed URLs).
 const SECRET_PARAMS: &[&str] = &[
     "apikey",
     "api_key",

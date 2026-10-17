@@ -1,6 +1,5 @@
-//! Library managers that publish VR scenes as JSON: the DeoVR feed
-//! (`/deovr` in XBVR, Stash plugins, VR video sites) and the HereSphere
-//! JSON API (`/heresphere` in XBVR and Stash).
+//! VR scenes published as JSON through the DeoVR feed or the HereSphere
+//! API, by any server that offers either.
 //!
 //! Both map to the same shape: the root lists scene groups as folders, a
 //! group lists its scenes as videos, and [`Source::details`] fetches one
@@ -145,7 +144,7 @@ pub trait SceneFeed: Send + Sync {
     fn scene(&self, url: &str, with_media: bool) -> Result<SceneInfo>;
 
     /// Titles, dates and tags of every scene at once, from servers that
-    /// answer a scan (`<url>/scan`, stash-vr); `None` from those that don't.
+    /// answer a scan (`<url>/scan`); `None` from those that don't.
     /// Slower than the library: seconds, and megabytes, for a large one.
     /// See [`FeedLibrary::merge_scan`].
     fn scan(&self) -> Option<Vec<FeedScene>>;
@@ -153,13 +152,12 @@ pub trait SceneFeed: Send + Sync {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Protocol {
-    /// DeoVR JSON (XBVR `/deovr`, Stash and others). With credentials,
-    /// documents are fetched with a `POST` of the form fields `login` and
-    /// `password` (the DeoVR app's login); otherwise with `GET`.
+    /// The DeoVR feed's JSON. With credentials, documents are fetched with
+    /// a `POST` of the form fields `login` and `password` (the DeoVR app's
+    /// login); otherwise with `GET`.
     DeoVr,
-    /// The HereSphere JSON API (XBVR and Stash `/heresphere`). Every request
-    /// is a `POST` with a JSON body, carrying `username` and `password` when
-    /// credentials are configured.
+    /// The HereSphere JSON API. Every request is a `POST` with a JSON body,
+    /// carrying `username` and `password` when credentials are configured.
     HereSphere,
 }
 
@@ -481,49 +479,49 @@ mod tests {
 
     #[test]
     fn the_file_comes_before_the_servers_transcode() {
-        // As stash-vr answers: DeoVR lists the live transcodes first, and
-        // they claim more than the file (2160 against 2048).
+        // A server with live transcodes may list them first, claiming
+        // more than the file (2160 against 2048).
         let transcodes = json!({"name": "transcoding", "videoSources": [
-            {"resolution": 2160, "url": "https://stash/scene/1/stream.mp4?resolution=FOUR_K"},
-            {"resolution": 1080, "url": "https://stash/scene/1/stream.mp4?resolution=FULL_HD"}
+            {"resolution": 2160, "url": "https://vr/scene/1/stream.mp4?resolution=FOUR_K"},
+            {"resolution": 1080, "url": "https://vr/scene/1/stream.mp4?resolution=FULL_HD"}
         ]});
         let direct = json!({"name": "direct", "videoSources": [
-            {"resolution": 2048, "url": "https://stash/scene/1/stream"}
+            {"resolution": 2048, "url": "https://vr/scene/1/stream"}
         ]});
         let deovr = json!({"title": "A", "encodings": [transcodes, direct]});
         let s = deovr::parse_deovr_scene(&deovr, "https://vr/deovr/1");
         assert!(s.sources[0].is_transcode() && !s.sources[2].is_transcode());
         assert_eq!(
             s.best_source(None).unwrap().url,
-            "https://stash/scene/1/stream"
+            "https://vr/scene/1/stream"
         );
         // A limit the file is over: the transcode that fits.
         assert_eq!(
             s.best_source(Some(1080)).unwrap().url,
-            "https://stash/scene/1/stream.mp4?resolution=FULL_HD"
+            "https://vr/scene/1/stream.mp4?resolution=FULL_HD"
         );
         // Nothing fits: the smallest file, before any transcode.
         assert_eq!(
             s.best_source(Some(100)).unwrap().url,
-            "https://stash/scene/1/stream"
+            "https://vr/scene/1/stream"
         );
 
         // HereSphere lists the file first; the same choice.
         let heresphere = json!({"title": "A", "media": [
-            {"name": "direct", "sources": [{"resolution": 2048, "url": "https://stash/scene/1/stream"}]},
+            {"name": "direct", "sources": [{"resolution": 2048, "url": "https://vr/scene/1/stream"}]},
             {"name": "transcoding", "sources": [
-                {"resolution": 2160, "url": "https://stash/scene/1/stream.mp4?resolution=FOUR_K"}
+                {"resolution": 2160, "url": "https://vr/scene/1/stream.mp4?resolution=FOUR_K"}
             ]}
         ]});
         let s = heresphere::parse_heresphere_video(&heresphere, "https://vr/heresphere/1");
         assert_eq!(
             s.best_source(None).unwrap().url,
-            "https://stash/scene/1/stream"
+            "https://vr/scene/1/stream"
         );
 
         // Only transcodes: one of them.
         let only = json!({"title": "A", "encodings": [{"name": "Transcoding", "videoSources": [
-            {"resolution": 720, "url": "https://stash/scene/1/stream.mp4?resolution=STANDARD_HD"}
+            {"resolution": 720, "url": "https://vr/scene/1/stream.mp4?resolution=STANDARD_HD"}
         ]}]});
         let s = deovr::parse_deovr_scene(&only, "https://vr/deovr/1");
         assert!(s.best_source(None).unwrap().is_transcode());
@@ -533,8 +531,8 @@ mod tests {
     fn describe_and_debug_hide_secrets() {
         let config = FeedConfig {
             id: "f".into(),
-            name: "Stash".into(),
-            url: "http://u:pwx9@stash:9999/deovr?apikey=SECRETKEY".into(),
+            name: "Feed".into(),
+            url: "http://u:pwx9@vr:9999/deovr?apikey=SECRETKEY".into(),
             credentials: Some(Credentials::new("bob", "hunter2")),
             insecure_tls: false,
             max_height: None,

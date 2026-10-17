@@ -337,7 +337,7 @@ fn deovr_server(require_login: bool) -> TestServer {
 fn feed(url: String, credentials: Option<Credentials>, max_height: Option<u32>) -> FeedConfig {
     FeedConfig {
         id: "f".into(),
-        name: "XBVR".into(),
+        name: "Feed".into(),
         url,
         credentials,
         insecure_tls: false,

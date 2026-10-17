@@ -164,7 +164,7 @@ that pairing, you can also delete `~/.ssh/id_rsa_frame_devkit` and
 | `~/Videos`, `~/Downloads` | Found automatically (Home › On this device) |
 | microSD card / USB drive (exFAT from a PC, or ext4) | Found automatically when inserted (Settings › On this device) |
 | Other folders on the headset | Settings › On this device › Add folder |
-| XBVR, Stash and other DeoVR / HereSphere servers | Sources › Add source › DeoVR feed or HereSphere API |
+| Any server with a DeoVR feed or HereSphere API | Sources › Add source › DeoVR feed or HereSphere API |
 | NAS / Windows share | Sources › Add source › SMB share (`smb://nas/videos`) |
 | Nextcloud and other WebDAV | Sources › Add source › WebDAV |
 | Jellyfin, Emby | Sources › Add source › Jellyfin / Emby (Quick Connect or password) |
@@ -192,7 +192,7 @@ videos, except those you watched or marked.
 |---|---|
 | On this device | **Videos**: everything found on the headset, its cards and drives, with search, format filters and sorting. **Folders**: the home folder and the drives as folders |
 | Jellyfin / Emby | Your libraries, *Continue watching*, *Next up* and the latest additions; a search of the whole server by title, as Jellyfin's own search shows it: a row each of movies, shows, collections and other videos, best matches first (episodes are found through their show); poster grids searched, sorted and filtered by the server (unwatched, in progress, favorites); series by season and episode; details with the story, cast and genres. Watched marks, favorites and resume points are the server's, and what you watch is reported back to it |
-| DeoVR feed / HereSphere API (XBVR, Stash) | The server's scene groups as chips over a grid of scenes; search the chosen group (or *All*) across titles, studios, performers and tags; order by title, date, rating or length; *Scripted* and *Favorites* filters. ⋯ opens a scene's details: description, performers and tags (tap one to see all their scenes), and chapters to start from. The page opens with the scenes from last time while the server sends the current list ("updating…" under the title) |
+| DeoVR feed / HereSphere API | The server's scene groups as chips over a grid of scenes; search the chosen group (or *All*) across titles, studios, performers and tags; order by title, date, rating or length; *Scripted* and *Favorites* filters. ⋯ opens a scene's details: description, performers and tags (tap one to see all their scenes), and chapters to start from. The page opens with the scenes from last time while the server sends the current list ("updating…" under the title) |
 | SMB, WebDAV, HTTP folders, DLNA, local folders | Folders and files: search the folder you are in, order by name, date or size, *Play all* |
 
 ### Locking a source with a PIN

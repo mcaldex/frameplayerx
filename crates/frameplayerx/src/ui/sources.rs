@@ -346,7 +346,7 @@ pub fn source_row(ui: &mut egui::Ui, v: &mut View, back_to: Screen) {
                     placeholder: icons::PLUS,
                     tint: theme::ACCENT_HOVER,
                     title: "Add a source",
-                    facts: "Jellyfin, XBVR, Stash, DLNA, SMB…",
+                    facts: "Jellyfin, DeoVR, HereSphere, SMB…",
                     play: false,
                     ..Card::default()
                 },
@@ -504,11 +504,11 @@ const KINDS: [(SourceKind, &str); 8] = [
     ),
     (
         SourceKind::DeoVr,
-        "XBVR / Stash / any DeoVR feed URL, e.g. http://192.168.1.10:9999/deovr",
+        "The URL of any server's DeoVR feed, e.g. http://192.168.1.10:9999/deovr",
     ),
     (
         SourceKind::HereSphere,
-        "XBVR / Stash HereSphere API, e.g. http://192.168.1.10:9999/heresphere",
+        "The URL of any server's HereSphere API, e.g. http://192.168.1.10:9999/heresphere",
     ),
     (
         SourceKind::WebDav,
@@ -1268,7 +1268,7 @@ mod tests {
             }),
             SourceConfig::DeoVr(FeedConfig {
                 id: "d".into(),
-                name: "XBVR".into(),
+                name: "Feed".into(),
                 url: "http://x:9999/deovr".into(),
                 credentials: None,
                 insecure_tls: false,

@@ -1437,10 +1437,10 @@ mod tests {
         e.thumbnail_url = Some("http://srv/t.jpg".into());
         e.scripts = vec!["http://srv/trip.funscript".into()];
         e.markers = vec![(60.0, "Intro".into()), (10.0, "Start".into())];
-        let out = lib.upsert_entry("xbvr", &e).unwrap();
+        let out = lib.upsert_entry("feed", &e).unwrap();
         let r = lib.get(out.id).unwrap().unwrap();
         assert_eq!(r.title, "Trip");
-        assert_eq!(r.source_id, "xbvr");
+        assert_eq!(r.source_id, "feed");
         // A title from a server keeps its dots.
         let titled = Entry::new("Dr. Strangelove", "mb:http://jf#item=1", EntryKind::Video);
         let id = lib.upsert_entry("jf", &titled).unwrap().id;
@@ -1457,7 +1457,7 @@ mod tests {
         lib.add_marker(out.id, 30.0, "mine").unwrap();
         e.markers = vec![(5.0, "New".into())];
         assert_eq!(
-            lib.upsert_entry("xbvr", &e).unwrap().status,
+            lib.upsert_entry("feed", &e).unwrap().status,
             UpsertStatus::Updated
         );
         let names: Vec<String> = lib
@@ -1468,16 +1468,16 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["New".to_string(), "mine".to_string()]);
         assert_eq!(
-            lib.upsert_entry("xbvr", &e).unwrap().status,
+            lib.upsert_entry("feed", &e).unwrap().status,
             UpsertStatus::Unchanged
         );
 
         let dir = Entry::new("d", "http://srv/d/", EntryKind::Directory);
         assert!(matches!(
-            lib.upsert_entry("xbvr", &dir),
+            lib.upsert_entry("feed", &dir),
             Err(Error::InvalidArgument(_))
         ));
-        let outs = lib.upsert_entries("xbvr", &[dir, e]).unwrap();
+        let outs = lib.upsert_entries("feed", &[dir, e]).unwrap();
         assert_eq!(outs.len(), 1);
     }
 
@@ -1812,13 +1812,13 @@ mod tests {
         let lib = lib();
         let up = |loc: &str, source: &str| lib.upsert(&MediaUpsert::new(loc, source)).unwrap().id;
         // A DeoVR feed and a HereSphere API of one server: the same address.
-        let feed = up("http://xbvr:9999/deovr/1", "deovr");
-        let api = up("http://xbvr:9999/heresphere/2", "heresphere");
-        let scanned = up("http://xbvr:9999/files/3.mp4", "local");
+        let feed = up("http://vr:9999/deovr/1", "deovr");
+        let api = up("http://vr:9999/heresphere/2", "heresphere");
+        let scanned = up("http://vr:9999/files/3.mp4", "local");
         lib.set_hidden(Hidden {
             sources: vec!["heresphere".into()],
             locations: vec![HiddenRoot {
-                root: "http://xbvr:9999".into(),
+                root: "http://vr:9999".into(),
                 except: vec!["deovr".into()],
             }],
         });
@@ -1830,9 +1830,9 @@ mod tests {
             .collect();
         assert_eq!(ids, vec![feed]);
         let h = lib.hidden();
-        assert!(!h.hides("deovr", "http://xbvr:9999/deovr/1"));
-        assert!(h.hides("heresphere", "http://xbvr:9999/heresphere/2"));
-        assert!(h.hides("local", "http://xbvr:9999/files/3.mp4"));
+        assert!(!h.hides("deovr", "http://vr:9999/deovr/1"));
+        assert!(h.hides("heresphere", "http://vr:9999/heresphere/2"));
+        assert!(h.hides("local", "http://vr:9999/files/3.mp4"));
         assert!(lib.get(api).unwrap().is_some() && lib.get(scanned).unwrap().is_some());
     }
 

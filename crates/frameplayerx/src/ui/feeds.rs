@@ -1,7 +1,7 @@
-//! DeoVR feeds and HereSphere APIs (XBVR, Stash): their scene groups as
-//! chips over a grid of scenes, searched (in the group chosen) across
-//! titles, studios, performers and tags, sorted and filtered, with a details
-//! page per scene (description, performers, tags, chapters to start from).
+//! DeoVR feeds and HereSphere APIs: their scene groups as chips over a grid
+//! of scenes, searched (in the group chosen) across titles, studios,
+//! performers and tags, sorted and filtered, with a details page per scene
+//! (description, performers, tags, chapters to start from).
 //!
 //! A HereSphere library lists scene addresses only: scenes on screen (and,
 //! while searching, every scene of the group) have their details fetched as

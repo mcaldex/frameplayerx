@@ -73,7 +73,7 @@ pub fn parse_deovr_scene(v: &Value, base: &str) -> SceneInfo {
         .filter_map(|t| Some((num(t, "ts")?, text(t, "name").unwrap_or_default())))
         .collect();
     markers.sort_by(|a, b| a.0.total_cmp(&b.0));
-    // Categories are `{"tag": {"name"}}` in XBVR, `{"name"}` elsewhere.
+    // A category is `{"tag": {"name"}}` or `{"name"}`.
     let tags = array(v, "categories")
         .iter()
         .filter_map(|c| {
@@ -147,28 +147,25 @@ mod tests {
             "scenes": [
                 {"name": "Recent", "list": [
                     {"title": "Beach_180_LR", "videoLength": 1800, "thumbnailUrl": "/img/1.jpg",
-                     "video_url": "http://xbvr:9999/deovr/1"},
+                     "video_url": "http://vr:9999/deovr/1"},
                     {"title": "No URL"},
                     {"title": "Rel", "videoLength": "60", "video_url": "/deovr/2"}
                 ]},
                 {"list": []}
             ]
         });
-        let g = parse_deovr_root(&v, "http://xbvr:9999/deovr");
+        let g = parse_deovr_root(&v, "http://vr:9999/deovr");
         assert_eq!(g.len(), 2);
         assert_eq!(g[0].name, "Recent");
         assert_eq!(g[1].name, "Group 2");
         assert_eq!(g[0].scenes.len(), 2);
         let s = &g[0].scenes[0];
-        assert_eq!(s.location, "http://xbvr:9999/deovr/1");
+        assert_eq!(s.location, "http://vr:9999/deovr/1");
         assert_eq!(s.duration, Some(1800.0));
-        assert_eq!(
-            s.thumbnail_url.as_deref(),
-            Some("http://xbvr:9999/img/1.jpg")
-        );
+        assert_eq!(s.thumbnail_url.as_deref(), Some("http://vr:9999/img/1.jpg"));
         assert_eq!(s.format.unwrap().stereo, StereoLayout::SideBySide);
         assert_eq!(g[0].scenes[1].duration, Some(60.0));
-        assert_eq!(g[0].scenes[1].location, "http://xbvr:9999/deovr/2");
+        assert_eq!(g[0].scenes[1].location, "http://vr:9999/deovr/2");
         assert!(parse_deovr_root(&json!({"x": 1}), "http://h/").is_empty());
     }
 
@@ -180,11 +177,11 @@ mod tests {
             "is3d": true,
             "screenType": "mkx200",
             "stereoMode": "sbs",
-            "thumbnailUrl": "http://xbvr/img/1.jpg",
+            "thumbnailUrl": "http://vr/img/1.jpg",
             "encodings": [
                 {"name": "h265", "videoSources": [
-                    {"resolution": 4096, "height": 4096, "width": 8192, "url": "http://xbvr/f/8k.mp4"},
-                    {"resolution": 2880, "url": "http://xbvr/f/6k.mp4"}
+                    {"resolution": 4096, "height": 4096, "width": 8192, "url": "http://vr/f/8k.mp4"},
+                    {"resolution": 2880, "url": "http://vr/f/6k.mp4"}
                 ]},
                 {"name": "h264", "videoSources": [
                     {"resolution": "1920", "height": 1920, "width": 3840, "url": "/f/4k.mp4"},
@@ -192,9 +189,9 @@ mod tests {
                 ]}
             ],
             "timeStamps": [{"ts": 300, "name": "Two"}, {"ts": 10, "name": "One"}],
-            "fleshlight": [{"title": "Beach.funscript", "url": "http://xbvr/s/1.funscript"}]
+            "fleshlight": [{"title": "Beach.funscript", "url": "http://vr/s/1.funscript"}]
         });
-        let s = parse_deovr_scene(&v, "http://xbvr/deovr/1");
+        let s = parse_deovr_scene(&v, "http://vr/deovr/1");
         assert_eq!(s.title, "Beach");
         assert_eq!(s.duration, Some(1800.0));
         assert_eq!(
@@ -205,29 +202,20 @@ mod tests {
             ))
         );
         assert_eq!(s.sources.len(), 3);
-        assert_eq!(s.best_source(None).unwrap().url, "http://xbvr/f/8k.mp4");
-        assert_eq!(
-            s.best_source(Some(2880)).unwrap().url,
-            "http://xbvr/f/6k.mp4"
-        );
-        assert_eq!(
-            s.best_source(Some(2000)).unwrap().url,
-            "http://xbvr/f/4k.mp4"
-        );
-        assert_eq!(
-            s.best_source(Some(100)).unwrap().url,
-            "http://xbvr/f/4k.mp4"
-        );
+        assert_eq!(s.best_source(None).unwrap().url, "http://vr/f/8k.mp4");
+        assert_eq!(s.best_source(Some(2880)).unwrap().url, "http://vr/f/6k.mp4");
+        assert_eq!(s.best_source(Some(2000)).unwrap().url, "http://vr/f/4k.mp4");
+        assert_eq!(s.best_source(Some(100)).unwrap().url, "http://vr/f/4k.mp4");
         assert_eq!(
             s.markers,
             [(10.0, "One".to_string()), (300.0, "Two".to_string())]
         );
-        assert_eq!(s.scripts, ["http://xbvr/s/1.funscript"]);
+        assert_eq!(s.scripts, ["http://vr/s/1.funscript"]);
 
-        let mut e = Entry::new("x", "http://xbvr/deovr/1", EntryKind::Video);
+        let mut e = Entry::new("x", "http://vr/deovr/1", EntryKind::Video);
         s.apply_to(&mut e);
         assert_eq!(e.name, "Beach");
-        assert_eq!(e.location, "http://xbvr/deovr/1");
+        assert_eq!(e.location, "http://vr/deovr/1");
         assert_eq!(e.scripts.len(), 1);
         assert_eq!(e.markers.len(), 2);
         assert_eq!(e.format, s.format);
@@ -292,7 +280,7 @@ mod tests {
             "categories": [{"tag": {"id": 1, "name": "Outdoor"}}, {"name": "POV"}],
             "rating_avg": 4.5, "isFavorite": true
         });
-        let s = parse_deovr_scene(&v, "http://xbvr/deovr/1");
+        let s = parse_deovr_scene(&v, "http://vr/deovr/1");
         assert_eq!(s.description.as_deref(), Some("Sun and sand."));
         assert_eq!(s.released, Some(1_700_000_000));
         assert_eq!(s.studio.as_deref(), Some("VRStudio"));

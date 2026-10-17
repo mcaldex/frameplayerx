@@ -489,8 +489,8 @@ fn home(ui: &mut egui::Ui, v: &mut View) {
                     icons::PLAY_CIRCLE,
                     "Nothing watched yet",
                     "Pick a source below: the videos on this headset, its microSD card and USB \
-                 drives, or your Jellyfin, XBVR, Stash, DLNA, SMB and WebDAV servers. What you \
-                 watch shows up here.",
+                 drives, your Jellyfin, DLNA, SMB and WebDAV servers, or any DeoVR feed or \
+                 HereSphere API. What you watch shows up here.",
                     |_| {},
                 );
                 ui.add_space(24.0);

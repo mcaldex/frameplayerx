@@ -54,10 +54,10 @@ pub enum SourceKind {
     WebDav,
     /// A DLNA/UPnP media server.
     Dlna,
-    /// A DeoVR JSON feed (XBVR, Stash, ...).
+    /// A DeoVR JSON feed.
     #[serde(rename = "deovr")]
     DeoVr,
-    /// A HereSphere JSON API (XBVR, Stash, ...).
+    /// A HereSphere JSON API.
     #[serde(rename = "heresphere")]
     HereSphere,
     /// An SMB2/3 share.
@@ -135,7 +135,7 @@ pub struct FeedConfig {
     /// Stable identifier chosen by the app.
     pub id: String,
     pub name: String,
-    /// Feed URL, e.g. `http://xbvr:9999/deovr` or `http://xbvr:9999/heresphere`.
+    /// Feed URL, e.g. `http://server:9999/deovr` or `http://server:9999/heresphere`.
     pub url: String,
     /// Feed login (DeoVR form login / HereSphere JSON body) and HTTP Basic auth.
     #[serde(default)]
@@ -453,8 +453,8 @@ mod tests {
             }),
             SourceConfig::DeoVr(FeedConfig {
                 id: "d".into(),
-                name: "XBVR".into(),
-                url: "http://xbvr:9999/deovr".into(),
+                name: "Feed".into(),
+                url: "http://vr:9999/deovr".into(),
                 credentials: None,
                 insecure_tls: false,
                 max_height: Some(2880),

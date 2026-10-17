@@ -206,7 +206,7 @@ mod tests {
             SourceConfig::DeoVr(FeedConfig {
                 id: id.into(),
                 name: id.into(),
-                url: format!("http://xbvr:9999/{path}"),
+                url: format!("http://vr:9999/{path}"),
                 credentials: None,
                 insecure_tls: false,
                 max_height: None,

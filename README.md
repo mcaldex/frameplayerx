@@ -21,7 +21,7 @@ A VR video player for the Valve Steam Frame. It plays flat, 180°, 360° and fis
 - **VR and flat videos**: plays 180°, 360°, fisheye and flat videos, in 2D or 3D. The format is detected automatically, and you can change it for any video
 - **Picture adjustments**: position, zoom, depth and picture settings, saved for each video
 - **Videos on the headset**: finds videos in the Videos and Downloads folders and on microSD cards and USB drives, including cards formatted on Windows or a Mac
-- **Media servers**: browse and play from Jellyfin, Emby, XBVR, Stash, network shares (SMB), WebDAV, DLNA servers and web folders. Jellyfin and Emby remember what you watched and where you stopped
+- **Media servers**: browse and play from Jellyfin, Emby, any server with a DeoVR feed or HereSphere API, network shares (SMB), WebDAV, DLNA servers and web folders. Jellyfin and Emby remember what you watched and where you stopped
 - **Watch history**: carry on where you left off, and mark favorites and ratings
 - **PIN locks**: hide a source behind a PIN until you unlock it
 - **Passthrough videos**: see your room around the people in passthrough videos, and behind green or blue screens
@@ -40,7 +40,7 @@ A VR video player for the Valve Steam Frame. It plays flat, 180°, 360° and fis
 |---|---|
 | Valve Steam Frame | Developer Mode only to install with Frame Control, FrameDrop or a PC |
 | A PC (Windows, macOS or Linux) | Optional: only to install from a PC |
-| Media server | Optional: Jellyfin or Emby, XBVR, Stash, a NAS share, WebDAV or DLNA |
+| Media server | Optional: Jellyfin or Emby, a DeoVR feed or HereSphere API, a NAS share, WebDAV or DLNA |
 
 ---
 
@@ -117,9 +117,9 @@ Usually because it's 10-bit HEVC, 4:2:2 or AV1, which the Frame's hardware decod
 
 ---
 
-### Does it work with XBVR, Stash, Jellyfin or my NAS?
+### Does it work with my media server or NAS?
 
-Yes. Add XBVR or Stash as a DeoVR feed or HereSphere API, Jellyfin or Emby with Quick Connect or a password, and a NAS as an SMB share, WebDAV or DLNA server.
+Yes. Add any server that offers a DeoVR feed or HereSphere API as one, Jellyfin or Emby with Quick Connect or a password, and a NAS as an SMB share, WebDAV or DLNA server.
 
 ---
 

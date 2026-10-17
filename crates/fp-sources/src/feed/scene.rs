@@ -23,9 +23,9 @@ pub struct MediaSource {
 }
 
 impl MediaSource {
-    /// A copy the server transcodes as it streams (stash-vr's "transcoding"
-    /// encoding) rather than the file itself: it can't seek, and a server
-    /// transcoding a large file may not send a frame for minutes.
+    /// A copy the server transcodes as it streams (an encoding named
+    /// "transcoding") rather than the file itself: it can't seek, and a
+    /// server transcoding a large file may not send a frame for minutes.
     pub fn is_transcode(&self) -> bool {
         self.label.to_ascii_lowercase().contains("transcod")
     }
