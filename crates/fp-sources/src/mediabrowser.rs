@@ -272,7 +272,9 @@ pub(crate) fn apply_item_details(
         }
         let media_source_id = text(ms, "Id").unwrap_or_else(|| item_id.to_string());
         // Embedded subtitles come with the file (it streams as is); the
-        // server only has to hand over the ones beside it.
+        // server only has to hand over the ones beside it. Asking it for an
+        // embedded one makes it extract that from the whole file first,
+        // which can take minutes.
         for stream in array(ms, "MediaStreams") {
             if text(stream, "Type").as_deref() != Some("Subtitle")
                 || boolean(stream, "IsExternal") != Some(true)
