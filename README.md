@@ -129,6 +129,12 @@ No. It's an independent project and isn't affiliated with or endorsed by Valve. 
 
 ---
 
+### Why a fork instead of contributing to FramePlayer?
+
+FramePlayer couldn't play from Jellyfin, where most of the films I wanted to watch are, and it didn't support half side-by-side videos. I also had a different idea for browsing sources than its library screen, and while FramePlayer focuses on adult videos, I wanted a player for every kind of media. Together that made a different app rather than a few changes to the original.
+
+---
+
 ### Do you plan to add new features?
 
 If I come across a new idea or receive a suggestion that fits a VR video player for the Frame, I will consider adding it, but there are no promises: this project exists to solve my own needs first.
