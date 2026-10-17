@@ -3,7 +3,7 @@
 use super::page::{self, Card};
 use super::theme::{self, Weight};
 use super::widgets::{self, Kind, Tip};
-use super::{Action, Back, PinForm, Screen, SourceForm, SourcePage, View, icons};
+use super::{Action, Back, PinForm, QuickConnect, Screen, SourceForm, SourcePage, View, icons};
 use egui::{Align, Align2, Color32, Layout, RichText, Sense, Vec2};
 use fp_sources::{Credentials, SourceConfig, SourceKind, urlutil};
 
@@ -707,20 +707,15 @@ fn add_form(ui: &mut egui::Ui, v: &mut View) {
 
         if is_mb
             && f.use_quick_connect
-            && let Some(secret) = f.qc_secret.clone()
+            && let QuickConnect::Waiting { secret, polled, .. } = &mut f.quick_connect
         {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(500));
-            let now = std::time::Instant::now();
-            let should_poll = match f.qc_last_poll {
-                Some(t) => now.duration_since(t).as_secs_f32() >= 2.0,
-                None => true,
-            };
-            if should_poll {
-                f.qc_last_poll = Some(now);
+            if polled.elapsed() >= std::time::Duration::from_secs(2) {
+                *polled = std::time::Instant::now();
                 v.actions.push(Action::QuickConnectPoll {
                     address: f.address.clone(),
-                    secret,
+                    secret: secret.clone(),
                     insecure_tls: f.insecure_tls,
                 });
             }
@@ -751,16 +746,13 @@ fn add_form(ui: &mut egui::Ui, v: &mut View) {
             }
             if !local {
                 if is_mb && f.use_quick_connect {
-                    if f.qc_token.is_some() {
+                    let state = f.quick_connect.clone();
+                    if let QuickConnect::Authorized { .. } = state {
                         r.row("Quick Connect", Some("Authorized with server."), |ui| {
                             if widgets::button_sized(ui, None, "Clear", Kind::Secondary, 36.0)
                                 .clicked()
                             {
-                                f.qc_token = None;
-                                f.qc_user_id = None;
-                                f.qc_code = None;
-                                f.qc_secret = None;
-                                f.qc_error = None;
+                                f.quick_connect = QuickConnect::Idle;
                             }
                             ui.label(
                                 RichText::new(format!(
@@ -771,7 +763,7 @@ fn add_form(ui: &mut egui::Ui, v: &mut View) {
                                 .color(theme::OK),
                             );
                         });
-                    } else if let Some(code) = f.qc_code.clone() {
+                    } else if let QuickConnect::Waiting { code, .. } = state {
                         r.row(
                             "Pairing code",
                             Some(
@@ -781,9 +773,7 @@ fn add_form(ui: &mut egui::Ui, v: &mut View) {
                                 if widgets::button_sized(ui, None, "Cancel", Kind::Secondary, 36.0)
                                     .clicked()
                                 {
-                                    f.qc_code = None;
-                                    f.qc_secret = None;
-                                    f.qc_error = None;
+                                    f.quick_connect = QuickConnect::Idle;
                                 }
                                 ui.label(
                                     RichText::new("Waiting for approval…").color(theme::TEXT_3),
@@ -802,13 +792,14 @@ fn add_form(ui: &mut egui::Ui, v: &mut View) {
                             },
                         );
                     } else {
-                        let desc = if let Some(err) = &f.qc_error {
+                        let desc = if let QuickConnect::Failed(err) = &state {
                             format!("Error: {err}")
                         } else {
                             "Pair without typing your password.".to_string()
                         };
+                        let requesting = state == QuickConnect::Requesting;
                         r.row("Quick Connect", Some(&desc), |ui| {
-                            let can_initiate = !f.address.trim().is_empty() && !f.qc_loading;
+                            let can_initiate = !f.address.trim().is_empty() && !requesting;
                             if ui
                                 .add_enabled_ui(can_initiate, |ui| {
                                     widgets::button(
@@ -821,14 +812,13 @@ fn add_form(ui: &mut egui::Ui, v: &mut View) {
                                 .inner
                                 .clicked()
                             {
-                                f.qc_loading = true;
-                                f.qc_error = None;
+                                f.quick_connect = QuickConnect::Requesting;
                                 v.actions.push(Action::QuickConnectInitiate {
                                     address: f.address.clone(),
                                     insecure_tls: f.insecure_tls,
                                 });
                             }
-                            if f.qc_loading {
+                            if requesting {
                                 ui.label(RichText::new("Connecting…").color(theme::TEXT_3));
                                 ui.spinner();
                             }
@@ -994,8 +984,12 @@ pub fn edit_form(cfg: &SourceConfig) -> SourceForm {
             // Signed in with Quick Connect: kept until cleared.
             if c.credentials.is_none() {
                 f.use_quick_connect = true;
-                f.qc_token = c.access_token.clone();
-                f.qc_user_id = c.user_id.clone();
+                if let Some(token) = &c.access_token {
+                    f.quick_connect = QuickConnect::Authorized {
+                        token: token.clone(),
+                        user_id: c.user_id.clone(),
+                    };
+                }
             }
         }
     }
@@ -1112,38 +1106,30 @@ pub fn build_config(f: &SourceForm, id: String) -> Result<SourceConfig, String> 
             })
         }
         SourceKind::MediaBrowser => {
-            if f.use_quick_connect {
-                if f.qc_token.is_none() {
-                    if f.qc_code.is_some() {
-                        return Err("Approve the code in your Jellyfin/Emby app".into());
-                    } else {
-                        return Err("Click 'Get pairing code' to sign in".into());
+            let (credentials, access_token, user_id) = if f.use_quick_connect {
+                match &f.quick_connect {
+                    QuickConnect::Authorized { token, user_id } => {
+                        (None, Some(token.clone()), user_id.clone())
                     }
+                    QuickConnect::Waiting { .. } => {
+                        return Err("Approve the code in your Jellyfin/Emby app".into());
+                    }
+                    _ => return Err("Click 'Get pairing code' to sign in".into()),
                 }
             } else if credentials.is_none() {
                 return Err("Enter username and password".into());
-            }
+            } else {
+                (credentials, None, None)
+            };
             SourceConfig::MediaBrowser(fp_sources::MediaBrowserConfig {
                 id,
                 name,
                 url: http_url(&address)?,
-                credentials: if f.use_quick_connect {
-                    None
-                } else {
-                    credentials
-                },
+                credentials,
                 insecure_tls: f.insecure_tls,
                 max_height: None,
-                access_token: if f.use_quick_connect {
-                    f.qc_token.clone()
-                } else {
-                    None
-                },
-                user_id: if f.use_quick_connect {
-                    f.qc_user_id.clone()
-                } else {
-                    None
-                },
+                access_token,
+                user_id,
             })
         }
         SourceKind::Dlna => return Err("Pick a server found on the network".into()),
@@ -1192,11 +1178,13 @@ mod tests {
         f.address = "192.168.1.10:8096/".into();
         f.username.clear();
         f.password.clear();
-        f.qc_token = None;
+        f.quick_connect = QuickConnect::Idle;
         assert!(build_config(&f, "mb-1".into()).is_err());
 
-        f.qc_token = Some("tok_abc".into());
-        f.qc_user_id = Some("user_123".into());
+        f.quick_connect = QuickConnect::Authorized {
+            token: "tok_abc".into(),
+            user_id: Some("user_123".into()),
+        };
         match build_config(&f, "mb-1".into()).unwrap() {
             SourceConfig::MediaBrowser(c) => {
                 assert_eq!(c.url, "http://192.168.1.10:8096");
@@ -1210,7 +1198,7 @@ mod tests {
 
         // MediaBrowser with username/password
         f.use_quick_connect = false;
-        f.qc_token = None;
+        f.quick_connect = QuickConnect::Idle;
         assert!(build_config(&f, "mb-2".into()).is_err());
         f.username = "alice".into();
         f.password = "hunter2".into();

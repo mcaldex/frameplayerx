@@ -6,7 +6,7 @@ use crate::playback::{self, OpenRequest, Opened, Playback};
 use crate::services::Services;
 use crate::settings::Settings;
 use crate::ui::{
-    self, Action, Browse, Screen, SourcePage, SourceView, UiState, UpdateStatus, View,
+    self, Action, Browse, QuickConnect, Screen, SourcePage, SourceView, UiState, UpdateStatus, View,
 };
 use crate::world::{Panel, Pointer, anchor_from_head, place, place_around, turned_with_picture};
 use fp_core::PlaybackStatus;
@@ -1002,44 +1002,41 @@ impl App {
                         self.ui.update = status;
                     }
                 }
+                // Answers for a form that has moved on (cancelled, closed)
+                // are dropped.
                 Job::QuickConnectInitiated(r) => {
-                    if let Some(f) = self.ui.source_form.as_mut() {
-                        f.qc_loading = false;
-                        match r {
-                            Ok(qc) => {
-                                f.qc_code = Some(qc.code);
-                                f.qc_secret = Some(qc.secret);
-                                f.qc_last_poll = Some(Instant::now());
-                                f.qc_error = None;
-                            }
-                            Err(e) => {
-                                f.qc_error = Some(e);
-                            }
-                        }
+                    if let Some(f) = self.ui.source_form.as_mut()
+                        && f.quick_connect == QuickConnect::Requesting
+                    {
+                        f.quick_connect = match r {
+                            Ok(qc) => QuickConnect::Waiting {
+                                code: qc.code,
+                                secret: qc.secret,
+                                polled: Instant::now(),
+                            },
+                            Err(e) => QuickConnect::Failed(e),
+                        };
                         self.panels[MAIN].request_repaint();
                     }
                 }
-                Job::QuickConnectPolled(r) => {
-                    if let Some(f) = self.ui.source_form.as_mut() {
-                        match r {
-                            Ok(Some((token, user_id))) => {
-                                f.qc_token = Some(token);
-                                f.qc_user_id = Some(user_id);
-                                f.qc_code = None;
-                                f.qc_secret = None;
-                                f.qc_error = None;
-                                self.ui.toast("Quick Connect authorized!");
-                                self.panels[MAIN].request_repaint();
-                            }
-                            Ok(None) => {}
-                            Err(e) => {
-                                log::warn!("Quick Connect poll error: {e}");
-                                f.qc_error = Some(e);
-                                self.panels[MAIN].request_repaint();
-                            }
+                Job::QuickConnectPolled(r) => match r {
+                    Ok(Some((token, user_id))) => {
+                        if let Some(f) = self.ui.source_form.as_mut()
+                            && matches!(f.quick_connect, QuickConnect::Waiting { .. })
+                        {
+                            f.quick_connect = QuickConnect::Authorized {
+                                token,
+                                user_id: Some(user_id),
+                            };
+                            self.ui.toast("Quick Connect authorized!");
+                            self.panels[MAIN].request_repaint();
                         }
                     }
-                }
+                    Ok(None) => {}
+                    // Asked again shortly; a code that expired stays up until
+                    // cancelled.
+                    Err(e) => log::warn!("Quick Connect poll error: {e}"),
+                },
             }
         }
         if let Some(rx) = &self.services.worker_events {
@@ -1553,12 +1550,6 @@ impl App {
                 address,
                 insecure_tls,
             } => {
-                if let Some(f) = self.ui.source_form.as_mut() {
-                    f.qc_loading = true;
-                    f.qc_error = None;
-                    f.qc_code = None;
-                    f.qc_secret = None;
-                }
                 self.jobs.spawn("quick_connect_initiate", move || {
                     let addr = fp_sources::urlutil::with_http_scheme(&address);
                     Job::QuickConnectInitiated(

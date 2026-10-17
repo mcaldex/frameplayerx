@@ -406,14 +406,31 @@ pub struct SourceForm {
     pub username: String,
     pub password: String,
     pub insecure_tls: bool,
+    /// Signing in to a Jellyfin/Emby server with Quick Connect rather than a
+    /// password.
     pub use_quick_connect: bool,
-    pub qc_loading: bool,
-    pub qc_code: Option<String>,
-    pub qc_secret: Option<String>,
-    pub qc_token: Option<String>,
-    pub qc_user_id: Option<String>,
-    pub qc_error: Option<String>,
-    pub qc_last_poll: Option<std::time::Instant>,
+    pub quick_connect: QuickConnect,
+}
+
+/// Signing in to a Jellyfin/Emby server with Quick Connect.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum QuickConnect {
+    #[default]
+    Idle,
+    /// Asking the server for a pairing code.
+    Requesting,
+    /// Showing `code` until it is approved in another app; the server is
+    /// asked with `secret` every few seconds.
+    Waiting {
+        code: String,
+        secret: String,
+        polled: std::time::Instant,
+    },
+    Authorized {
+        token: String,
+        user_id: Option<String>,
+    },
+    Failed(String),
 }
 
 impl Default for SourceForm {
@@ -427,13 +444,7 @@ impl Default for SourceForm {
             password: String::new(),
             insecure_tls: false,
             use_quick_connect: true,
-            qc_loading: false,
-            qc_code: None,
-            qc_secret: None,
-            qc_token: None,
-            qc_user_id: None,
-            qc_error: None,
-            qc_last_poll: None,
+            quick_connect: QuickConnect::Idle,
         }
     }
 }
