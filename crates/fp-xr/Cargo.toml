@@ -13,10 +13,8 @@ workspace = true
 [dependencies]
 ash.workspace = true
 fp-render.workspace = true
+fp-xr-loader.workspace = true
 glam.workspace = true
-libloading.workspace = true
 log.workspace = true
 openxr.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 thiserror.workspace = true

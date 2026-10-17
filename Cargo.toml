@@ -32,6 +32,7 @@ fp-render = { path = "crates/fp-render" }
 fp-sources = { path = "crates/fp-sources" }
 fp-updater = { path = "crates/fp-updater" }
 fp-xr = { path = "crates/fp-xr" }
+fp-xr-loader = { path = "crates/fp-xr-loader" }
 
 ash = "0.38"
 base64 = "0.22"

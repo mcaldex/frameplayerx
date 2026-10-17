@@ -14,9 +14,7 @@ workspace = true
 # Vulkan through the system loader (Turnip on the Frame), loaded at run time.
 ash.workspace = true
 libc.workspace = true
-# Runtime loaded directly from the active OpenXR manifest: no C++ loader to
-# build or ship. See src/xr_loader.rs.
-libloading.workspace = true
+fp-xr-loader.workspace = true
 openxr.workspace = true
 serde.workspace = true
 serde_json.workspace = true

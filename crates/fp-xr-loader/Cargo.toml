@@ -1,0 +1,17 @@
+[package]
+name = "fp-xr-loader"
+version = "0.1.0"
+description = "Minimal OpenXR loader: finds the active runtime and negotiates with it directly, with no C++ loader to build or ship"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+libloading.workspace = true
+openxr.workspace = true
+serde.workspace = true
+serde_json.workspace = true

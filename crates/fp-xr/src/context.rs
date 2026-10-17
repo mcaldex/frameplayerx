@@ -1,8 +1,8 @@
 //! OpenXR instance and system, and Vulkan creation through the runtime.
 
-use crate::loader::{self, RuntimeManifest};
 use crate::{Error, Result, XrContextExt};
 use ash::vk::{self, Handle};
+use fp_xr_loader::{self as loader, RuntimeManifest};
 use openxr as xr;
 
 /// Defines `/interaction_profiles/valve/frame_controller_valve`. Not in the

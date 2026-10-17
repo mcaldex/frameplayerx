@@ -3,8 +3,8 @@
 //! reference spaces and display refresh rates.
 
 use crate::util::fixed_cstr;
-use crate::xr_loader::{self, RuntimeManifest};
 use ash::vk::{self, Handle};
+use fp_xr_loader::{self as xr_loader, RuntimeManifest};
 use openxr as xr;
 use serde::Serialize;
 use std::ffi::CString;

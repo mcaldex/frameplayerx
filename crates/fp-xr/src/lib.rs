@@ -1,7 +1,7 @@
 //! OpenXR for FramePlayerX.
 //!
-//! - [`loader`]: finds the active runtime manifest and negotiates with the
-//!   runtime directly (no Khronos loader to ship).
+//! - [`fp_xr_loader`] finds the runtime; it negotiates with it directly (no
+//!   Khronos loader to ship).
 //! - [`context`]: instance, system and the Vulkan device the runtime wants
 //!   (`XR_KHR_vulkan_enable2`), exposed as an [`fp_render::Creator`].
 //! - [`session`]: session lifecycle, per-eye swapchains, the frame loop.
@@ -10,7 +10,6 @@
 
 pub mod context;
 pub mod input;
-pub mod loader;
 pub mod session;
 
 pub use context::XrContext;

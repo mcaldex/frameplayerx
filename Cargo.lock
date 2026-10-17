@@ -1165,13 +1165,21 @@ version = "0.1.0"
 dependencies = [
  "ash",
  "fp-render",
+ "fp-xr-loader",
  "glam",
- "libloading",
  "log",
+ "openxr",
+ "thiserror",
+]
+
+[[package]]
+name = "fp-xr-loader"
+version = "0.1.0"
+dependencies = [
+ "libloading",
  "openxr",
  "serde",
  "serde_json",
- "thiserror",
 ]
 
 [[package]]
@@ -1179,8 +1187,8 @@ name = "frame-probe"
 version = "0.1.0"
 dependencies = [
  "ash",
+ "fp-xr-loader",
  "libc",
- "libloading",
  "openxr",
  "serde",
  "serde_json",

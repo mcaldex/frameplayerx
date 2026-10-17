@@ -14,7 +14,6 @@ mod v4l2;
 mod verdict;
 mod vk;
 mod xr;
-mod xr_loader;
 
 use serde::Serialize;
 use std::fmt::Write as _;
