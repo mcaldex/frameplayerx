@@ -1,18 +1,21 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 56" width="300" height="56">
-  <!-- The docs' download button for the Desktop Mode installer, sized to
-       be easy to hit with a controller pointer in the headset's browser. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60" width="240" height="60">
+  <!-- The download button for the Desktop Mode installer. One of a set with
+       framedrop-button, frame-control-button and uninstall-button: same
+       size, shape and type, each in its own accent colour. -->
   <defs>
-    <linearGradient id="fill" x1="0" y1="0" x2="1" y2="0">
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0" stop-color="#5CA0FF"/>
       <stop offset="1" stop-color="#AA6EFF"/>
     </linearGradient>
   </defs>
-  <rect width="300" height="56" rx="12" fill="url(#fill)"/>
+  <rect x="1" y="1" width="238" height="58" rx="12" fill="#161A26" stroke="url(#accent)" stroke-width="2"/>
   <!-- download arrow into a tray -->
-  <g fill="none" stroke="#FFFFFF" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M26 14V32M18 25L26 33L34 25"/>
-    <path d="M16 36V39A3 3 0 0 0 19 42H33A3 3 0 0 0 36 39V36"/>
+  <g fill="none" stroke="url(#accent)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M29 16V32M22 25.5L29 32.5L36 25.5"/>
+    <path d="M19 35V38A3 3 0 0 0 22 41H36A3 3 0 0 0 39 38V35"/>
   </g>
-  <text x="48" y="34.5" fill="#FFFFFF" font-size="18" font-weight="700"
-        font-family="Inter, 'Segoe UI', 'Noto Sans', 'DejaVu Sans', Helvetica, Arial, sans-serif">Download the installer</text>
+  <g font-family="Inter, 'Segoe UI', 'Noto Sans', 'DejaVu Sans', Helvetica, Arial, sans-serif">
+    <text x="54" y="27" fill="#FFFFFF" font-size="16" font-weight="700">Desktop Mode</text>
+    <text x="54" y="44.5" fill="#A9B1C3" font-size="12.5">Install on the headset</text>
+  </g>
 </svg>

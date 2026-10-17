@@ -1,9 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 266 38" width="266" height="38">
-  <!-- Frame Control's "Install with Frame Control" button
-       (github.com/saphid/steam-frame, docs/web-install.md) as an image for
-       the README: same blue, white semibold label and corners. The label is
-       centred, so wider fallback fonts still fit. -->
-  <rect width="266" height="38" rx="4" fill="#1a9fff"/>
-  <text x="133" y="24.4" fill="#ffffff" font-size="15" font-weight="600" text-anchor="middle"
-        font-family="-apple-system, 'Segoe UI', 'Noto Sans', 'DejaVu Sans', Helvetica, Arial, sans-serif">Install with Frame Control</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60" width="240" height="60">
+  <!-- Installs through Frame Control (github.com/saphid/steam-frame), in its
+       blue. One of a set with install-button: same size, shape and type. -->
+  <rect x="1" y="1" width="238" height="58" rx="12" fill="#161A26" stroke="#1A9FFF" stroke-width="2"/>
+  <!-- a PC -->
+  <g fill="none" stroke="#1A9FFF" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="17" y="17" width="24" height="17" rx="2.5"/>
+    <path d="M24.5 42H33.5M29 34V42"/>
+  </g>
+  <g font-family="Inter, 'Segoe UI', 'Noto Sans', 'DejaVu Sans', Helvetica, Arial, sans-serif">
+    <text x="54" y="27" fill="#FFFFFF" font-size="16" font-weight="700">Frame Control</text>
+    <text x="54" y="44.5" fill="#A9B1C3" font-size="12.5">Install from a PC</text>
+  </g>
 </svg>

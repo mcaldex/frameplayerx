@@ -1,19 +1,21 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 276 44" width="276" height="44">
-  <!-- The user guide's download button for the Desktop Mode uninstaller:
-       smaller and quieter than the install button. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60" width="240" height="60">
+  <!-- The download button for the Desktop Mode uninstaller. One of a set
+       with install-button: same size, shape and type. -->
   <defs>
-    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="0">
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0" stop-color="#5CA0FF"/>
       <stop offset="1" stop-color="#AA6EFF"/>
     </linearGradient>
   </defs>
-  <rect x="1" y="1" width="274" height="42" rx="10" fill="#23273A" stroke="url(#edge)" stroke-width="2"/>
+  <rect x="1" y="1" width="238" height="58" rx="12" fill="#161A26" stroke="url(#accent)" stroke-width="2"/>
   <!-- bin -->
-  <g fill="none" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M13 15H31M18.5 15V12.5A1.5 1.5 0 0 1 20 11H24A1.5 1.5 0 0 1 25.5 12.5V15"/>
-    <path d="M15.5 15L17 31A2 2 0 0 0 19 33H25A2 2 0 0 0 27 31L28.5 15"/>
-    <path d="M20 19.5V28.5M24 19.5V28.5"/>
+  <g fill="none" stroke="url(#accent)" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M19 20H39M26 20V17.5A1.5 1.5 0 0 1 27.5 16H30.5A1.5 1.5 0 0 1 32 17.5V20"/>
+    <path d="M21.5 20L23 39A2 2 0 0 0 25 41H33A2 2 0 0 0 35 39L36.5 20"/>
+    <path d="M27 25V36M31 25V36"/>
   </g>
-  <text x="40" y="27.5" fill="#FFFFFF" font-size="15" font-weight="700"
-        font-family="Inter, 'Segoe UI', 'Noto Sans', 'DejaVu Sans', Helvetica, Arial, sans-serif">Download the uninstaller</text>
+  <g font-family="Inter, 'Segoe UI', 'Noto Sans', 'DejaVu Sans', Helvetica, Arial, sans-serif">
+    <text x="54" y="27" fill="#FFFFFF" font-size="16" font-weight="700">Uninstall</text>
+    <text x="54" y="44.5" fill="#A9B1C3" font-size="12.5">Remove from the headset</text>
+  </g>
 </svg>

@@ -298,9 +298,9 @@ release:
 
 | Button | Opens |
 |---|---|
-| Download the installer / uninstaller | The release's `Install-FramePlayerX.desktop` / `Uninstall-FramePlayerX.desktop` |
-| Install with FrameDrop | `https://framedropvr.com/install?manifest=` with the release's `framedrop.json`, FrameDrop's documented link: it opens FrameDrop, or FrameDrop's site when it isn't installed |
-| Install with Frame Control | `site/frame-control.html` on GitHub Pages, which opens `frame-control://install?manifest=` with the release's `frameplayerx.json`. GitHub doesn't keep links to app schemes like `frame-control://` in Markdown, so a web page has to |
+| Desktop Mode / Uninstall | The release's `Install-FramePlayerX.desktop` / `Uninstall-FramePlayerX.desktop` |
+| FrameDrop | `https://framedropvr.com/install?manifest=` with the release's `framedrop.json`, FrameDrop's documented link: it opens FrameDrop, or FrameDrop's site when it isn't installed |
+| Frame Control | `site/frame-control.html` on GitHub Pages, which opens `frame-control://install?manifest=` with the release's `frameplayerx.json`. GitHub doesn't keep links to app schemes like `frame-control://` in Markdown, so a web page has to |
 
 `.github/workflows/pages.yml` publishes `site/` (with the logo) when it
 changes on `main`. Once, in the repository settings: **Pages › Build and
