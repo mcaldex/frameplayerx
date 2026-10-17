@@ -119,7 +119,7 @@ Usually because it's 10-bit HEVC, 4:2:2 or AV1, which the Frame's hardware decod
 
 ### Does it work with my media server or NAS?
 
-Yes. Add any server that offers a DeoVR feed or HereSphere API as one, Jellyfin or Emby with Quick Connect or a password, and a NAS as an SMB share, WebDAV or DLNA server.
+Yes, if it offers one of these: Jellyfin or Emby (sign in with Quick Connect or a password), a DeoVR feed or HereSphere API, SMB, WebDAV or DLNA. Add it under Sources › Add source.
 
 ---
 
