@@ -74,7 +74,7 @@ impl OffscreenEyes {
                     vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                     buffer,
                     &[region],
-                )
+                );
             };
             let _ = mem::range(0, 1);
         })?;

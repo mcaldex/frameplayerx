@@ -205,13 +205,19 @@ pub fn probe(want_session: bool) -> XrReport {
 fn raw_extensions(entry: &xr::Entry) -> Result<Vec<(String, u32)>, xr::sys::Result> {
     let f = entry.fp().enumerate_instance_extension_properties;
     let mut count = 0u32;
+    // SAFETY: a count query: null and zero ask only for the count.
     let r = unsafe { f(std::ptr::null(), 0, &mut count, std::ptr::null_mut()) };
     if r.into_raw() < 0 {
         return Err(r);
     }
-    let mut props: Vec<xr::sys::ExtensionProperties> = (0..count)
-        .map(|_| unsafe { xr::sys::ExtensionProperties::out(std::ptr::null_mut()).assume_init() })
-        .collect();
+    let blank = xr::sys::ExtensionProperties {
+        ty: xr::sys::ExtensionProperties::TYPE,
+        next: std::ptr::null_mut(),
+        extension_name: [0; xr::sys::MAX_EXTENSION_NAME_SIZE],
+        extension_version: 0,
+    };
+    let mut props = vec![blank; count as usize];
+    // SAFETY: props has room for count entries.
     let r = unsafe { f(std::ptr::null(), count, &mut count, props.as_mut_ptr()) };
     if r.into_raw() < 0 {
         return Err(r);
@@ -261,7 +267,7 @@ fn system_info(
                     recommended_samples: v.recommended_swapchain_sample_count,
                     max_samples: v.max_swapchain_sample_count,
                 })
-                .collect()
+                .collect();
         }
         Err(e) => errors.push(format!("xrEnumerateViewConfigurationViews: {}", xe(e))),
     }
@@ -290,6 +296,7 @@ fn eye_gaze_supported(
     instance: &xr::Instance,
     system: xr::SystemId,
 ) -> Result<bool, xr::sys::Result> {
+    // SAFETY: the property structs are chained as xrGetSystemProperties expects and outlive the call.
     unsafe {
         let mut eye = xr::sys::SystemEyeGazeInteractionPropertiesEXT {
             ty: xr::sys::SystemEyeGazeInteractionPropertiesEXT::TYPE,
@@ -489,13 +496,13 @@ fn probe_session(
     enabled: &xr::ExtensionSet,
 ) -> SessionInfo {
     let mut s = SessionInfo::default();
-    if let Err(e) = unsafe { session_inner(instance, system, enabled, &mut s) } {
+    if let Err(e) = session_inner(instance, system, enabled, &mut s) {
         s.errors.push(e);
     }
     s
 }
 
-unsafe fn session_inner(
+fn session_inner(
     instance: &xr::Instance,
     system: xr::SystemId,
     enabled: &xr::ExtensionSet,
@@ -504,6 +511,7 @@ unsafe fn session_inner(
     let req = instance
         .graphics_requirements::<xr::Vulkan>(system)
         .map_err(|e| format!("xrGetVulkanGraphicsRequirements2KHR: {}", xe(e)))?;
+    // SAFETY: loads the system Vulkan loader.
     let vk_entry =
         unsafe { ash::Entry::load() }.map_err(|e| format!("loading libvulkan.so.1: {e}"))?;
     let max = req.max_api_version_supported;
@@ -518,12 +526,15 @@ unsafe fn session_inner(
         .application_name(&app_name)
         .api_version(api);
     let ici = vk::InstanceCreateInfo::default().application_info(&app);
+    // SAFETY: both are the vkGetInstanceProcAddr signature, under each crate's own name.
     let gipa: xr::sys::platform::VkGetInstanceProcAddr =
         unsafe { std::mem::transmute(vk_entry.static_fn().get_instance_proc_addr) };
+    // SAFETY: gipa is the Vulkan loader's entry point; ici outlives the call.
     let raw_instance =
         unsafe { instance.create_vulkan_instance(system, gipa, &ici as *const _ as *const _) }
             .map_err(|e| format!("xrCreateVulkanInstanceKHR: {}", xe(e)))?
             .map_err(|r| format!("vkCreateInstance via OpenXR: VkResult {r}"))?;
+    // SAFETY: raw_instance was just created through gipa's loader.
     let vk_instance = unsafe {
         ash::Instance::load(
             vk_entry.static_fn(),
@@ -532,11 +543,13 @@ unsafe fn session_inner(
     };
 
     let result = (|| -> Result<(), String> {
+        // SAFETY: raw_instance is live.
         let raw_pd = unsafe { instance.vulkan_graphics_device(system, raw_instance) }
             .map_err(|e| format!("xrGetVulkanGraphicsDevice2KHR: {}", xe(e)))?;
         let pd = vk::PhysicalDevice::from_raw(raw_pd as _);
         let mut driver = vk::PhysicalDeviceDriverProperties::default();
         let mut props2 = vk::PhysicalDeviceProperties2::default().push_next(&mut driver);
+        // SAFETY: pd is the runtime's device of vk_instance; props2 is chained as expected.
         unsafe { vk_instance.get_physical_device_properties2(pd, &mut props2) };
         s.vulkan_device = props2
             .properties
@@ -555,6 +568,7 @@ unsafe fn session_inner(
                 .unwrap_or_default()
         ));
 
+        // SAFETY: pd belongs to vk_instance.
         let families = unsafe { vk_instance.get_physical_device_queue_family_properties(pd) };
         let qfi = families
             .iter()
@@ -565,11 +579,13 @@ unsafe fn session_inner(
             .queue_family_index(qfi)
             .queue_priorities(&prio)];
         let dci = vk::DeviceCreateInfo::default().queue_create_infos(&qci);
+        // SAFETY: as for the instance; dci outlives the call.
         let raw_device = unsafe {
             instance.create_vulkan_device(system, gipa, raw_pd, &dci as *const _ as *const _)
         }
         .map_err(|e| format!("xrCreateVulkanDeviceKHR: {}", xe(e)))?
         .map_err(|r| format!("vkCreateDevice via OpenXR: VkResult {r}"))?;
+        // SAFETY: raw_device was just created from pd.
         let device = unsafe {
             ash::Device::load(vk_instance.fp_v1_0(), vk::Device::from_raw(raw_device as _))
         };
@@ -582,6 +598,7 @@ unsafe fn session_inner(
                 queue_family_index: qfi,
                 queue_index: 0,
             };
+            // SAFETY: info names the live Vulkan instance, device and queue created above.
             let (session, _waiter, _stream) =
                 unsafe { instance.create_session::<xr::Vulkan>(system, &info) }
                     .map_err(|e| format!("xrCreateSession: {}", xe(e)))?;
@@ -590,7 +607,7 @@ unsafe fn session_inner(
                     s.swapchain_formats = f
                         .iter()
                         .map(|&raw| format!("{:?}", vk::Format::from_raw(raw as i32)))
-                        .collect()
+                        .collect();
                 }
                 Err(e) => s
                     .errors
@@ -615,9 +632,11 @@ unsafe fn session_inner(
             drop(session);
             Ok(())
         })();
+        // SAFETY: the session using the device was dropped above.
         unsafe { device.destroy_device(None) };
         session_result
     })();
+    // SAFETY: the device was destroyed above.
     unsafe { vk_instance.destroy_instance(None) };
     result
 }

@@ -493,7 +493,7 @@ impl App {
     /// Asks for the PIN of a locked source.
     fn ask_pin(&mut self, source: &str) {
         self.ui.source = None;
-        self.ui.screen = ui::Screen::Sources;
+        self.ui.screen = Screen::Sources;
         self.show_browser = true;
         self.ui_visible = true;
         self.ui.pin_form = Some(ui::PinForm {
@@ -664,7 +664,7 @@ impl App {
             .source_configs
             .iter()
             .find(|c| c.id() == source)
-            .map(|c| c.kind())
+            .map(fp_sources::SourceConfig::kind)
         else {
             self.ui.toast("That source is not available");
             return;
@@ -1026,7 +1026,7 @@ impl App {
                             Ok(qc) => {
                                 f.qc_code = Some(qc.code);
                                 f.qc_secret = Some(qc.secret);
-                                f.qc_last_poll = Some(std::time::Instant::now());
+                                f.qc_last_poll = Some(Instant::now());
                                 f.qc_error = None;
                             }
                             Err(e) => {
@@ -1439,7 +1439,7 @@ impl App {
             Action::OpenSource { source, back_to } => self.open_source(source, back_to),
             Action::Browse { source, location } => self.browse(source, location),
             Action::Jellyfin { source, seq, load } => {
-                self.jellyfin_job(source, seq, load, Duration::ZERO)
+                self.jellyfin_job(source, seq, load, Duration::ZERO);
             }
             Action::JellyfinMark {
                 source,
@@ -1998,8 +1998,8 @@ impl App {
             self.ui.invalidate();
         } else if playing {
             self.ui_visible = true;
-        } else if self.ui.screen != ui::Screen::Home {
-            self.ui.screen = ui::Screen::Home;
+        } else if self.ui.screen != Screen::Home {
+            self.ui.screen = Screen::Home;
             self.ui.invalidate();
         }
         self.last_activity = Instant::now();
@@ -2108,7 +2108,7 @@ impl App {
         // video the panels keep to the head's position (not its turning),
         // so they stay put relative to the picture.
         if let (Some((pos, _)), Some(p)) = (input.head, &self.playback)
-            && p.format.projection != fp_core::format::Projection::Flat
+            && p.format.projection != Projection::Flat
         {
             let (_, rot, _) = anchor.to_scale_rotation_translation();
             anchor = Mat4::from_rotation_translation(rot, pos);
@@ -2362,7 +2362,7 @@ impl App {
             self.sub_key = key;
             let textures = &mut self.sub_textures;
             if let Err(e) = self.subs.paint(renderer, time, |ctx| {
-                ui::player::subtitles(ctx, &cues, textures)
+                ui::player::subtitles(ctx, &cues, textures);
             }) {
                 log::error!("subtitles: {e}");
             }

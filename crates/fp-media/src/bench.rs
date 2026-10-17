@@ -107,8 +107,7 @@ impl Session {
             if !self.have_pkt && !self.eof {
                 if self.input.read(self.pkt.as_ptr())? {
                     if self.pkt.stream_index() != self.vi {
-                        // SAFETY: valid packet.
-                        unsafe { ff::av_packet_unref(self.pkt.as_ptr()) };
+                        self.pkt.unref();
                         continue;
                     }
                     self.have_pkt = true;
@@ -118,8 +117,7 @@ impl Session {
             }
             if self.have_pkt {
                 if self.dec.send(self.pkt.as_ptr())? {
-                    // SAFETY: valid packet.
-                    unsafe { ff::av_packet_unref(self.pkt.as_ptr()) };
+                    self.pkt.unref();
                     self.have_pkt = false;
                 }
             } else if self.eof && !self.eof_sent && self.dec.send(std::ptr::null())? {
@@ -207,8 +205,7 @@ pub fn decode_bench(
         s.input.seek(t)?;
         s.dec.flush();
         if s.have_pkt {
-            // SAFETY: valid packet.
-            unsafe { ff::av_packet_unref(s.pkt.as_ptr()) };
+            s.pkt.unref();
             s.have_pkt = false;
         }
         s.eof = false;

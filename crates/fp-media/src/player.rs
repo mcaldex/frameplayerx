@@ -101,7 +101,9 @@ impl PacketQueue {
         }
     }
     fn lock(&self) -> MutexGuard<'_, VecDeque<(u64, Option<Packet>)>> {
-        self.q.lock().unwrap_or_else(|e| e.into_inner())
+        self.q
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     fn push(&self, serial: u64, p: Option<Packet>) {
         if let Some(p) = &p {
@@ -116,7 +118,7 @@ impl PacketQueue {
             q = self
                 .cv
                 .wait_timeout(q, timeout)
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .0;
         }
         let item = q.pop_front();
@@ -183,17 +185,26 @@ struct Shared {
 
 impl Shared {
     fn ctl(&self) -> MutexGuard<'_, Control> {
-        self.ctl.lock().unwrap_or_else(|e| e.into_inner())
+        self.ctl
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     fn frames(&self) -> MutexGuard<'_, VecDeque<Arc<VideoFrame>>> {
-        self.frames.lock().unwrap_or_else(|e| e.into_inner())
+        self.frames
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     fn fail(&self, msg: String) {
         log::error!("player: {msg}");
-        *self.error.lock().unwrap_or_else(|e| e.into_inner()) = Some(msg);
+        *self
+            .error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(msg);
     }
     fn stats(&self) -> MutexGuard<'_, Stats> {
-        self.stats.lock().unwrap_or_else(|e| e.into_inner())
+        self.stats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     fn serial(&self) -> u64 {
         self.serial.load(Ordering::Acquire)
@@ -298,7 +309,7 @@ impl Player {
             let video_index = info.video;
             let cfg = config.clone();
             threads.push(spawn("fp-demux", move || {
-                demux_thread(sh, input, video_index, subtitle_decoders, cfg)
+                demux_thread(sh, input, video_index, subtitle_decoders, cfg);
             }));
         }
         if let Some(dec) = video_dec {
@@ -315,7 +326,7 @@ impl Player {
                 .collect();
             let backend = config.audio.clone();
             threads.push(spawn("fp-audio", move || {
-                audio_thread(sh, audio_decoders, ambi, backend)
+                audio_thread(sh, audio_decoders, ambi, backend);
             }));
         } else {
             shared.has_audio.store(false, Ordering::Release);
@@ -348,7 +359,11 @@ impl Player {
 
     pub fn state(&self) -> PlayerState {
         let s = &self.shared;
-        if s.error.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+        if s.error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+        {
             PlayerState::Failed
         } else if s.ended.load(Ordering::Acquire) {
             PlayerState::Ended
@@ -365,7 +380,7 @@ impl Player {
         self.shared
             .error
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
@@ -394,9 +409,9 @@ impl Player {
 
     pub fn toggle_pause(&self) {
         if self.is_paused() || self.state() == PlayerState::Ended {
-            self.play()
+            self.play();
         } else {
-            self.pause()
+            self.pause();
         }
     }
 
@@ -423,21 +438,37 @@ impl Player {
     }
 
     pub fn speed(&self) -> f64 {
-        *self.shared.speed.lock().unwrap_or_else(|e| e.into_inner())
+        *self
+            .shared
+            .speed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub fn set_speed(&self, speed: f64) {
         let speed = speed.clamp(0.25, 4.0);
-        *self.shared.speed.lock().unwrap_or_else(|e| e.into_inner()) = speed;
+        *self
+            .shared
+            .speed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = speed;
         self.shared.clock.set_speed(speed);
     }
 
     pub fn volume(&self) -> f32 {
-        *self.shared.volume.lock().unwrap_or_else(|e| e.into_inner())
+        *self
+            .shared
+            .volume
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub fn set_volume(&self, v: f32) {
-        *self.shared.volume.lock().unwrap_or_else(|e| e.into_inner()) = v.clamp(0.0, 2.0);
+        *self
+            .shared
+            .volume
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = v.clamp(0.0, 2.0);
     }
 
     /// Selects an audio stream by stream index.
@@ -461,7 +492,7 @@ impl Player {
         self.shared
             .cues
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
         self.seek(self.position(), true);
     }
@@ -478,7 +509,7 @@ impl Player {
             .shared
             .external_cues
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) = cues;
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = cues;
         Ok(n)
     }
 
@@ -486,7 +517,7 @@ impl Player {
         self.shared
             .external_cues
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
     }
 
@@ -497,17 +528,25 @@ impl Player {
             .shared
             .external_cues
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !ext.is_empty() {
             return subtitle::active(&ext, t).into_iter().cloned().collect();
         }
-        let cues = self.shared.cues.lock().unwrap_or_else(|e| e.into_inner());
+        let cues = self
+            .shared
+            .cues
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         subtitle::active(&cues, t).into_iter().cloned().collect()
     }
 
     /// Head orientation for ambisonic audio (OpenXR quaternion x, y, z, w).
     pub fn set_head_orientation(&self, q: [f32; 4]) {
-        *self.shared.head.lock().unwrap_or_else(|e| e.into_inner()) = q;
+        *self
+            .shared
+            .head
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = q;
     }
 
     pub fn stats(&self) -> Stats {
@@ -540,7 +579,9 @@ impl Player {
                 if let Some(f) = frames.pop_front() {
                     // Start the clock exactly at the first frame shown.
                     s.clock.set(f.pts);
-                    *s.current.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+                    *s.current
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(f);
                     s.stats().frames_shown += 1;
                     s.frames_cv.notify_all();
                 }
@@ -560,7 +601,9 @@ impl Player {
                 shown = frames.pop_front();
             }
             if let Some(f) = shown {
-                *s.current.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+                *s.current
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(f);
                 let mut st = s.stats();
                 st.frames_shown += 1;
                 st.frames_dropped += dropped;
@@ -586,7 +629,7 @@ impl Player {
                 let behind = s
                     .current
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .as_ref()
                     .map(|c| t - c.pts)
                     .unwrap_or(1.0);
@@ -597,7 +640,10 @@ impl Player {
                 }
             }
         }
-        s.current.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        s.current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Stops all threads. Also done on drop.
@@ -611,7 +657,10 @@ impl Player {
         // Frames can hold the hardware decoder's own buffers; one blocked
         // waiting for a free buffer only returns once they are given back.
         s.frames().clear();
-        s.current.lock().unwrap_or_else(|e| e.into_inner()).take();
+        s.current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         for t in self.threads.drain(..) {
             let _ = t.join();
         }
@@ -683,7 +732,9 @@ fn demux_thread(
             sh.vpkts.clear();
             sh.apkts.clear();
             sh.frames().clear();
-            *sh.seek_floor.lock().unwrap_or_else(|e| e.into_inner()) =
+            *sh.seek_floor
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
                 req.precise.then_some((serial, req.target));
             if let Err(e) = input.seek(req.target) {
                 log::warn!("seek to {:.2}: {e}", req.target);
@@ -745,7 +796,10 @@ fn demux_thread(
                     if let Some((_, dec)) = subs.0.iter_mut().find(|(i, _)| *i == idx)
                         && let Some(cue) = subtitle::decode_packet(dec, &pkt)
                     {
-                        let mut cues = sh.cues.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut cues = sh
+                            .cues
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         if !cues
                             .iter()
                             .any(|c| (c.start - cue.start).abs() < 1e-3 && c.text == cue.text)
@@ -754,11 +808,9 @@ fn demux_thread(
                             cues.insert(pos, cue);
                         }
                     }
-                    // SAFETY: valid packet.
-                    unsafe { ff::av_packet_unref(pkt.as_ptr()) };
+                    pkt.unref();
                 } else {
-                    // SAFETY: valid packet.
-                    unsafe { ff::av_packet_unref(pkt.as_ptr()) };
+                    pkt.unref();
                 }
             }
             Ok(false) => {
@@ -833,7 +885,10 @@ fn video_thread(sh: Arc<Shared>, mut dec: Decoder, cap: usize) {
                         let dur = Some(dec.frame_duration(&frame))
                             .filter(|d| *d > 0.0)
                             .unwrap_or(default_duration);
-                        let floor = *sh.seek_floor.lock().unwrap_or_else(|e| e.into_inner());
+                        let floor = *sh
+                            .seek_floor
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         if let Some((fs, target)) = floor
                             && fs == serial
                             && pts + dur * 0.5 < target
@@ -858,7 +913,7 @@ fn video_thread(sh: Arc<Shared>, mut dec: Decoder, cap: usize) {
                             q = sh
                                 .frames_cv
                                 .wait_timeout(q, Duration::from_millis(20))
-                                .unwrap_or_else(|e| e.into_inner())
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .0;
                         }
                         if sh.serial() == serial {
@@ -984,16 +1039,25 @@ fn audio_thread(
             // SAFETY: valid frame.
             unsafe { ff::av_frame_unref(frame.as_ptr()) };
             let mut out = if resampler.out_channels == 4 {
-                let head = *sh.head.lock().unwrap_or_else(|e| e.into_inner());
+                let head = *sh
+                    .head
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 ambisonic::render_stereo(&buf, head)
             } else {
                 std::mem::take(&mut buf)
             };
-            let volume = *sh.volume.lock().unwrap_or_else(|e| e.into_inner());
+            let volume = *sh
+                .volume
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if (volume - 1.0).abs() > 1e-3 {
                 out.iter_mut().for_each(|s| *s *= volume);
             }
-            let speed = *sh.speed.lock().unwrap_or_else(|e| e.into_inner());
+            let speed = *sh
+                .speed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if (stretch.speed() - speed).abs() > 1e-6 {
                 stretch.set_speed(speed);
             }

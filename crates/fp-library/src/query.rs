@@ -172,10 +172,10 @@ fn filter_sql(q: &Query, hidden: &Hidden) -> (String, Vec<Value>) {
         Some(StereoFilter::Mono) => clauses.push("m.stereo = 'mono'".into()),
         Some(StereoFilter::Stereo) => clauses.push("m.stereo <> 'mono'".into()),
         Some(StereoFilter::SideBySide) => {
-            clauses.push("m.stereo IN ('side_by_side', 'half_side_by_side')".into())
+            clauses.push("m.stereo IN ('side_by_side', 'half_side_by_side')".into());
         }
         Some(StereoFilter::TopBottom) => {
-            clauses.push("m.stereo IN ('top_bottom', 'half_top_bottom')".into())
+            clauses.push("m.stereo IN ('top_bottom', 'half_top_bottom')".into());
         }
     }
     if let Some(min) = q.min_duration.filter(|v| v.is_finite()) {

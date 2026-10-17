@@ -227,7 +227,7 @@ impl VideoPlanes {
                     img.image,
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                     &[region],
-                )
+                );
             };
             mem::barrier(
                 gpu,

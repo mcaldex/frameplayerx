@@ -5,7 +5,7 @@
 //!   names to axes, finding scripts next to a video.
 //! - [`script`]: the per-axis timeline ([`Script`]): interpolation, next
 //!   action, statistics.
-//! - [`heatmap`]: speed-coloured timeline strips for the player UI.
+//! - [`heatmap`](mod@heatmap): speed-coloured timeline strips for the player UI.
 //! - [`engine`]: [`HapticsEngine`], the 100 Hz worker that follows
 //!   [`fp_core::PlaybackStatus`] and drives the devices.
 //! - [`device`]: the [`Device`] trait, implemented by

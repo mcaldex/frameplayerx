@@ -157,10 +157,10 @@ pub(crate) fn build(
     // Per-eye aspect for flat screens.
     let (ew, eh) = match video.format.stereo {
         StereoLayout::SideBySide => (tex.0 as f32 / 2.0, tex.1 as f32),
-        StereoLayout::HalfSideBySide => (tex.0 as f32, tex.1 as f32),
         StereoLayout::TopBottom => (tex.0 as f32, tex.1 as f32 / 2.0),
-        StereoLayout::HalfTopBottom => (tex.0 as f32, tex.1 as f32),
-        StereoLayout::Mono => (tex.0 as f32, tex.1 as f32),
+        StereoLayout::HalfSideBySide | StereoLayout::HalfTopBottom | StereoLayout::Mono => {
+            (tex.0 as f32, tex.1 as f32)
+        }
     };
     let screen_w = s.screen_width * s.zoom;
     let screen_h = screen_w * eh / ew.max(1.0);

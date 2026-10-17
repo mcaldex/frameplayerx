@@ -709,13 +709,10 @@ impl ConnectionMessageHandler {
             // also, handle the case where the server granted less credits than charged.
             // FramePlayerX patch: saturating, the pool used to wrap around
             // below zero and then never asked the server for more credits.
-            let _ = self
-                .credit_pool
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |pool| {
-                    Some(
-                        pool.saturating_add(granted_credits)
-                            .saturating_sub(charged_credits),
-                    )
+            self.credit_pool
+                .update(Ordering::SeqCst, Ordering::SeqCst, |pool| {
+                    pool.saturating_add(granted_credits)
+                        .saturating_sub(charged_credits)
                 });
 
             // Return the credits to the pool.

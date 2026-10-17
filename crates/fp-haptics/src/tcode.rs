@@ -358,7 +358,7 @@ pub fn list_serial_ports() -> Vec<SerialPortInfo> {
 fn list_serial_ports_in(dev: &Path) -> Vec<SerialPortInfo> {
     let by_id: Vec<(PathBuf, String)> = std::fs::read_dir(dev.join("serial/by-id"))
         .map(|rd| {
-            rd.filter_map(|e| e.ok())
+            rd.filter_map(std::result::Result::ok)
                 .filter_map(|e| {
                     let target = std::fs::canonicalize(e.path()).ok()?;
                     Some((target, e.file_name().to_string_lossy().into_owned()))
@@ -368,7 +368,7 @@ fn list_serial_ports_in(dev: &Path) -> Vec<SerialPortInfo> {
         .unwrap_or_default();
     let mut ports: Vec<SerialPortInfo> = std::fs::read_dir(dev)
         .map(|rd| {
-            rd.filter_map(|e| e.ok())
+            rd.filter_map(std::result::Result::ok)
                 .filter(|e| {
                     let n = e.file_name();
                     let n = n.to_string_lossy();

@@ -90,7 +90,7 @@ enum Kind {
     Haptic,
 }
 
-/// A candidate binding: component path under /user/hand/<h>/, action, and a
+/// A candidate binding: component path under `/user/hand/<h>/`, action, and a
 /// hand mask (1 left, 2 right, 3 both).
 type Candidate = (&'static str, Kind, u8);
 

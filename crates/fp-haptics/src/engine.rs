@@ -393,7 +393,7 @@ struct Shared {
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     // A panic while holding one of these locks cannot leave the plain data
     // inconsistent, so recover from poisoning.
-    m.lock().unwrap_or_else(|e| e.into_inner())
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Refreshes the shared device list from the worker's view. Membership is

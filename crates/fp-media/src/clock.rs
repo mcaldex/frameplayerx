@@ -31,7 +31,9 @@ impl Default for Clock {
 
 impl Clock {
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.s.lock().unwrap_or_else(|e| e.into_inner())
+        self.s
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub fn now(&self) -> f64 {

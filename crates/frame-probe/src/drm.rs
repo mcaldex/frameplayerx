@@ -16,8 +16,7 @@ pub struct DrmVersion {
     pub desc: *mut libc::c_char,
 }
 
-pub const DRM_IOCTL_VERSION: u64 =
-    ioc(IOC_READWRITE, b'd', 0x00, std::mem::size_of::<DrmVersion>());
+pub const DRM_IOCTL_VERSION: u64 = ioc(IOC_READWRITE, b'd', 0x00, size_of::<DrmVersion>());
 
 #[derive(Serialize)]
 pub struct DrmNode {
@@ -31,7 +30,7 @@ pub struct DrmNode {
 pub fn probe() -> Vec<DrmNode> {
     let mut nodes: Vec<String> = std::fs::read_dir("/dev/dri")
         .map(|rd| {
-            rd.filter_map(|e| e.ok())
+            rd.filter_map(Result::ok)
                 .map(|e| format!("/dev/dri/{}", e.file_name().to_string_lossy()))
                 .filter(|p| p.contains("card") || p.contains("renderD"))
                 .collect()
@@ -50,6 +49,7 @@ fn probe_node(node: &str) -> DrmNode {
         open_error: None,
     };
     let c = std::ffi::CString::new(node).expect("path");
+    // SAFETY: c is a NUL-terminated path.
     let fd = unsafe { libc::open(c.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
     if fd < 0 {
         out.open_error = Some(crate::util::last_os_error());
@@ -69,6 +69,7 @@ fn probe_node(node: &str) -> DrmNode {
         desc_len: desc.len() - 1,
         desc: desc.as_mut_ptr(),
     };
+    // SAFETY: fd is open; v's pointers and lengths describe the buffers above.
     if unsafe { libc::ioctl(fd, DRM_IOCTL_VERSION as _, &mut v) } == 0 {
         out.driver = Some(crate::util::fixed_cstr(&name));
         out.description = Some(crate::util::fixed_cstr(&desc));
@@ -82,6 +83,7 @@ fn probe_node(node: &str) -> DrmNode {
             crate::util::last_os_error()
         ));
     }
+    // SAFETY: fd is ours and not used after this.
     unsafe { libc::close(fd) };
     out
 }

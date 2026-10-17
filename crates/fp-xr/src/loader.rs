@@ -111,7 +111,7 @@ pub fn parse_manifest(manifest_path: &Path, json: &str) -> Result<RuntimeManifes
         resolved_library_path: resolved.display().to_string(),
         is_steamvr: rt
             .get("VALVE_runtime_is_steamvr")
-            .and_then(|b| b.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(false),
         file_format_version: v
             .get("file_format_version")
@@ -154,8 +154,11 @@ pub struct LoadedRuntime {
 /// The library stays loaded for the life of the process: runtimes start
 /// threads and register atexit handlers that must not outlive their code.
 pub fn load_runtime(manifest: &RuntimeManifest) -> Result<LoadedRuntime, String> {
+    // SAFETY: the active runtime's own library; its initialisers are meant
+    // to run in any OpenXR app.
     let lib = unsafe { libloading::Library::new(&manifest.resolved_library_path) }
         .map_err(|e| format!("dlopen {}: {e}", manifest.resolved_library_path))?;
+    // SAFETY: the OpenXR loader interface fixes this symbol's signature.
     let negotiate: NegotiateFn = unsafe {
         *lib.get::<NegotiateFn>(b"xrNegotiateLoaderRuntimeInterface\0")
             .map_err(|e| format!("runtime has no xrNegotiateLoaderRuntimeInterface: {e}"))?
@@ -163,7 +166,7 @@ pub fn load_runtime(manifest: &RuntimeManifest) -> Result<LoadedRuntime, String>
     let info = sys::NegotiateLoaderInfo {
         struct_type: sys::LoaderInterfaceStructs::LOADER_INFO,
         struct_version: sys::LOADER_INFO_STRUCT_VERSION as u32,
-        struct_size: std::mem::size_of::<sys::NegotiateLoaderInfo>(),
+        struct_size: size_of::<sys::NegotiateLoaderInfo>(),
         min_interface_version: 1,
         max_interface_version: sys::CURRENT_LOADER_RUNTIME_VERSION as u32,
         min_api_version: sys::Version::new(1, 0, 0),
@@ -172,11 +175,12 @@ pub fn load_runtime(manifest: &RuntimeManifest) -> Result<LoadedRuntime, String>
     let mut req = sys::NegotiateRuntimeRequest {
         struct_type: sys::LoaderInterfaceStructs::RUNTIME_REQUEST,
         struct_version: sys::RUNTIME_INFO_STRUCT_VERSION as u32,
-        struct_size: std::mem::size_of::<sys::NegotiateRuntimeRequest>(),
+        struct_size: size_of::<sys::NegotiateRuntimeRequest>(),
         runtime_interface_version: 0,
         runtime_api_version: sys::Version::new(0, 0, 0),
         get_instance_proc_addr: None,
     };
+    // SAFETY: both structs are initialised with their type, version and size.
     let r = unsafe { negotiate(&info, &mut req) };
     if r != sys::Result::SUCCESS {
         return Err(format!("xrNegotiateLoaderRuntimeInterface failed: {r:?}"));
@@ -184,6 +188,8 @@ pub fn load_runtime(manifest: &RuntimeManifest) -> Result<LoadedRuntime, String>
     let gipa = req
         .get_instance_proc_addr
         .ok_or("runtime returned no xrGetInstanceProcAddr")?;
+    // SAFETY: gipa comes from the runtime, which stays loaded (forgotten
+    // below).
     let entry = unsafe { openxr::Entry::from_get_instance_proc_addr(gipa, &()) }
         .map_err(|e| format!("resolving core entry points: {e}"))?;
     std::mem::forget(lib);

@@ -63,7 +63,7 @@ impl Hidden {
     }
 
     /// Whether a video from `source_id` at `location` is hidden; the same
-    /// test as the SQL from [`hidden_sql`].
+    /// test as the SQL from `hidden_sql`.
     pub fn hides(&self, source_id: &str, location: &str) -> bool {
         self.sources.iter().any(|s| s == source_id)
             || self.locations.iter().any(|root| under(root, location))
@@ -357,7 +357,7 @@ pub(crate) fn get_many(conn: &Connection, ids: &[MediaId]) -> Result<Vec<MediaRe
         let sql = format!("SELECT {MEDIA_COLUMNS} FROM media m WHERE m.id IN ({placeholders})");
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(
-            rusqlite::params_from_iter(chunk.iter().map(|id| id.0)),
+            params_from_iter(chunk.iter().map(|id| id.0)),
             media_from_row,
         )?;
         for row in rows {

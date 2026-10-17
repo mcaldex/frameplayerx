@@ -365,7 +365,7 @@ pub fn evaluate(r: &Report) -> Vec<Verdict> {
         ]
         .iter()
         .filter(|e| gpu_ext(e))
-        .map(|e| e.to_string()),
+        .map(ToString::to_string),
     );
     out.push(
         if fov.is_empty() && xr.extensions.is_empty() && gpu.is_none() {

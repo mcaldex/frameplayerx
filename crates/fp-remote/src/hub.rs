@@ -62,9 +62,8 @@ pub(crate) struct Shared {
 impl Shared {
     pub(crate) fn emit(&self, ev: RemoteEvent) {
         match self.events.try_send(ev) {
-            Ok(()) => {}
+            Ok(()) | Err(TrySendError::Disconnected(_)) => {}
             Err(TrySendError::Full(ev)) => log::warn!("remote event queue full, dropping {ev:?}"),
-            Err(TrySendError::Disconnected(_)) => {}
         }
     }
 

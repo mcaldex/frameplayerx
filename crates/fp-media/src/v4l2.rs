@@ -491,13 +491,13 @@ mod sys {
         (dir << 30) | ((size as u64) << 16) | ((b'V' as u64) << 8) | nr
     }
     const fn ior<T>(nr: u64) -> u64 {
-        ioc(READ, nr, std::mem::size_of::<T>())
+        ioc(READ, nr, size_of::<T>())
     }
     const fn iow<T>(nr: u64) -> u64 {
-        ioc(WRITE, nr, std::mem::size_of::<T>())
+        ioc(WRITE, nr, size_of::<T>())
     }
     const fn iowr<T>(nr: u64) -> u64 {
-        ioc(READ | WRITE, nr, std::mem::size_of::<T>())
+        ioc(READ | WRITE, nr, size_of::<T>())
     }
 
     pub const VIDIOC_QUERYCAP: u64 = ior::<Capability>(0);
@@ -517,17 +517,17 @@ mod sys {
     pub const VIDIOC_DECODER_CMD: u64 = iowr::<DecoderCmd>(96);
 
     // The kernel's sizes; the ioctl numbers encode them.
-    const _: () = assert!(std::mem::size_of::<Capability>() == 104);
-    const _: () = assert!(std::mem::size_of::<FmtDesc>() == 64);
-    const _: () = assert!(std::mem::size_of::<Format>() == 208);
-    const _: () = assert!(std::mem::size_of::<RequestBuffers>() == 20);
-    const _: () = assert!(std::mem::size_of::<Plane>() == 64);
-    const _: () = assert!(std::mem::size_of::<Buffer>() == 88);
-    const _: () = assert!(std::mem::size_of::<EventSubscription>() == 32);
-    const _: () = assert!(std::mem::size_of::<Event>() == 136);
-    const _: () = assert!(std::mem::size_of::<DecoderCmd>() == 72);
-    const _: () = assert!(std::mem::size_of::<Control>() == 8);
-    const _: () = assert!(std::mem::size_of::<Selection>() == 64);
+    const _: () = assert!(size_of::<Capability>() == 104);
+    const _: () = assert!(size_of::<FmtDesc>() == 64);
+    const _: () = assert!(size_of::<Format>() == 208);
+    const _: () = assert!(size_of::<RequestBuffers>() == 20);
+    const _: () = assert!(size_of::<Plane>() == 64);
+    const _: () = assert!(size_of::<Buffer>() == 88);
+    const _: () = assert!(size_of::<EventSubscription>() == 32);
+    const _: () = assert!(size_of::<Event>() == 136);
+    const _: () = assert!(size_of::<DecoderCmd>() == 72);
+    const _: () = assert!(size_of::<Control>() == 8);
+    const _: () = assert!(size_of::<Selection>() == 64);
 
     // Known values from videodev2.h, as a check on the encoding.
     const _: () = assert!(VIDIOC_QUERYCAP == 0x8068_5600);

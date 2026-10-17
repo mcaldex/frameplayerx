@@ -220,7 +220,7 @@ pub fn find_scripts(video: &Path, fallback_dirs: &[PathBuf]) -> Vec<(Axis, PathB
             continue;
         };
         let mut here: Vec<(Axis, PathBuf)> = entries
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .filter_map(|e| {
                 let name = e.file_name().to_string_lossy().into_owned();
                 let (base, axis) = split_script_name(&name)?;

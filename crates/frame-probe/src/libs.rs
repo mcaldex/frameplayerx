@@ -43,8 +43,10 @@ pub fn probe() -> Vec<LibReport> {
     LIBS.iter()
         .map(|(soname, purpose)| {
             let c = CString::new(*soname).expect("static soname");
+            // SAFETY: c is NUL-terminated; loading runs the same initialisers as any app linking the library.
             let handle = unsafe { libc::dlopen(c.as_ptr(), libc::RTLD_LAZY | libc::RTLD_LOCAL) };
             if handle.is_null() {
+                // SAFETY: dlerror returns null or a NUL-terminated string.
                 let err = unsafe { crate::util::cstr_ptr(libc::dlerror()) };
                 return LibReport {
                     soname,

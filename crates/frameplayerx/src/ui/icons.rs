@@ -1,6 +1,6 @@
 //! Icons: Phosphor (MIT, assets/fonts/Phosphor*.ttf), drawn as text. The
 //! regular weight is a fallback of every text family, so these mix with
-//! words in a label; [`super::theme::icon_font`] picks the filled weight.
+//! words in a label; [`super::theme::icon_fill`] picks the filled weight.
 //! Code points from the Phosphor icon font (phosphoricons.com).
 
 #![allow(dead_code)]

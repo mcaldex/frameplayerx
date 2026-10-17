@@ -339,7 +339,7 @@ pub fn validate_install_dir(dir: &Path, expected: Option<&Version>) -> Result<Ve
 pub fn sibling(install_dir: &Path, suffix: &str) -> PathBuf {
     let mut name = install_dir
         .file_name()
-        .map(|n| n.to_os_string())
+        .map(std::ffi::OsStr::to_os_string)
         .unwrap_or_else(|| "frameplayerx".into());
     name.push(suffix);
     install_dir.with_file_name(name)

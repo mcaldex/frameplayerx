@@ -48,7 +48,7 @@ pub fn header(
         });
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            actions(ui)
+            actions(ui);
         });
     });
     ui.add_space(8.0);

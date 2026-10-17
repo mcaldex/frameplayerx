@@ -89,6 +89,7 @@ const INTERESTING: &[&str] = &[
 
 pub fn probe() -> VkReport {
     let mut r = VkReport::default();
+    // SAFETY: loads the system Vulkan loader.
     let entry = match unsafe { ash::Entry::load() } {
         Ok(e) => e,
         Err(e) => {
@@ -96,11 +97,13 @@ pub fn probe() -> VkReport {
             return r;
         }
     };
+    // SAFETY: entry is loaded.
     let loader_api = unsafe { entry.try_enumerate_instance_version() }
         .ok()
         .flatten()
         .unwrap_or(vk::API_VERSION_1_0);
     r.loader_api_version = Some(version(loader_api));
+    // SAFETY: entry is loaded.
     if let Ok(exts) = unsafe { entry.enumerate_instance_extension_properties(None) } {
         r.instance_extensions = exts
             .iter()
@@ -115,6 +118,7 @@ pub fn probe() -> VkReport {
         .application_name(&app_name)
         .api_version(api);
     let ici = vk::InstanceCreateInfo::default().application_info(&app);
+    // SAFETY: ici and app outlive the call.
     let instance = match unsafe { entry.create_instance(&ici, None) } {
         Ok(i) => i,
         Err(e) => {
@@ -122,6 +126,7 @@ pub fn probe() -> VkReport {
             return r;
         }
     };
+    // SAFETY: instance is live until destroyed below.
     match unsafe { instance.enumerate_physical_devices() } {
         Ok(pds) => {
             if pds.is_empty() {
@@ -134,6 +139,7 @@ pub fn probe() -> VkReport {
         }
         Err(e) => r.errors.push(format!("vkEnumeratePhysicalDevices: {e}")),
     }
+    // SAFETY: nothing created from instance outlives this.
     unsafe { instance.destroy_instance(None) };
     r
 }
@@ -154,6 +160,7 @@ pub fn version(v: u32) -> String {
 
 fn probe_device(entry: &ash::Entry, instance: &ash::Instance, pd: vk::PhysicalDevice) -> VkDevice {
     let mut d = VkDevice::default();
+    // SAFETY: pd belongs to instance.
     let props = unsafe { instance.get_physical_device_properties(pd) };
     d.name = name(&props.device_name_as_c_str());
     d.device_type = format!("{:?}", props.device_type);
@@ -165,17 +172,20 @@ fn probe_device(entry: &ash::Entry, instance: &ash::Instance, pd: vk::PhysicalDe
     if v12 {
         let mut driver = vk::PhysicalDeviceDriverProperties::default();
         let mut p2 = vk::PhysicalDeviceProperties2::default().push_next(&mut driver);
+        // SAFETY: pd belongs to instance; the structs are chained as the call expects.
         unsafe { instance.get_physical_device_properties2(pd, &mut p2) };
         d.driver_name = Some(name(&driver.driver_name_as_c_str()));
         d.driver_info = Some(name(&driver.driver_info_as_c_str()));
 
         let mut f11 = vk::PhysicalDeviceVulkan11Features::default();
         let mut f2 = vk::PhysicalDeviceFeatures2::default().push_next(&mut f11);
+        // SAFETY: pd belongs to instance; the structs are chained as the call expects.
         unsafe { instance.get_physical_device_features2(pd, &mut f2) };
         d.multiview = Some(f11.multiview == vk::TRUE);
         d.sampler_ycbcr_conversion = Some(f11.sampler_ycbcr_conversion == vk::TRUE);
     }
 
+    // SAFETY: pd belongs to instance.
     let mem = unsafe { instance.get_physical_device_memory_properties(pd) };
     d.device_local_heap_mib = mem.memory_heaps[..mem.memory_heap_count as usize]
         .iter()
@@ -183,6 +193,7 @@ fn probe_device(entry: &ash::Entry, instance: &ash::Instance, pd: vk::PhysicalDe
         .map(|h| h.size / (1 << 20))
         .sum();
 
+    // SAFETY: pd belongs to instance.
     let exts: Vec<String> = unsafe { instance.enumerate_device_extension_properties(pd) }
         .map(|v| {
             v.iter()
@@ -194,12 +205,13 @@ fn probe_device(entry: &ash::Entry, instance: &ash::Instance, pd: vk::PhysicalDe
     d.notable_extensions = INTERESTING
         .iter()
         .filter(|n| exts.iter().any(|e| e == *n))
-        .map(|s| s.to_string())
+        .map(ToString::to_string)
         .collect();
     let has = |n: &str| exts.iter().any(|e| e == n);
 
     // Queue families, with the codecs each video queue handles.
     let video_queue = has("VK_KHR_video_queue");
+    // SAFETY: pd belongs to instance.
     let count = unsafe { instance.get_physical_device_queue_family_properties2_len(pd) };
     let mut video_props = vec![vk::QueueFamilyVideoPropertiesKHR::default(); count];
     let mut qf: Vec<vk::QueueFamilyProperties2> = video_props
@@ -213,6 +225,7 @@ fn probe_device(entry: &ash::Entry, instance: &ash::Instance, pd: vk::PhysicalDe
             }
         })
         .collect();
+    // SAFETY: pd belongs to instance; qf has `count` entries, chained as the call expects.
     unsafe { instance.get_physical_device_queue_family_properties2(pd, &mut qf) };
     for (i, q) in qf.iter().enumerate() {
         let p = q.queue_family_properties;
@@ -287,6 +300,7 @@ fn video_caps(
             p_next: &mut dec as *mut _ as *mut _,
             ..Default::default()
         };
+        // SAFETY: pd belongs to instance; profile and caps are initialised structs of the expected types.
         let res = unsafe {
             (vq.fp().get_physical_device_video_capabilities_khr)(pd, &profile, &mut caps)
         };
@@ -367,6 +381,7 @@ fn format_modifiers(
     // Two-call pattern: first the count, then the list.
     let mut list = vk::DrmFormatModifierPropertiesListEXT::default();
     let mut fp2 = vk::FormatProperties2::default().push_next(&mut list);
+    // SAFETY: pd belongs to instance; the structs are chained as the call expects.
     unsafe { instance.get_physical_device_format_properties2(pd, format, &mut fp2) };
     let optimal = fp2.format_properties.optimal_tiling_features;
     let n = list.drm_format_modifier_count as usize;
@@ -375,6 +390,7 @@ fn format_modifiers(
         let mut list = vk::DrmFormatModifierPropertiesListEXT::default()
             .drm_format_modifier_properties(&mut mods);
         let mut fp2 = vk::FormatProperties2::default().push_next(&mut list);
+        // SAFETY: pd belongs to instance; the structs are chained as the call expects.
         unsafe { instance.get_physical_device_format_properties2(pd, format, &mut fp2) };
     }
     FormatModifiers {

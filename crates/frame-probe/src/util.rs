@@ -53,6 +53,7 @@ pub unsafe fn cstr_ptr(ptr: *const c_char) -> Option<String> {
         None
     } else {
         Some(
+            // SAFETY: guaranteed by the caller.
             unsafe { CStr::from_ptr(ptr) }
                 .to_string_lossy()
                 .into_owned(),

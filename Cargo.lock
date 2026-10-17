@@ -1205,11 +1205,9 @@ dependencies = [
  "glam",
  "image",
  "log",
- "png",
  "ring",
  "serde",
  "serde_json",
- "ureq",
 ]
 
 [[package]]

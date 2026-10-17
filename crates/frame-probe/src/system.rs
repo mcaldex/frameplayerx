@@ -62,6 +62,7 @@ pub fn probe() -> SystemReport {
         r.os_release = parse_os_release(&text);
     }
 
+    // SAFETY: utsname is plain data (all-zero is valid) that uname fills; glibc's version string is static.
     unsafe {
         let mut u: libc::utsname = std::mem::zeroed();
         if libc::uname(&mut u) == 0 {
@@ -84,7 +85,7 @@ pub fn probe() -> SystemReport {
             .map(|(_, v)| v.trim().to_string());
     }
     r.cpu_count = std::thread::available_parallelism()
-        .map(|n| n.get())
+        .map(std::num::NonZero::get)
         .unwrap_or(0);
     r.mem_total_mib = std::fs::read_to_string("/proc/meminfo").ok().and_then(|m| {
         m.lines()
@@ -132,6 +133,7 @@ pub fn parse_os_release(text: &str) -> BTreeMap<String, String> {
 
 fn group_names() -> Vec<String> {
     let mut gids = vec![0 as libc::gid_t; 256];
+    // SAFETY: gids has room for gids.len() entries.
     let n = unsafe { libc::getgroups(gids.len() as i32, gids.as_mut_ptr()) };
     if n < 0 {
         return Vec::new();
@@ -189,7 +191,9 @@ fn statvfs_gib(path: &str) -> (Option<f64>, Option<f64>) {
     let Ok(c) = std::ffi::CString::new(path) else {
         return (None, None);
     };
+    // SAFETY: statvfs is plain data; all-zero is valid.
     let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: c is NUL-terminated and s writable.
     if unsafe { libc::statvfs(c.as_ptr(), &mut s) } != 0 {
         return (None, None);
     }

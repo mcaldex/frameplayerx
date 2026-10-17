@@ -12,7 +12,10 @@
     non_snake_case,
     dead_code,
     unsafe_op_in_unsafe_fn,
-    clippy::all
+    unused_qualifications,
+    clippy::all,
+    clippy::pedantic,
+    clippy::undocumented_unsafe_blocks
 )]
 mod bindings {
     include!("bindings_aarch64.rs");
@@ -24,7 +27,10 @@ mod bindings {
     non_snake_case,
     dead_code,
     unsafe_op_in_unsafe_fn,
-    clippy::all
+    unused_qualifications,
+    clippy::all,
+    clippy::pedantic,
+    clippy::undocumented_unsafe_blocks
 )]
 mod bindings {
     include!("bindings_x86_64.rs");
@@ -34,9 +40,9 @@ pub use bindings::*;
 /// The `va_list` argument of `av_log_set_callback` callbacks, whose Rust
 /// spelling differs per architecture. Pass it through untouched.
 #[cfg(target_arch = "x86_64")]
-pub type LogVaList = *mut bindings::__va_list_tag;
+pub type LogVaList = *mut __va_list_tag;
 #[cfg(target_arch = "aarch64")]
-pub type LogVaList = bindings::va_list;
+pub type LogVaList = va_list;
 
 /// `AV_NOPTS_VALUE`: no timestamp.
 pub const AV_NOPTS_VALUE: i64 = i64::MIN;
@@ -80,6 +86,7 @@ mod tests {
 
     #[test]
     fn links_and_reports_version() {
+        // SAFETY: no arguments or preconditions.
         let v = unsafe { avcodec_version() };
         assert_eq!(v >> 16, 61, "libavcodec major");
         assert!(
@@ -100,6 +107,7 @@ mod tests {
             c"opus",
             c"hevc_v4l2m2m",
         ] {
+            // SAFETY: name is a NUL-terminated literal.
             let d = unsafe { avcodec_find_decoder_by_name(name.as_ptr()) };
             assert!(!d.is_null(), "decoder {name:?} missing");
         }

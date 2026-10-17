@@ -802,7 +802,7 @@ fn updates(ui: &mut egui::Ui, v: &mut View) {
         }
         U::Failed(e) => {
             r.row("The update failed", Some(e.as_str()), |ui| {
-                check_button(ui, v.actions)
+                check_button(ui, v.actions);
             });
         }
     });

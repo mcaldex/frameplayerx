@@ -866,7 +866,7 @@ pub fn adjust_panel(ctx: &egui::Context, v: &mut View) {
                             &v.settings.default_view,
                             v.passthrough_available,
                             v.actions,
-                        )
+                        );
                     }
                     5 => audio_and_text(ui, pb, v.actions),
                     _ => haptics_tab(ui, pb.script_count, v.settings, v.devices),
@@ -1016,11 +1016,11 @@ pub(super) fn chroma_controls(
         widgets::rows(ui, |r| {
             r.row("Colour", None, |ui| {
                 let [cr, cg, cb] = s.key_color.map(|c| (c.clamp(0.0, 1.0) * 255.0) as u8);
-                let (rect, _) = ui.allocate_exact_size(Vec2::new(64.0, 32.0), egui::Sense::hover());
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(64.0, 32.0), Sense::hover());
                 ui.painter().rect_filled(
                     rect,
                     egui::CornerRadius::same(8),
-                    egui::Color32::from_rgb(cr, cg, cb),
+                    Color32::from_rgb(cr, cg, cb),
                 );
             });
             r.slider(

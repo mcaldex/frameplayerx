@@ -171,7 +171,7 @@ fn export_conn(conn: &Connection) -> Result<UserDataExport> {
         let ids = manual_ids(conn, PlaylistId(id))?;
         let items = ids
             .iter()
-            .filter_map(|m| location_of.get(m).map(|l| l.to_string()))
+            .filter_map(|m| location_of.get(m).map(ToString::to_string))
             .collect();
         in_playlists.extend(ids);
         playlists.push(PlaylistExport {

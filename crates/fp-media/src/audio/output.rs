@@ -181,6 +181,7 @@ impl Alsa {
             )
         };
         if r < 0 {
+            // SAFETY: pcm is open and not used after this.
             unsafe { (fns.close)(pcm) };
             return Err(Error::Audio(format!("configure {device}: {}", fns.err(r))));
         }

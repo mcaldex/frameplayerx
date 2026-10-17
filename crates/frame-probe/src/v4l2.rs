@@ -40,14 +40,9 @@ pub struct V4l2Frmsizeenum {
     pub reserved: [u32; 2],
 }
 
-pub const VIDIOC_QUERYCAP: u64 = ioc(IOC_READ, b'V', 0, std::mem::size_of::<V4l2Capability>());
-pub const VIDIOC_ENUM_FMT: u64 = ioc(IOC_READWRITE, b'V', 2, std::mem::size_of::<V4l2Fmtdesc>());
-pub const VIDIOC_ENUM_FRAMESIZES: u64 = ioc(
-    IOC_READWRITE,
-    b'V',
-    74,
-    std::mem::size_of::<V4l2Frmsizeenum>(),
-);
+pub const VIDIOC_QUERYCAP: u64 = ioc(IOC_READ, b'V', 0, size_of::<V4l2Capability>());
+pub const VIDIOC_ENUM_FMT: u64 = ioc(IOC_READWRITE, b'V', 2, size_of::<V4l2Fmtdesc>());
+pub const VIDIOC_ENUM_FRAMESIZES: u64 = ioc(IOC_READWRITE, b'V', 74, size_of::<V4l2Frmsizeenum>());
 
 const CAP_VIDEO_CAPTURE: u32 = 0x1;
 const CAP_VIDEO_OUTPUT: u32 = 0x2;
@@ -115,7 +110,7 @@ pub fn probe() -> V4l2Report {
 fn list_dev(prefix: &str) -> Vec<String> {
     std::fs::read_dir("/dev")
         .map(|rd| {
-            rd.filter_map(|e| e.ok())
+            rd.filter_map(Result::ok)
                 .map(|e| e.file_name().to_string_lossy().into_owned())
                 .filter(|n| {
                     n.starts_with(prefix) && n[prefix.len()..].chars().all(|c| c.is_ascii_digit())
@@ -137,6 +132,7 @@ fn probe_node(node: &str) -> V4l2Device {
         d.owner_group = group_name(md.gid());
     }
     let c = std::ffi::CString::new(node).expect("path");
+    // SAFETY: c is a NUL-terminated path.
     let fd = unsafe {
         libc::open(
             c.as_ptr(),
@@ -148,6 +144,7 @@ fn probe_node(node: &str) -> V4l2Device {
         return d;
     }
     let mut cap = V4l2Capability::default();
+    // SAFETY: fd is open and cap is the struct this ioctl fills.
     if unsafe { libc::ioctl(fd, VIDIOC_QUERYCAP as _, &mut cap) } == 0 {
         d.driver = fixed_bytes(&cap.driver);
         d.card = fixed_bytes(&cap.card);
@@ -178,6 +175,7 @@ fn probe_node(node: &str) -> V4l2Device {
     } else {
         d.open_error = Some(format!("VIDIOC_QUERYCAP: {}", crate::util::last_os_error()));
     }
+    // SAFETY: fd is ours and not used after this.
     unsafe { libc::close(fd) };
     d
 }
@@ -190,6 +188,7 @@ fn enum_formats(fd: i32, buf_type: u32) -> Vec<Format> {
             type_: buf_type,
             ..Default::default()
         };
+        // SAFETY: fd is open and f is the struct this ioctl fills.
         if unsafe { libc::ioctl(fd, VIDIOC_ENUM_FMT as _, &mut f) } != 0 {
             break;
         }
@@ -211,6 +210,7 @@ fn max_frame_size(fd: i32, pixfmt: u32) -> Option<(u32, u32)> {
             pixel_format: pixfmt,
             ..Default::default()
         };
+        // SAFETY: fd is open and s is the struct this ioctl fills.
         if unsafe { libc::ioctl(fd, VIDIOC_ENUM_FRAMESIZES as _, &mut s) } != 0 {
             break;
         }
@@ -273,9 +273,9 @@ mod tests {
 
     #[test]
     fn struct_sizes_match_kernel_abi() {
-        assert_eq!(std::mem::size_of::<V4l2Capability>(), 104);
-        assert_eq!(std::mem::size_of::<V4l2Fmtdesc>(), 64);
-        assert_eq!(std::mem::size_of::<V4l2Frmsizeenum>(), 44);
+        assert_eq!(size_of::<V4l2Capability>(), 104);
+        assert_eq!(size_of::<V4l2Fmtdesc>(), 64);
+        assert_eq!(size_of::<V4l2Frmsizeenum>(), 44);
     }
 
     #[test]

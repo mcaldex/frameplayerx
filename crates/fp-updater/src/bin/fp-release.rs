@@ -457,7 +457,7 @@ mod tests {
     fn arg_parsing() {
         let a: Vec<String> = ["m.json", "--key", "k", "--out=x"]
             .iter()
-            .map(|s| s.to_string())
+            .map(ToString::to_string)
             .collect();
         let p = Args::parse(&a, &["key", "out"]).unwrap();
         assert_eq!(p.get("key"), Some("k"));
@@ -471,7 +471,7 @@ mod tests {
     fn keygen_sign_verify_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let prefix = dir.path().join("k").display().to_string();
-        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let s = |v: &[&str]| v.iter().map(ToString::to_string).collect::<Vec<_>>();
         run(&s(&["keygen", "--out", &prefix])).unwrap();
         // Refuses to overwrite.
         assert!(run(&s(&["keygen", "--out", &prefix])).is_err());

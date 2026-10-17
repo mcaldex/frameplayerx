@@ -6,13 +6,12 @@ use std::ffi::{CStr, CString};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+pub(crate) static HW_SESSIONS: AtomicUsize = AtomicUsize::new(0);
+
 /// Hardware decoder sessions this process holds (native V4L2 decoders and
 /// FFmpeg hardware decoders). The driver admits only a few at a time, Steam
 /// holding some, so one a closed video never gave back leaves later videos
 /// in software ("Hardware decoder busy").
-pub(crate) static HW_SESSIONS: AtomicUsize = AtomicUsize::new(0);
-
-/// See [`HW_SESSIONS`].
 pub fn hardware_sessions() -> usize {
     HW_SESSIONS.load(Ordering::Relaxed)
 }
@@ -33,6 +32,11 @@ impl Packet {
     pub fn stream_index(&self) -> usize {
         // SAFETY: valid packet.
         unsafe { (*self.0).stream_index.max(0) as usize }
+    }
+    /// Releases the data, leaving the packet empty for the next read.
+    pub fn unref(&mut self) {
+        // SAFETY: valid packet.
+        unsafe { ff::av_packet_unref(self.0) };
     }
     /// Moves the contents into a fresh packet, leaving this one empty.
     pub fn take(&mut self) -> Packet {
@@ -75,6 +79,7 @@ impl Frame {
     }
     /// Gives the underlying reference away and allocates a fresh empty frame.
     pub fn take_raw(&mut self) -> *mut ff::AVFrame {
+        // SAFETY: allocation, as in `new`.
         std::mem::replace(&mut self.0, unsafe { ff::av_frame_alloc() })
     }
 }
@@ -164,7 +169,7 @@ fn on_all_cpus<T>(f: impl FnOnce() -> T) -> T {
     #[cfg(target_os = "linux")]
     // SAFETY: plain affinity calls on the calling thread with owned sets.
     unsafe {
-        let size = std::mem::size_of::<libc::cpu_set_t>();
+        let size = size_of::<libc::cpu_set_t>();
         let mut old: libc::cpu_set_t = std::mem::zeroed();
         if libc::sched_getaffinity(0, size, &mut old) == 0 {
             let mut all: libc::cpu_set_t = std::mem::zeroed();
@@ -464,8 +469,10 @@ impl Decoder {
         // Close the failed device session before opening the next decoder:
         // FFmpeg's V4L2 wrapper needs a session of its own, and the driver
         // refuses one more while Steam holds others, so it went to software.
-        // SAFETY: copies the parameters into a fresh allocation, freed below.
+        // SAFETY: allocation, freed below.
         let mut par = unsafe { ff::avcodec_parameters_alloc() };
+        // SAFETY: par is non-null when copied into; native.par is valid
+        // while native is.
         if par.is_null() || unsafe { ff::avcodec_parameters_copy(par, native.par) } < 0 {
             // SAFETY: null-safe free of our own allocation.
             unsafe { ff::avcodec_parameters_free(&mut par) };
@@ -640,7 +647,7 @@ mod tests {
         let vi = input.best_stream(ff::AVMEDIA_TYPE_VIDEO).unwrap();
         let mut dec = Decoder::open(input.streams()[vi], HwDecode::Auto).unwrap();
         let mut conv = FrameConverter::default();
-        let pkt = Packet::new();
+        let mut pkt = Packet::new();
         let mut frame = Frame::new();
         let mut out = Vec::new();
         let mut eof = false;
@@ -648,11 +655,11 @@ mod tests {
             if !eof {
                 if input.read(pkt.as_ptr()).unwrap() {
                     if pkt.stream_index() != vi {
-                        unsafe { ff::av_packet_unref(pkt.as_ptr()) };
+                        pkt.unref();
                         continue;
                     }
                     dec.send(pkt.as_ptr()).unwrap();
-                    unsafe { ff::av_packet_unref(pkt.as_ptr()) };
+                    pkt.unref();
                 } else {
                     eof = true;
                     dec.send(std::ptr::null()).unwrap();
@@ -768,24 +775,34 @@ mod tests {
         .unwrap();
         let vi = input.best_stream(ff::AVMEDIA_TYPE_VIDEO).unwrap();
         let mut dec = Decoder::open(input.streams()[vi], HwDecode::Off).unwrap();
-        let pkt = Packet::new();
+        let mut pkt = Packet::new();
         let mut frame = Frame::new();
         while dec.receive(&mut frame).unwrap() != Some(true) {
             assert!(input.read(pkt.as_ptr()).unwrap());
             if pkt.stream_index() == vi {
                 dec.send(pkt.as_ptr()).unwrap();
             }
-            unsafe { ff::av_packet_unref(pkt.as_ptr()) };
+            pkt.unref();
         }
         let mut conv = FrameConverter::default();
         let mut copy = Frame::new();
-        unsafe { ff::av_frame_ref(copy.as_ptr(), frame.as_ptr()) };
-        let before = unsafe { (*frame.as_ptr()).buf[0] };
+        // SAFETY: both frames are valid allocations; frame holds a decoded
+        // picture.
+        let before = unsafe {
+            ff::av_frame_ref(copy.as_ptr(), frame.as_ptr());
+            (*frame.as_ptr()).buf[0]
+        };
         copy_out(&mut copy).unwrap();
-        unsafe {
-            assert_ne!((*copy.as_ptr()).buf[0], before, "own buffer");
-            assert_eq!((*copy.as_ptr()).pts, (*frame.as_ptr()).pts);
-        }
+        // SAFETY: as above.
+        let (buf, pts, frame_pts) = unsafe {
+            (
+                (*copy.as_ptr()).buf[0],
+                (*copy.as_ptr()).pts,
+                (*frame.as_ptr()).pts,
+            )
+        };
+        assert_ne!(buf, before, "own buffer");
+        assert_eq!(pts, frame_pts);
         let a = conv.convert(frame.take_raw(), 0.0, 0.0, 0).unwrap();
         let b = conv.convert(copy.take_raw(), 0.0, 0.0, 0).unwrap();
         assert_eq!((a.width, a.height, a.layout), (b.width, b.height, b.layout));

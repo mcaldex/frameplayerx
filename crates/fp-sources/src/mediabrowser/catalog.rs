@@ -152,7 +152,7 @@ pub struct MbItem {
     pub landscape: Option<String>,
     /// Large wide art for the top of a details page.
     pub backdrop: Option<String>,
-    /// Location for [`MediaBrowserSource::open`] and browsing.
+    /// Location for [`Source::open`](crate::Source::open) and browsing.
     pub location: String,
     /// Projection and stereo layout from the file name or 3D metadata.
     pub format: Option<VideoFormat>,
@@ -315,7 +315,7 @@ impl MbQuery {
         };
         MbQuery {
             parent: Some(item.id.clone()),
-            types: types.iter().map(|t| t.to_string()).collect(),
+            types: types.iter().map(ToString::to_string).collect(),
             recursive: item.kind == MbKind::Library,
             ..MbQuery::default()
         }
@@ -356,7 +356,7 @@ impl MbQuery {
 /// What a search of the whole server looks through, a section each, as
 /// Jellyfin's own search shows it: the titles of films, series, collections
 /// and other videos. Episodes are left out; a series is found by its name.
-pub const SEARCH_SECTIONS: [(&str, &[&str]); 4] = [
+pub(crate) const SEARCH_SECTIONS: [(&str, &[&str]); 4] = [
     ("Movies", &["Movie"]),
     ("Shows", &["Series"]),
     ("Collections", &["BoxSet"]),
@@ -638,7 +638,7 @@ impl MediaBrowserSource {
             .ok_or_else(|| crate::Error::NotFound(format!("item {id} on {}", self.name)))
     }
 
-    /// The titles matching `text`, by section ([`SEARCH_SECTIONS`]), best
+    /// The titles matching `text`, by section (`SEARCH_SECTIONS`), best
     /// matches first and at most `limit` a section. Sections without a
     /// match are left out.
     pub fn search(&self, text: &str, limit: usize) -> Result<Vec<(&'static str, Vec<MbItem>)>> {

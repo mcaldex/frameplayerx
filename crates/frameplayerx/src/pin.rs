@@ -2,7 +2,7 @@
 //!
 //! A locked source can't be browsed and its videos are left out of the
 //! library, history, search and both remotes (see
-//! [`fp_library::Library::set_hidden_sources`]); a video of it can't be
+//! [`fp_library::Library::set_hidden`]); a video of it can't be
 //! opened. Entering the PIN unlocks it until FramePlayerX restarts or it is
 //! locked again. This keeps guests out, not someone with the headset's files:
 //! the videos themselves are not encrypted.

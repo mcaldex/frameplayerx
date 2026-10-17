@@ -436,9 +436,8 @@ mod imp {
                     .client
                     .create_file(&path, &args)
                     .map_err(|e| map_err(e, &url))?;
-                let dir = match res {
-                    smb::Resource::Directory(d) => d,
-                    _ => return Err(Error::invalid(&url, "not a folder")),
+                let smb::Resource::Directory(dir) = res else {
+                    return Err(Error::invalid(&url, "not a folder"));
                 };
                 let mut out = Vec::new();
                 for info in dir

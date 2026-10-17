@@ -1,11 +1,11 @@
 //! FramePlayerX's media pipeline on top of the bundled FFmpeg.
 //!
-//! - [`io`]: FFmpeg reads through [`fp_core::ByteSource`], so all network
+//! - `io`: FFmpeg reads through [`fp_core::ByteSource`], so all network
 //!   access stays in Rust.
 //! - [`info`]: stream inspection, including spherical/stereo metadata and HDR.
-//! - [`decode`]: video (hardware V4L2 first, software fallback), audio and
+//! - `decode`: video (hardware V4L2 first, software fallback), audio and
 //!   subtitle decoders.
-//! - [`v4l2`]: the native V4L2 stateful decoder for H.264/HEVC, with the
+//! - `v4l2`: the native V4L2 stateful decoder for H.264/HEVC, with the
 //!   Steam Frame's admission-check workaround.
 //! - [`frame`]: decoded video frames in GPU-uploadable layouts.
 //! - [`player`]: the threaded player with a video-master clock.

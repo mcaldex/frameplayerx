@@ -125,6 +125,14 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # Both modes: one catches public docs linking private items, the other
+      # broken links in private items' docs.
+      - name: Docs
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: |
+          cargo doc --workspace --no-deps
+          cargo doc --workspace --no-deps --document-private-items
       - name: Tests
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/third_party/ffmpeg/x86_64/lib

@@ -7,7 +7,7 @@ together. For using the app, see the [user guide](USER-GUIDE.md).
 
 - **Linux** (Ubuntu or Debian), or **Windows with Ubuntu under WSL2**. The
   workspace doesn't build on Windows itself.
-- Rust 1.89 or newer.
+- Rust 1.95 or newer.
 - For FFmpeg: meson 1.12 (1.3 can't use zig's linker; versions in between
   are untested), ninja, nasm and pkg-config.
 - For builds for the Frame: zig (`pip install ziglang`) and `cargo-zigbuild`
@@ -23,7 +23,8 @@ needs with apt, then builds FFmpeg, in one go.
 tools/build-ffmpeg.sh x86_64 aarch64      # once: FFmpeg 7.1 and dav1d into third_party/
 export LD_LIBRARY_PATH=$PWD/third_party/ffmpeg/x86_64/lib
 cargo test --workspace                    # GPU tests use any Vulkan device (lavapipe is fine)
-cargo clippy --workspace --all-targets
+cargo clippy --workspace --all-targets   # lints are in [workspace.lints]
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 (cd tools/frame-desktop-install && python3 -m unittest)   # the Desktop Mode installer
 ```
 

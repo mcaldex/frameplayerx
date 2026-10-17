@@ -283,7 +283,7 @@ struct Shared {
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     // Plain data; recover from poisoning.
-    m.lock().unwrap_or_else(|e| e.into_inner())
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The Handy over the cloud API (HSSP).

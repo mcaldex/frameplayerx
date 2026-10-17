@@ -276,7 +276,7 @@ impl Renderer {
                     spv: crate::QUAD_SPV,
                     layout: quad_pl,
                     color_format,
-                    vertex_stride: std::mem::size_of::<QuadVertex>() as u32,
+                    vertex_stride: size_of::<QuadVertex>() as u32,
                     attributes: &quad_attrs,
                     blend: true,
                 },
@@ -429,7 +429,7 @@ impl Renderer {
                 .ctx("scene descriptor set")?[0];
             let uniform = Buffer::new(
                 &self.gpu,
-                std::mem::size_of::<SceneParams>() as u64,
+                size_of::<SceneParams>() as u64,
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
                 MemoryLocation::CpuToGpu,
                 "scene params",
@@ -551,6 +551,8 @@ impl Renderer {
         )?;
         let set = self.tex_set(image.views[1])?;
         let img = image.image;
+        // SAFETY: img was just created with `mips` levels and is not in use;
+        // cmd is recording.
         self.one_shot(|gpu, cmd| unsafe {
             mem::barrier(
                 gpu,
@@ -587,7 +589,7 @@ impl Renderer {
             painted: false,
             version: 0,
         };
-        match self.panels.iter().position(|p| p.is_none()) {
+        match self.panels.iter().position(Option::is_none) {
             Some(i) => {
                 self.panels[i] = Some(panel);
                 Ok(i)
@@ -821,7 +823,7 @@ impl Renderer {
                 tex.image.image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &[region],
-            )
+            );
         };
         mem::barrier(
             gpu,
@@ -1119,7 +1121,7 @@ impl Renderer {
         }
         {
             let slot = &mut self.slots[slot_idx];
-            slot.uniform.bytes()[..std::mem::size_of::<SceneParams>()]
+            slot.uniform.bytes()[..size_of::<SceneParams>()]
                 .copy_from_slice(bytemuck::bytes_of(&p));
             let bytes: &[u8] = bytemuck::cast_slice(&verts);
             if bytes.len() as u64 > slot.quad_vb.size {
@@ -1335,7 +1337,7 @@ impl Renderer {
                 dst,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &[region],
-            )
+            );
         };
         mem::barrier(
             gpu,
@@ -1404,7 +1406,7 @@ impl Renderer {
                     dst,
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                     &[region],
-                )
+                );
             };
             mem::barrier(
                 gpu,
@@ -1474,7 +1476,7 @@ impl Renderer {
                     vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                     buffer,
                     &[region],
-                )
+                );
             };
             mem::barrier(
                 gpu,
@@ -1546,7 +1548,7 @@ fn generate_mips(gpu: &Gpu, cmd: vk::CommandBuffer, image: vk::Image, w: u32, h:
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &[blit],
                 vk::Filter::LINEAR,
-            )
+            );
         };
         mem::barrier(
             gpu,

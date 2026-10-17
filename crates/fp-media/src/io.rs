@@ -79,12 +79,12 @@ impl Drop for IoContext {
 }
 
 unsafe extern "C" fn read_cb(opaque: *mut c_void, buf: *mut u8, size: c_int) -> c_int {
-    // SAFETY: opaque is the State pointer passed to avio_alloc_context and
-    // FFmpeg gives us a writable buffer of `size` bytes.
+    // SAFETY: opaque is the State pointer passed to avio_alloc_context.
     let st = unsafe { &mut *(opaque as *mut State) };
     if st.interrupt.load(Ordering::Relaxed) {
         return ff::AVERROR_EXIT_;
     }
+    // SAFETY: FFmpeg gives us a writable buffer of `size` bytes.
     let out = unsafe { std::slice::from_raw_parts_mut(buf, size.max(0) as usize) };
     match st.src.read_at(st.pos, out) {
         Ok(0) => ff::AVERROR_EOF_,

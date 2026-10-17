@@ -39,7 +39,7 @@ pub fn decode_first_frame(src: Arc<dyn ByteSource>, name: &str) -> Result<crate:
         .best_stream(ff::AVMEDIA_TYPE_VIDEO)
         .ok_or(Error::NoStream("video"))?;
     let mut dec = Decoder::open(input.streams()[vi], HwDecode::Off)?;
-    let pkt = Packet::new();
+    let mut pkt = Packet::new();
     let mut frame = Frame::new();
     let mut conv = crate::frame::FrameConverter::default();
     let mut eof = false;
@@ -49,8 +49,7 @@ pub fn decode_first_frame(src: Arc<dyn ByteSource>, name: &str) -> Result<crate:
                 if pkt.stream_index() == vi {
                     dec.send(pkt.as_ptr())?;
                 }
-                // SAFETY: valid packet.
-                unsafe { ff::av_packet_unref(pkt.as_ptr()) };
+                pkt.unref();
             } else {
                 eof = true;
                 dec.send(std::ptr::null())?;
@@ -101,7 +100,7 @@ pub fn grab(
     if at > 0.0 {
         input.seek(at)?;
     }
-    let pkt = Packet::new();
+    let mut pkt = Packet::new();
     let mut frame = Frame::new();
     let mut eof = false;
     let mut fallback: Option<Frame> = None;
@@ -111,8 +110,7 @@ pub fn grab(
                 if pkt.stream_index() == vi {
                     dec.send(pkt.as_ptr())?;
                 }
-                // SAFETY: valid packet.
-                unsafe { ff::av_packet_unref(pkt.as_ptr()) };
+                pkt.unref();
             } else {
                 eof = true;
                 dec.send(std::ptr::null())?;

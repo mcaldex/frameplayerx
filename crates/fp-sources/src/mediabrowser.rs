@@ -59,12 +59,10 @@ pub(crate) fn mediabrowser_header(token: Option<&str>) -> String {
     let version = env!("CARGO_PKG_VERSION");
     match token {
         Some(tok) => format!(
-            "MediaBrowser Client=\"{}\", Device=\"{}\", DeviceId=\"{}\", Version=\"{}\", Token=\"{}\"",
-            CLIENT_NAME, DEVICE_NAME, dev_id, version, tok
+            "MediaBrowser Client=\"{CLIENT_NAME}\", Device=\"{DEVICE_NAME}\", DeviceId=\"{dev_id}\", Version=\"{version}\", Token=\"{tok}\""
         ),
         None => format!(
-            "MediaBrowser Client=\"{}\", Device=\"{}\", DeviceId=\"{}\", Version=\"{}\"",
-            CLIENT_NAME, DEVICE_NAME, dev_id, version
+            "MediaBrowser Client=\"{CLIENT_NAME}\", Device=\"{DEVICE_NAME}\", DeviceId=\"{dev_id}\", Version=\"{version}\""
         ),
     }
 }

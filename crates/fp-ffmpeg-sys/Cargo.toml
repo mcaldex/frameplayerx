@@ -9,4 +9,7 @@ license.workspace = true
 links = "avcodec"
 build = "build.rs"
 
+[lints]
+workspace = true
+
 [dependencies]

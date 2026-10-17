@@ -9,7 +9,7 @@
 //!    manifest among FramePlayerX's GitHub releases.
 //! 2. [`download`] streams the zip to disk with resume (HTTP `Range`) and
 //!    verifies size and SHA-256 from the signed manifest.
-//! 3. [`install`] extracts into a staging directory beside the install
+//! 3. [`install()`] extracts into a staging directory beside the install
 //!    directory, validates it, and swaps it in with renames, keeping one
 //!    previous version for [`rollback`].
 //!

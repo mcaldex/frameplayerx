@@ -606,10 +606,10 @@ mod tests {
             let info = self.probe(location)?;
             let (w, h) = match crop {
                 ThumbnailCrop::LeftEye => (info.width / 2, info.height),
-                ThumbnailCrop::LeftEyeStretched => (info.width, info.height),
                 ThumbnailCrop::TopEye => (info.width, info.height / 2),
-                ThumbnailCrop::TopEyeStretched => (info.width, info.height),
-                ThumbnailCrop::Full => (info.width, info.height),
+                ThumbnailCrop::LeftEyeStretched
+                | ThumbnailCrop::TopEyeStretched
+                | ThumbnailCrop::Full => (info.width, info.height),
             };
             let (w, h) = crate::image::fit_size(w, h, max_w, max_h);
             Ok(RgbaImage::filled(w, h, [200, 100, 50, 255]))
@@ -633,7 +633,7 @@ mod tests {
     ) -> (WorkerStats, Vec<WorkerEvent>) {
         let mut events = Vec::new();
         let stats = process_pending(lib, prober, o, &AtomicBool::new(false), &mut |e| {
-            events.push(e)
+            events.push(e);
         })
         .unwrap();
         (stats, events)

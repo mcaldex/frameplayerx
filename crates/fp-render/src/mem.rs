@@ -228,7 +228,7 @@ pub fn barrier(
         gpu.device.cmd_pipeline_barrier2(
             cmd,
             &vk::DependencyInfo::default().image_memory_barriers(&b),
-        )
+        );
     };
 }
 

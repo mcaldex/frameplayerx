@@ -169,7 +169,9 @@ impl Gpu {
     }
 
     pub(crate) fn alloc(&self) -> std::sync::MutexGuard<'_, Allocator> {
-        self.allocator.lock().unwrap_or_else(|e| e.into_inner())
+        self.allocator
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub fn wait_idle(&self) {

@@ -410,7 +410,7 @@ pub fn page(
             source: source.to_string(),
             seq,
             load,
-        })
+        });
     };
     match go {
         None => {}

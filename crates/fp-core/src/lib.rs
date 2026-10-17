@@ -1,6 +1,6 @@
 //! Types shared by every FramePlayerX crate.
 //!
-//! - [`format`]: how a video maps onto the sphere or screen ([`Projection`],
+//! - [`format`](mod@format): how a video maps onto the sphere or screen ([`Projection`],
 //!   [`StereoLayout`]) and detection from file names and metadata.
 //! - [`view`]: per-video picture corrections ([`ViewSettings`]).
 //! - [`source`]: the contract between media sources and the player

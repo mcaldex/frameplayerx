@@ -735,7 +735,7 @@ fn add_form(ui: &mut egui::Ui, v: &mut View) {
                 |ui| field(ui, &mut f.name, name_hint(f.kind), false),
             );
             r.row(if local { "Folder" } else { "Address" }, None, |ui| {
-                field(ui, &mut f.address, address_hint(f.kind), false)
+                field(ui, &mut f.address, address_hint(f.kind), false);
             });
             if is_mb {
                 r.row(
@@ -838,7 +838,7 @@ fn add_form(ui: &mut egui::Ui, v: &mut View) {
                     }
                 } else {
                     r.row("User name", Some("If the server asks for one."), |ui| {
-                        field(ui, &mut f.username, "", false)
+                        field(ui, &mut f.username, "", false);
                     });
                     r.row("Password", None, |ui| field(ui, &mut f.password, "", true));
                 }
@@ -1010,7 +1010,7 @@ fn keep_hidden(mut new: SourceConfig, old: &SourceConfig) -> SourceConfig {
         (SourceConfig::DeoVr(n), SourceConfig::DeoVr(o))
         | (SourceConfig::HereSphere(n), SourceConfig::HereSphere(o)) => n.max_height = o.max_height,
         (SourceConfig::MediaBrowser(n), SourceConfig::MediaBrowser(o)) => {
-            n.max_height = o.max_height
+            n.max_height = o.max_height;
         }
         _ => {}
     }

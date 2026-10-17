@@ -9,28 +9,26 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
-ash = "0.38"
-crossbeam-channel = "0.5"
-egui = { version = "0.32.3", features = ["bytemuck"] }
-fp-core = { path = "../fp-core" }
-fp-haptics = { path = "../fp-haptics" }
-fp-library = { path = "../fp-library" }
-fp-media = { path = "../fp-media" }
-fp-remote = { path = "../fp-remote" }
-fp-render = { path = "../fp-render" }
-fp-sources = { path = "../fp-sources" }
-fp-updater = { path = "../fp-updater" }
-fp-xr = { path = "../fp-xr" }
-glam = "0.33"
+ash.workspace = true
+crossbeam-channel.workspace = true
+egui.workspace = true
+fp-core.workspace = true
+fp-haptics.workspace = true
+fp-library.workspace = true
+fp-media.workspace = true
+fp-remote.workspace = true
+fp-render.workspace = true
+fp-sources.workspace = true
+fp-updater.workspace = true
+fp-xr.workspace = true
+glam.workspace = true
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
-log = "0.4"
+log.workspace = true
 # Source PIN protection PBKDF2 hashing.
 ring = "0.17"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-# DevTools connection of the embedded web view (no TLS: loopback only).
-ureq = { version = "3", default-features = false, features = ["rustls"] }
-
-[dev-dependencies]
-png = "0.18"
+serde.workspace = true
+serde_json.workspace = true

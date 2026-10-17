@@ -82,6 +82,7 @@ fn next_id() -> u64 {
 // SAFETY: the AVFrame is immutable after construction and only freed on drop;
 // FFmpeg frame buffers are reference counted and thread safe.
 unsafe impl Send for VideoFrame {}
+// SAFETY: as for Send; shared access only reads the frame.
 unsafe impl Sync for VideoFrame {}
 
 impl Drop for VideoFrame {
@@ -361,11 +362,14 @@ impl FrameConverter {
         let f = unsafe { &*src };
         if f.width <= 0 || f.height <= 0 {
             let mut s = src;
+            // SAFETY: src is ours and not used after this.
             unsafe { ff::av_frame_free(&mut s) };
             return Err(Error::Unsupported("invalid frame dimensions".into()));
         }
 
-        // If the frame is in hardware or DRM_PRIME format, transfer to system memory
+        // A hardware or DRM_PRIME frame is transferred to system memory.
+        // SAFETY: src is valid; sw is checked for null before use, and
+        // whichever frame is dropped is freed exactly once.
         unsafe {
             let desc = ff::av_pix_fmt_desc_get(f.format);
             let is_hw = f.format == ff::AV_PIX_FMT_DRM_PRIME
@@ -383,6 +387,7 @@ impl FrameConverter {
                 }
             }
         }
+        // SAFETY: src is still a valid frame we own (possibly the copy).
         let f = unsafe { &*src };
         let layout = match f.format {
             ff::AV_PIX_FMT_YUV420P | ff::AV_PIX_FMT_YUVJ420P => Some(PixelLayout::I420 { bits: 8 }),

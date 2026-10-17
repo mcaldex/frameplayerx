@@ -82,17 +82,19 @@ pub(crate) fn convert(sub: &ff::AVSubtitle, pkt_pts: f64, pkt_duration: f64) -> 
     }
     // SAFETY: rects holds num_rects valid pointers owned by `sub`.
     for &r in unsafe { std::slice::from_raw_parts(sub.rects, sub.num_rects as usize) } {
+        // SAFETY: as above.
         let r = unsafe { &*r };
         match r.type_ {
-            ff::SUBTITLE_ASS if !r.ass.is_null() => text.push(ass_to_text(
-                &unsafe { CStr::from_ptr(r.ass) }.to_string_lossy(),
-            )),
-            ff::SUBTITLE_TEXT if !r.text.is_null() => text.push(
-                unsafe { CStr::from_ptr(r.text) }
-                    .to_string_lossy()
-                    .trim()
-                    .to_string(),
-            ),
+            ff::SUBTITLE_ASS if !r.ass.is_null() => {
+                // SAFETY: non-null, NUL-terminated and owned by `sub`.
+                let ass = unsafe { CStr::from_ptr(r.ass) };
+                text.push(ass_to_text(&ass.to_string_lossy()));
+            }
+            ff::SUBTITLE_TEXT if !r.text.is_null() => {
+                // SAFETY: non-null, NUL-terminated and owned by `sub`.
+                let t = unsafe { CStr::from_ptr(r.text) };
+                text.push(t.to_string_lossy().trim().to_string());
+            }
             ff::SUBTITLE_BITMAP
                 if r.w > 0 && r.h > 0 && !r.data[0].is_null() && !r.data[1].is_null() =>
             {
@@ -102,6 +104,7 @@ pub(crate) fn convert(sub: &ff::AVSubtitle, pkt_pts: f64, pkt_duration: f64) -> 
                 let palette = unsafe { std::slice::from_raw_parts(r.data[1] as *const u32, 256) };
                 let mut rgba = Vec::with_capacity(w * h * 4);
                 for y in 0..h {
+                    // SAFETY: row y of data[0], see above.
                     let row = unsafe {
                         std::slice::from_raw_parts(r.data[0].add(y * r.linesize[0] as usize), w)
                     };
@@ -174,15 +177,14 @@ pub fn load_file(src: Arc<dyn ByteSource>, name: &str) -> Result<Vec<Cue>> {
         .ok_or(crate::Error::NoStream("subtitle"))?;
     let mut dec = Decoder::open(input.streams()[idx], HwDecode::Off)?;
     let mut cues = Vec::new();
-    let pkt = Packet::new();
+    let mut pkt = Packet::new();
     while input.read(pkt.as_ptr())? {
         if pkt.stream_index() == idx
             && let Some(c) = decode_packet(&mut dec, &pkt)
         {
             cues.push(c);
         }
-        // SAFETY: valid packet.
-        unsafe { ff::av_packet_unref(pkt.as_ptr()) };
+        pkt.unref();
     }
     check(0, "")?;
     cues.sort_by(|a, b| a.start.total_cmp(&b.start));

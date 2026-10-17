@@ -223,7 +223,7 @@ fn tokens(name: &str) -> Vec<String> {
     };
     stem.split(|c: char| !c.is_ascii_alphanumeric())
         .filter(|t| !t.is_empty())
-        .map(|t| t.to_ascii_uppercase())
+        .map(str::to_ascii_uppercase)
         .collect()
 }
 
@@ -255,7 +255,7 @@ pub fn detect_from_name(name: &str) -> Option<VideoFormat> {
                 swapped = true;
             }
             "TB" | "OU" | "3DV" | "FOU" | "FTB" | "OVERUNDER" | "TOPBOTTOM" => {
-                stereo = Some(StereoLayout::TopBottom)
+                stereo = Some(StereoLayout::TopBottom);
             }
             "HOU" | "HTB" => stereo = Some(StereoLayout::HalfTopBottom),
             "BT" | "FBT" => {
@@ -274,7 +274,7 @@ pub fn detect_from_name(name: &str) -> Option<VideoFormat> {
                 }
             }
             "360" | "360X180" | "SPHERE" | "VR360" | "360VR" => {
-                projection = Some(Projection::EQUIRECT_360)
+                projection = Some(Projection::EQUIRECT_360);
             }
             "FLAT" => projection = Some(Projection::Flat),
             "EAC" | "EAC360" => projection = Some(Projection::Eac { h_fov: 360.0 }),

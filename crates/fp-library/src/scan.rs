@@ -236,7 +236,7 @@ fn list_interactive(dir: &Path) -> Vec<String> {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
-    rd.filter_map(|e| e.ok())
+    rd.filter_map(std::result::Result::ok)
         .filter_map(|e| e.file_name().into_string().ok())
         .filter(|n| is_script_name(n) && !n.starts_with('.'))
         .collect()
@@ -602,7 +602,7 @@ mod tests {
         let mut calls = Vec::new();
         let report = lib
             .scan_folder(&root, "local", &opts(Some(interactive.clone())), |p| {
-                calls.push(p.clone())
+                calls.push(p.clone());
             })
             .unwrap();
         assert_eq!(report.videos, 3);

@@ -11,7 +11,7 @@
 
 [package]
 edition = "2024"
-rust-version = "1.89.0"
+rust-version = "1.95.0"
 name = "smb"
 version = "0.12.1"
 authors = ["Aviv N <avivnaaman04@gmail.com>"]

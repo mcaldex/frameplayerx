@@ -21,6 +21,7 @@ impl Resampler {
         // SAFETY: zeroed layout is the documented "unset" state.
         let mut out_layout: ff::AVChannelLayout = unsafe { std::mem::zeroed() };
         let ch = keep_layout_channels.unwrap_or(2);
+        // SAFETY: out_layout is an unset layout owned here.
         unsafe { ff::av_channel_layout_default(&mut out_layout, ch as i32) };
         Resampler {
             swr: std::ptr::null_mut(),

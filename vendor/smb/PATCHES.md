@@ -4,7 +4,8 @@ This is [smb](https://crates.io/crates/smb) 0.12.1 (smb-rs,
 https://github.com/afiffon/smb-rs, MIT, see LICENSE.md) as published on
 crates.io, used through `[patch.crates-io]` in the workspace `Cargo.toml`.
 The tests and dev-dependencies are left out; everything else is unchanged
-except for the SMB credit accounting below. The same code is still on
+except for the SMB credit accounting below and two compiler warnings (see
+[Warnings](#warnings)). The same code is still on
 upstream `main` (f4524d0) as of October 2026. Drop this copy once a release
 fixes it.
 
@@ -42,3 +43,11 @@ FUSE folder that delays one read in 40 by 1.2 s hung the old code within
   then reconnects).
 - `src/sync_helpers.rs`: `Semaphore::acquire_many_timeout`.
 - `src/error.rs`: `TimedOutTask::AcquireCredits`.
+
+## Warnings
+
+- `src/resource/file_util.rs`: the `sync_helpers` import moved into the
+  `std-fs-impls` module, its only user (unused in the sync build).
+- `src/connection.rs`: the credit pool update uses `update` (Rust 1.95)
+  instead of `fetch_update`, deprecated from Rust 1.99; `rust-version` in
+  `Cargo.toml` is raised from 1.89.0 to 1.95.0 to match.

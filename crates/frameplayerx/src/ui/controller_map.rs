@@ -124,8 +124,9 @@ impl Spot {
     /// Whether `open` is (part of) this spot.
     fn owns(self, hand: usize, open: RemapSlot) -> bool {
         match (self, open) {
-            (Spot::Stick(..), RemapSlot::Axis(h, _)) => h == hand,
-            (Spot::Stick(..), RemapSlot::Button(h, Button::StickClick)) => h == hand,
+            (Spot::Stick(..), RemapSlot::Axis(h, _) | RemapSlot::Button(h, Button::StickClick)) => {
+                h == hand
+            }
             _ => self.slot(hand) == open,
         }
     }

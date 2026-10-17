@@ -388,7 +388,7 @@ pub fn open(
     let script_count = scripts.len();
     let server = ServerReport::new(opener, req.source_id.as_deref(), &location);
     if let Some(s) = &server {
-        s.send(|mb, item| mb.report_playback_start(item));
+        s.send(fp_sources::MediaBrowserSource::report_playback_start);
     }
     Ok(Opened {
         playback: Playback {
@@ -615,7 +615,10 @@ impl Playback {
                 log::info!("video closed in {} ms", t.elapsed().as_millis());
             });
         match closing {
-            Ok(h) => CLOSING.lock().unwrap_or_else(|e| e.into_inner()).push(h),
+            Ok(h) => CLOSING
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(h),
             // The player was dropped (closed) here.
             Err(e) => log::warn!("cannot start close thread: {e}"),
         }
@@ -628,7 +631,7 @@ impl Playback {
 fn hardware_holders() -> String {
     let closing = CLOSING
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
         .filter(|h| !h.is_finished())
         .count();
@@ -648,11 +651,13 @@ const CLOSE_WAIT: Duration = Duration::from_secs(5);
 /// left.
 pub fn wait_closed(limit: Duration) -> bool {
     let deadline = Instant::now() + limit;
-    let mut closing = CLOSING.lock().unwrap_or_else(|e| e.into_inner());
+    let mut closing = CLOSING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     loop {
         let (done, open): (Vec<_>, Vec<_>) = std::mem::take(&mut *closing)
             .into_iter()
-            .partition(|h| h.is_finished());
+            .partition(JoinHandle::is_finished);
         for h in done {
             let _ = h.join();
         }
@@ -665,7 +670,9 @@ pub fn wait_closed(limit: Duration) -> bool {
         }
         drop(closing);
         std::thread::sleep(Duration::from_millis(10));
-        closing = CLOSING.lock().unwrap_or_else(|e| e.into_inner());
+        closing = CLOSING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
     }
 }
 
