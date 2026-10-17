@@ -88,6 +88,7 @@ pub fn parse_heresphere_video(v: &Value, base: &str) -> SceneInfo {
         tags: meta.tags,
         rating: rating_field(v, "rating"),
         favorite: boolean(v, "isFavorite").unwrap_or(false),
+        event_server: url_field(v, "eventServer", base),
     }
 }
 

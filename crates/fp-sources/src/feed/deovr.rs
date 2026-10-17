@@ -106,6 +106,7 @@ pub fn parse_deovr_scene(v: &Value, base: &str) -> SceneInfo {
         tags,
         rating: rating_field(v, "rating_avg").or_else(|| rating_field(v, "rating")),
         favorite: boolean(v, "isFavorite").unwrap_or(false),
+        event_server: None,
     }
 }
 

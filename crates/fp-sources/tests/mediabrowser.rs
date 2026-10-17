@@ -5,7 +5,9 @@ mod common;
 use common::{Req, TestServer, pattern, resp, serve_bytes};
 use fp_core::format::{Projection, StereoLayout};
 use fp_core::source::EntryKind;
-use fp_sources::{Credentials, MediaBrowserConfig, SourceConfig, SourceKind, build};
+use fp_sources::{
+    Credentials, MediaBrowserConfig, SourceConfig, SourceKind, WatchEvent, WatchKind, build,
+};
 use std::sync::Arc;
 
 fn mediabrowser_config(url: String, creds: Option<Credentials>) -> MediaBrowserConfig {
@@ -80,6 +82,7 @@ fn mediabrowser_full_lifecycle_browse_stream_and_progress() {
                     "Type":"Movie",
                     "RunTimeTicks":600000000,
                     "Path":"/media/VR/Rollercoaster_180_LR.mp4",
+                    "UserData":{"PlaybackPositionTicks":123000000,"Played":false},
                     "MediaSources":[{
                         "Id":"ms_1",
                         "MediaStreams":[
@@ -155,21 +158,73 @@ fn mediabrowser_full_lifecycle_browse_stream_and_progress() {
     assert_eq!(f.read_at(50_000, &mut buf).unwrap(), 100);
     assert_eq!(buf, video_bytes[50_000..50_100]);
 
-    // 6. Test playback reporting methods on MediaBrowserSource
-    // Downcast via direct construction or method invocation
-    let mb = fp_sources::MediaBrowserSource::new(&mediabrowser_config(
-        server.url(""),
-        Some(Credentials::new("alice", "secret123")),
-    ))
-    .unwrap();
-    assert!(mb.report_playback_start("item_rollercoaster").is_ok());
-    assert!(
-        mb.report_playback_progress("item_rollercoaster", 15.0, false)
-            .is_ok()
+    // 6. Watch sync: one session's reports, in the server's terms
+    assert_eq!(detailed.resume, Some(12.3));
+    let session = src.watch_session(&detailed).unwrap();
+    assert_eq!(session.item, "item_rollercoaster");
+    for (kind, position, paused) in [
+        (WatchKind::Start, 0.0, false),
+        (WatchKind::Tick, 10.0, false),
+        (WatchKind::Pause, 15.0, true),
+        (WatchKind::Resume, 15.0, false),
+        (WatchKind::Seek, 40.0, false),
+        (WatchKind::Stop, 60.0, false),
+    ] {
+        let event = WatchEvent {
+            kind,
+            position,
+            paused,
+            speed: 1.0,
+        };
+        src.report_watch(&session, event).unwrap();
+    }
+    let reports: Vec<serde_json::Value> = server
+        .requests()
+        .iter()
+        .filter(|r| r.path().starts_with("/Sessions/Playing"))
+        .map(|r| {
+            let mut v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+            v["path"] = r.path().into();
+            v
+        })
+        .collect();
+    let summary: Vec<_> = reports
+        .iter()
+        .map(|v| {
+            (
+                v["path"].as_str().unwrap(),
+                v["EventName"].as_str().unwrap_or(""),
+                v["PositionTicks"].as_i64().unwrap(),
+                v["IsPaused"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("/Sessions/Playing", "", 0, false),
+            (
+                "/Sessions/Playing/Progress",
+                "TimeUpdate",
+                100_000_000,
+                false
+            ),
+            ("/Sessions/Playing/Progress", "Pause", 150_000_000, true),
+            ("/Sessions/Playing/Progress", "Unpause", 150_000_000, false),
+            (
+                "/Sessions/Playing/Progress",
+                "TimeUpdate",
+                400_000_000,
+                false
+            ),
+            ("/Sessions/Playing/Stopped", "", 600_000_000, false),
+        ]
     );
     assert!(
-        mb.report_playback_stopped("item_rollercoaster", 60.0)
-            .is_ok()
+        reports
+            .iter()
+            .all(|v| v["ItemId"] == "item_rollercoaster"
+                && v["PlaySessionId"] == session.id.as_str())
     );
 }
 

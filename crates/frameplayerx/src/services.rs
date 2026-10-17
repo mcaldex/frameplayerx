@@ -180,6 +180,8 @@ pub struct Services {
     haptic_devices: Vec<HapticDeviceSlot>,
     pub remote: Option<RemoteHub>,
     pub remote_error: Option<String>,
+    /// Sends watch sync reports to servers.
+    pub watch: crate::watch::Reports,
 }
 
 /// A configured haptic device and how connecting it went.
@@ -252,6 +254,7 @@ impl Services {
             haptic_devices: Vec::new(),
             remote: None,
             remote_error: None,
+            watch: crate::watch::Reports::start(),
         };
         s.set_haptics(settings);
         s.start_worker();

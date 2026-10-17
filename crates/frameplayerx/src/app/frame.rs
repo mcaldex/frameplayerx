@@ -117,6 +117,7 @@ impl App {
         self.remote_events();
         if let Some(p) = &mut self.playback {
             p.save_progress(&self.services.library, false);
+            p.sync_watch();
             p.save_key(&self.services.library, false);
             p.watch_decoding(self.settings.hardware_decoding);
         }

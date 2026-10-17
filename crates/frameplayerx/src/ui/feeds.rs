@@ -62,7 +62,7 @@ pub struct FeedView {
 /// A scene's details page.
 pub struct Details {
     pub url: String,
-    pub info: Option<SceneInfo>,
+    pub info: Option<Box<SceneInfo>>,
     pub loading: bool,
     pub error: Option<String>,
 }
@@ -153,7 +153,7 @@ impl FeedView {
                 }
                 if full && let Some(d) = self.details.as_mut().filter(|d| d.url == url) {
                     d.loading = false;
-                    d.info = Some(info);
+                    d.info = Some(Box::new(info));
                 }
             }
             Err(e) => {

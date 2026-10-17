@@ -22,6 +22,7 @@ mod services;
 mod settings;
 mod subtitles;
 mod ui;
+mod watch;
 mod world;
 
 use app::{App, FrameInput, LayerDraw};

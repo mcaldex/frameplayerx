@@ -7,7 +7,8 @@ use common::{Req, Resp, TestServer, pattern, resp, serve_bytes};
 use fp_core::format::{Projection, StereoLayout};
 use fp_core::source::EntryKind;
 use fp_sources::{
-    Credentials, DlnaConfig, Error, FeedConfig, HttpConfig, SourceConfig, SourceKind, build,
+    Credentials, DlnaConfig, Error, FeedConfig, HttpConfig, SourceConfig, SourceKind, WatchEvent,
+    WatchKind, build,
 };
 use std::sync::Arc;
 
@@ -439,6 +440,10 @@ fn heresphere_library_details_and_open() {
     let b = base.clone();
     let server = TestServer::start(move |req| {
         let json = |s: String| resp(200, s, &[("Content-Type", "application/json")]);
+        // HereSphere's events carry the user name but no password.
+        if req.path().starts_with("/heresphere/events/") {
+            return resp(200, "", &[]);
+        }
         if req.method == "POST" {
             let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
             assert_eq!(req.header("content-type"), Some("application/json"));
@@ -459,7 +464,8 @@ fn heresphere_library_details_and_open() {
                         {"resolution":1440,"height":1440,"width":2880,"size":11,"url":"/files/3k.mp4"}]}],
                     "scripts":[{"name":"Beach Day.funscript","url":"/files/1.funscript"}],
                     "subtitles":[{"name":"English","language":"en","url":"/files/1.en.srt"}],
-                    "tags":[{"name":"Swim","start":95000.0,"end":120000.0},{"name":"Studio:X"}]}"#
+                    "tags":[{"name":"Swim","start":95000.0,"end":120000.0},{"name":"Studio:X"}],
+                    "eventServer":"/heresphere/events/1"}"#
                     .into(),
             ),
             ("GET", "/files/3k.mp4") => serve_bytes(req, b"three k vid", true),
@@ -510,6 +516,55 @@ fn heresphere_library_details_and_open() {
         .collect();
     assert!(posts.iter().any(|p| p["needsMediaSource"] == false));
     assert!(posts.iter().any(|p| p["needsMediaSource"] == true));
+
+    // Watch sync: HereSphere's own events, at the video's event server.
+    let session = src.watch_session(beach).unwrap();
+    assert_eq!(
+        session.endpoint.as_deref(),
+        Some(server.url("/heresphere/events/1").as_str())
+    );
+    for (kind, position, paused) in [
+        (WatchKind::Start, 0.0, false),
+        (WatchKind::Tick, 10.0, false),
+        (WatchKind::Pause, 12.5, true),
+        (WatchKind::Seek, 30.0, true),
+        (WatchKind::Resume, 30.0, false),
+        (WatchKind::Stop, 31.0, false),
+    ] {
+        let event = WatchEvent {
+            kind,
+            position,
+            paused,
+            speed: 1.0,
+        };
+        src.report_watch(&session, event).unwrap();
+    }
+    let events: Vec<serde_json::Value> = server
+        .requests()
+        .iter()
+        .filter(|r| r.path() == "/heresphere/events/1")
+        .map(|r| serde_json::from_str(&r.body).unwrap())
+        .collect();
+    let got: Vec<_> = events
+        .iter()
+        .map(|e| (e["event"].as_u64().unwrap(), e["time"].as_f64().unwrap()))
+        .collect();
+    // Open, play, pause, a seek while paused, play, close.
+    assert_eq!(
+        got,
+        [
+            (0, 0.0),
+            (1, 0.0),
+            (2, 12_500.0),
+            (2, 30_000.0),
+            (1, 30_000.0),
+            (3, 31_000.0)
+        ]
+    );
+    assert!(events.iter().all(|e| e["id"] == beach.location.as_str()
+        && e["username"] == "bob"
+        && e["title"] == "Beach Day"
+        && e.get("password").is_none()));
 
     let wrong = build(&SourceConfig::HereSphere(feed(
         server.url("/heresphere"),

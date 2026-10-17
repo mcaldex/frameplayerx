@@ -500,6 +500,7 @@ impl App {
         let seq = self.open_seq;
         let opener = self.services.opener.clone();
         let settings = self.settings.clone();
+        let reports = self.services.watch.clone();
         self.ui.opening = Some(
             req.entry
                 .as_ref()
@@ -509,7 +510,8 @@ impl App {
         self.ui.open_error = None;
         self.services.set_worker_busy(true);
         self.jobs.spawn("open", move || {
-            Job::Opened(seq, Box::new(playback::open(req, &opener, &lib, &settings)))
+            let opened = playback::open(req, &opener, &lib, &settings, &reports);
+            Job::Opened(seq, Box::new(opened))
         });
     }
 

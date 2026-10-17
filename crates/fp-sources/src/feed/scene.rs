@@ -62,6 +62,8 @@ pub struct SceneInfo {
     pub rating: Option<f32>,
     /// The user's favourite on the server.
     pub favorite: bool,
+    /// Where the server takes playback events (HereSphere's `eventServer`).
+    pub event_server: Option<String>,
 }
 
 impl SceneInfo {

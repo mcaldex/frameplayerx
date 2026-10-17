@@ -35,6 +35,7 @@ pub mod sidecar;
 pub mod smb;
 pub mod timeutil;
 pub mod urlutil;
+pub mod watch;
 pub mod webdav;
 mod xml;
 
@@ -55,6 +56,7 @@ pub use mediabrowser::{
 };
 pub use sidecar::{ScriptFile, Sidecars, SubtitleFile, match_sidecars};
 pub use smb::SmbSource;
+pub use watch::{WatchEvent, WatchKind, WatchSession};
 pub use webdav::WebDavSource;
 
 use fp_core::source::{ByteSource, Entry, EntryKind, is_video_name};
@@ -102,6 +104,17 @@ pub trait Source: Send + Sync {
     /// same folder when the source can list it.
     fn sidecars(&self, video: &Entry) -> Result<Sidecars> {
         sidecars_from_folder(self, video)
+    }
+
+    /// Starts telling the server how watching `video` goes, when it keeps
+    /// track (see [`watch`]). May ask the server, so not on the frame loop.
+    fn watch_session(&self, _video: &Entry) -> Option<WatchSession> {
+        None
+    }
+
+    /// Tells the server one change in a [`Source::watch_session`].
+    fn report_watch(&self, _session: &WatchSession, _event: WatchEvent) -> Result<()> {
+        Ok(())
     }
 
     /// This source as a DeoVR feed or HereSphere API, when it is one.

@@ -4,6 +4,7 @@
 use crate::services::Opener;
 use crate::settings::Settings;
 use crate::subtitles::{self, Pick};
+use crate::watch::{Reports, Watch};
 use fp_core::format::{self, ContainerHints, DetectedFormat, Evidence, VideoFormat};
 use fp_core::source::{Entry, EntryKind, SubtitleFile};
 use fp_core::sync::lock;
@@ -58,59 +59,8 @@ pub struct Playback {
     pub notice: Option<String>,
     /// Last decoding check: when, and the player's stall and frame counts.
     decode_check: (Instant, u64, u64, u64),
-    /// The Jellyfin/Emby server the video came from, told how far it got.
-    server: Option<ServerReport>,
-}
-
-/// How often a Jellyfin/Emby server hears where playback is.
-const SERVER_REPORT: Duration = Duration::from_secs(10);
-
-/// Tells the Jellyfin/Emby server a video came from what is being watched,
-/// so its resume points, watched marks and "next up" follow playback on the
-/// headset. Each report goes out on a thread of its own: a slow server must
-/// not hold up the frame loop.
-struct ServerReport {
-    source: std::sync::Arc<dyn fp_sources::Source>,
-    item: String,
-    last: Instant,
-}
-
-impl ServerReport {
-    /// For a video opened from a Jellyfin/Emby server.
-    fn new(opener: &Opener, source_id: Option<&str>, location: &str) -> Option<ServerReport> {
-        if !location.starts_with("mb:") {
-            return None;
-        }
-        let source = opener.source(source_id?)?;
-        source.as_media_browser()?;
-        Some(ServerReport {
-            source,
-            item: location.to_string(),
-            last: Instant::now(),
-        })
-    }
-
-    fn send(
-        &self,
-        report: impl FnOnce(&fp_sources::MediaBrowserSource, &str) -> fp_sources::Result<()>
-        + Send
-        + 'static,
-    ) {
-        let source = self.source.clone();
-        let item = self.item.clone();
-        let sent = std::thread::Builder::new()
-            .name("fp-report".into())
-            .spawn(move || {
-                if let Some(mb) = source.as_media_browser()
-                    && let Err(e) = report(mb, &item)
-                {
-                    log::debug!("reporting playback of {item}: {e}");
-                }
-            });
-        if let Err(e) = sent {
-            log::warn!("cannot start a playback report: {e}");
-        }
-    }
+    /// Tells the server the video came from how watching it goes.
+    watch: Option<Watch>,
 }
 
 /// The result of opening on a background thread.
@@ -145,6 +95,7 @@ pub fn open(
     opener: &Opener,
     library: &Library,
     settings: &Settings,
+    reports: &Reports,
 ) -> Result<Opened, String> {
     let name = last_segment(&req.location);
     let source = req.source_id.as_deref().and_then(|id| opener.source(id));
@@ -186,14 +137,16 @@ pub fn open(
     let src = opener
         .open_in(req.source_id.as_deref(), &location)
         .map_err(failed)?;
+    // A server that keeps resume points knows where the video was left on
+    // any device; the library only where it was left here.
     let start_at = req
         .start_at
         .or_else(|| {
-            record
+            entry
                 .as_ref()
-                .filter(|_| settings.resume)
-                .map(|r| r.resume_position)
-                .filter(|p| *p > 1.0)
+                .and_then(|e| e.resume)
+                .or_else(|| record.as_ref().map(|r| r.resume_position))
+                .filter(|p| settings.resume && *p > 1.0)
         })
         .unwrap_or(0.0);
     // The previous video's decoder must be released first (see
@@ -206,7 +159,7 @@ pub fn open(
         &name,
         entry.as_ref(),
         record.as_ref(),
-        source,
+        source.clone(),
         settings.haptics_enabled,
     );
     let mut pick = Pick::Off;
@@ -260,10 +213,12 @@ pub fn open(
     let markers = markers(&info, entry.as_ref(), record.as_ref(), library);
     let record_id = record.as_ref().map(|r| r.id);
     let session = record_id.and_then(|id| library.start_playback(id).ok());
-    let server = ServerReport::new(opener, req.source_id.as_deref(), &location);
-    if let Some(s) = &server {
-        s.send(fp_sources::MediaBrowserSource::report_playback_start);
-    }
+    let watch = source.and_then(|src| {
+        let video = entry
+            .clone()
+            .unwrap_or_else(|| Entry::new(title.clone(), location.clone(), EntryKind::Video));
+        Watch::start(reports, src, &video, start_at)
+    });
     Ok(Opened {
         playback: Playback {
             player,
@@ -288,7 +243,7 @@ pub fn open(
             last_save: Instant::now(),
             notice: None,
             decode_check: (Instant::now(), 0, 0, 0),
-            server,
+            watch,
         },
         scripts,
     })
@@ -505,13 +460,19 @@ impl Playback {
         {
             log::warn!("saving progress: {e}");
         }
-        // Closing tells the server it stopped instead (see `close`).
-        if let Some(s) = self.server.as_mut().filter(|_| !force)
-            && s.last.elapsed() >= SERVER_REPORT
-        {
-            s.last = Instant::now();
-            let (position, paused) = (self.player.position(), self.player.is_paused());
-            s.send(move |mb, item| mb.report_playback_progress(item, position, paused));
+    }
+
+    /// Every frame: tells the video's server how watching goes.
+    pub fn sync_watch(&mut self) {
+        if let Some(w) = &mut self.watch {
+            let p = &self.player;
+            let state = p.state();
+            w.update(
+                p.position(),
+                p.is_paused() || state == PlayerState::Ended,
+                p.speed(),
+                state != PlayerState::Buffering,
+            );
         }
     }
 
@@ -650,10 +611,9 @@ impl Playback {
     pub fn close(mut self, library: &Library) {
         self.save_progress(library, true);
         self.save_key(library, true);
-        if let Some(s) = &self.server {
+        if let Some(w) = self.watch.take() {
             // Near the end, the server counts it as watched.
-            let position = self.player.position();
-            s.send(move |mb, item| mb.report_playback_stopped(item, position));
+            w.stop(self.player.position());
         }
         let player = self.player;
         let closing = std::thread::Builder::new()

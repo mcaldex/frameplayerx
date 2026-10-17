@@ -114,6 +114,10 @@ pub struct Entry {
     /// Named timestamps (chapters) the source provides.
     #[serde(default)]
     pub markers: Vec<(f64, String)>,
+    /// Where the server says watching stopped, in seconds: Jellyfin and
+    /// Emby keep it per user (0 when not started or watched to the end).
+    #[serde(default)]
+    pub resume: Option<f64>,
 }
 
 /// A subtitle file belonging to a video.
@@ -143,6 +147,7 @@ impl Entry {
             scripts: Vec::new(),
             subtitles: Vec::new(),
             markers: Vec::new(),
+            resume: None,
         }
     }
 }

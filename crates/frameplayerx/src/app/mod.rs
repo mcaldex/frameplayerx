@@ -418,6 +418,7 @@ impl App {
         if let Some(p) = self.playback.take() {
             p.close(&self.services.library);
         }
+        self.services.watch.flush(Duration::from_secs(3));
         self.sync_settings();
         if let Some(r) = self.services.remote.take() {
             r.stop();

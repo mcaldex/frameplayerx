@@ -16,6 +16,7 @@ use crate::http::{HttpClient, HttpOptions, HttpReply};
 use crate::json::{array, boolean, get, num, text, uint};
 use crate::sidecar::Sidecars;
 use crate::urlutil::redact;
+use crate::watch::{WatchEvent, WatchKind, WatchSession};
 use fp_core::format::{Projection, StereoLayout, VideoFormat, detect_from_name};
 use fp_core::source::{ByteSource, Entry, EntryKind};
 use fp_core::sync::lock;
@@ -261,6 +262,13 @@ pub(crate) fn apply_item_details(
 ) {
     if let Some(ticks) = num(v, "RunTimeTicks") {
         entry.duration = Some(ticks_to_seconds(ticks));
+    }
+    if let Some(user) = get(v, "UserData") {
+        entry.resume = Some(
+            num(user, "PlaybackPositionTicks")
+                .filter(|t| *t > 0.0)
+                .map_or(0.0, ticks_to_seconds),
+        );
     }
 
     let media_sources = array(v, "MediaSources");
@@ -706,60 +714,6 @@ impl MediaBrowserSource {
         Ok(self.quick_connect_poll_auth(secret)?.is_some())
     }
 
-    /// Reports that playback of an item has started.
-    pub fn report_playback_start(&self, item_id: &str) -> Result<()> {
-        let id = decode_location(item_id)
-            .map(|(_, id)| id)
-            .unwrap_or(item_id);
-        let body = serde_json::json!({
-            "ItemId": id,
-            "PlayMethod": "DirectPlay",
-            "CanSeek": true,
-        });
-        if let Err(e) = self.api_post_json("/Sessions/Playing", &body) {
-            log::debug!("failed to report playback start for {id}: {e}");
-        }
-        Ok(())
-    }
-
-    /// Reports current playback position (call every ~10s).
-    pub fn report_playback_progress(
-        &self,
-        item_id: &str,
-        position_secs: f64,
-        is_paused: bool,
-    ) -> Result<()> {
-        let id = decode_location(item_id)
-            .map(|(_, id)| id)
-            .unwrap_or(item_id);
-        let body = serde_json::json!({
-            "ItemId": id,
-            "PositionTicks": seconds_to_ticks(position_secs),
-            "IsPaused": is_paused,
-            "PlayMethod": "DirectPlay",
-            "CanSeek": true,
-        });
-        if let Err(e) = self.api_post_json("/Sessions/Playing/Progress", &body) {
-            log::debug!("failed to report playback progress for {id}: {e}");
-        }
-        Ok(())
-    }
-
-    /// Reports that playback has stopped.
-    pub fn report_playback_stopped(&self, item_id: &str, position_secs: f64) -> Result<()> {
-        let id = decode_location(item_id)
-            .map(|(_, id)| id)
-            .unwrap_or(item_id);
-        let body = serde_json::json!({
-            "ItemId": id,
-            "PositionTicks": seconds_to_ticks(position_secs),
-        });
-        if let Err(e) = self.api_post_json("/Sessions/Playing/Stopped", &body) {
-            log::debug!("failed to report playback stopped for {id}: {e}");
-        }
-        Ok(())
-    }
-
     /// Returns the current access token and user ID if authenticated.
     pub fn auth_credentials(&self) -> Option<(String, String)> {
         let auth = lock(&self.auth);
@@ -867,6 +821,41 @@ impl Source for MediaBrowserSource {
             video.clone()
         };
         Ok(Sidecars::from_entry(&full))
+    }
+
+    fn watch_session(&self, video: &Entry) -> Option<WatchSession> {
+        let id = item_id(&video.location).ok()?;
+        Some(WatchSession::new(id, video.name.clone(), None))
+    }
+
+    /// The server's own playback reports: started, progress (with what
+    /// changed) and stopped, which sets the resume point or marks the item
+    /// played.
+    fn report_watch(&self, session: &WatchSession, event: WatchEvent) -> Result<()> {
+        let mut body = serde_json::json!({
+            "ItemId": session.item,
+            "PlaySessionId": session.id,
+            "PositionTicks": seconds_to_ticks(event.position),
+            "IsPaused": event.paused,
+            "PlaybackRate": event.speed,
+            "CanSeek": true,
+            "PlayMethod": "DirectPlay",
+        });
+        let path = match event.kind {
+            WatchKind::Start => "/Sessions/Playing",
+            WatchKind::Stop => "/Sessions/Playing/Stopped",
+            kind => {
+                body["EventName"] = match kind {
+                    WatchKind::Pause => "Pause",
+                    WatchKind::Resume => "Unpause",
+                    WatchKind::Speed => "PlaybackRateChange",
+                    _ => "TimeUpdate",
+                }
+                .into();
+                "/Sessions/Playing/Progress"
+            }
+        };
+        self.api_post_json(path, &body)
     }
 
     fn as_media_browser(&self) -> Option<&MediaBrowserSource> {

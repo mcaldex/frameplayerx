@@ -30,14 +30,17 @@ use crate::urlutil::last_segment;
 use crate::urlutil::{
     encode_form_value, encode_segment, is_http_url, percent_decode, redact, resolve,
 };
+use crate::watch::{WatchEvent, WatchKind, WatchSession};
 use crate::{Source, dir_entry};
 use fp_core::format::StereoLayout;
 use fp_core::source::{
     ByteSource, Entry, EntryKind, SubtitleFile, is_script_name, is_subtitle_name, is_video_name,
 };
+use fp_core::sync::lock;
 use serde_json::Value;
-use std::sync::Arc;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Largest JSON document accepted from a feed.
 const JSON_LIMIT: u64 = 64 << 20;
@@ -194,6 +197,8 @@ pub struct FeedSource {
     creds: Option<Credentials>,
     client: HttpClient,
     max_height: Option<u32>,
+    /// Each scene's event server, as its details named it.
+    event_servers: Mutex<HashMap<String, String>>,
 }
 
 impl std::fmt::Debug for FeedSource {
@@ -239,6 +244,7 @@ impl FeedSource {
             url,
             creds,
             max_height: config.max_height,
+            event_servers: Mutex::new(HashMap::new()),
         })
     }
 
@@ -388,7 +394,11 @@ impl SceneFeed for FeedSource {
 
     fn scene(&self, url: &str, with_media: bool) -> Result<SceneInfo> {
         let v = self.fetch_required(url, Some(with_media))?;
-        Ok(self.parse_scene(&v, url))
+        let info = self.parse_scene(&v, url);
+        if let Some(events) = &info.event_server {
+            lock(&self.event_servers).insert(url.to_string(), events.clone());
+        }
+        Ok(info)
     }
 
     fn scan(&self) -> Option<Vec<FeedScene>> {
@@ -472,6 +482,67 @@ impl Source for FeedSource {
             video.clone()
         };
         Ok(Sidecars::from_entry(&full))
+    }
+
+    /// For a HereSphere video whose details name an event server.
+    fn watch_session(&self, video: &Entry) -> Option<WatchSession> {
+        if self.protocol != Protocol::HereSphere || is_direct_file(&video.location) {
+            return None;
+        }
+        let cached = lock(&self.event_servers).get(&video.location).cloned();
+        let endpoint = match cached {
+            Some(e) => e,
+            None => self.scene(&video.location, false).ok()?.event_server?,
+        };
+        Some(WatchSession::new(
+            video.location.clone(),
+            video.name.clone(),
+            Some(endpoint),
+        ))
+    }
+
+    /// The events HereSphere itself sends: open, play (also after a seek
+    /// or a change of speed), pause and close, each with the position in
+    /// milliseconds.
+    fn report_watch(&self, session: &WatchSession, event: WatchEvent) -> Result<()> {
+        const OPEN: u8 = 0;
+        const PLAY: u8 = 1;
+        const PAUSE: u8 = 2;
+        const CLOSE: u8 = 3;
+        let Some(endpoint) = &session.endpoint else {
+            return Ok(());
+        };
+        let codes: &[u8] = match event.kind {
+            WatchKind::Start if event.paused => &[OPEN],
+            WatchKind::Start => &[OPEN, PLAY],
+            WatchKind::Tick => &[],
+            WatchKind::Seek | WatchKind::Speed if event.paused => &[PAUSE],
+            WatchKind::Pause => &[PAUSE],
+            WatchKind::Resume | WatchKind::Seek | WatchKind::Speed => &[PLAY],
+            WatchKind::Stop => &[CLOSE],
+        };
+        for &code in codes {
+            let body = serde_json::to_vec(&serde_json::json!({
+                "username": self.creds.as_ref().map_or("", |c| c.username.as_str()),
+                "id": session.item,
+                "title": session.title,
+                "event": code,
+                "time": event.position * 1000.0,
+                "speed": event.speed,
+                "utc": crate::watch::now_ms(),
+                "connectionKey": "",
+            }))?;
+            self.client
+                .request(
+                    "POST",
+                    endpoint,
+                    &[("Content-Type", "application/json")],
+                    Some(&body),
+                    JSON_LIMIT,
+                )?
+                .error_for_status(endpoint)?;
+        }
+        Ok(())
     }
 
     fn as_scene_feed(&self) -> Option<&dyn SceneFeed> {
