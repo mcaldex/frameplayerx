@@ -5,6 +5,7 @@ use crate::services::Opener;
 use crate::settings::Settings;
 use fp_core::format::{self, ContainerHints, DetectedFormat, Evidence, VideoFormat};
 use fp_core::source::Entry;
+use fp_core::sync::lock;
 use fp_core::view::{Keyframes, ViewSettings};
 use fp_core::{PlaybackStatus, playback::now_ms};
 use fp_haptics::{Axis, Heatmap, Script};
@@ -615,10 +616,7 @@ impl Playback {
                 log::info!("video closed in {} ms", t.elapsed().as_millis());
             });
         match closing {
-            Ok(h) => CLOSING
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(h),
+            Ok(h) => lock(&CLOSING).push(h),
             // The player was dropped (closed) here.
             Err(e) => log::warn!("cannot start close thread: {e}"),
         }
@@ -629,12 +627,7 @@ impl Playback {
 /// cannot get one: sessions left by videos that never finished closing
 /// keep every later video in software until a restart.
 fn hardware_holders() -> String {
-    let closing = CLOSING
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .iter()
-        .filter(|h| !h.is_finished())
-        .count();
+    let closing = lock(&CLOSING).iter().filter(|h| !h.is_finished()).count();
     format!(
         "FramePlayerX holds {} hardware decoder session(s), {closing} closed video(s) still closing",
         fp_media::hardware_sessions()
@@ -651,9 +644,7 @@ const CLOSE_WAIT: Duration = Duration::from_secs(5);
 /// left.
 pub fn wait_closed(limit: Duration) -> bool {
     let deadline = Instant::now() + limit;
-    let mut closing = CLOSING
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut closing = lock(&CLOSING);
     loop {
         let (done, open): (Vec<_>, Vec<_>) = std::mem::take(&mut *closing)
             .into_iter()
@@ -670,9 +661,7 @@ pub fn wait_closed(limit: Duration) -> bool {
         }
         drop(closing);
         std::thread::sleep(Duration::from_millis(10));
-        closing = CLOSING
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        closing = lock(&CLOSING);
     }
 }
 

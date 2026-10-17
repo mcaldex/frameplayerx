@@ -28,6 +28,7 @@ use fp_core::format::{Projection, StereoLayout, VideoFormat, detect_from_name};
 use fp_core::source::{
     ByteSource, Entry, EntryKind, is_script_name, is_subtitle_name, is_video_name,
 };
+use fp_core::sync::lock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
@@ -1131,7 +1132,7 @@ impl HereSphereSource {
                     loop {
                         let i = next.fetch_add(1, Ordering::Relaxed);
                         let Some(slot) = slots.get(i) else { break };
-                        let mut e = crate::cache::lock(slot);
+                        let mut e = lock(slot);
                         match self.video(&e.location, false) {
                             Ok(info) => info.apply_to(&mut e),
                             Err(err) => log::debug!(

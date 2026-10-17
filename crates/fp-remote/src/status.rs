@@ -1,16 +1,11 @@
 //! The latest playback status, shared between the render thread (which
 //! publishes it every frame) and the server threads (which poll it).
 
+use fp_core::sync::lock;
 use fp_core::{PlaybackStatus, PlayerCommand};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
-
-/// Locks a mutex, carrying on if a panicking thread poisoned it: every
-/// value we guard stays consistent between statements.
-pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
-}
 
 /// Latest status plus a change counter.
 #[derive(Default)]

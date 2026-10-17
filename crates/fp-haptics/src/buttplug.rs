@@ -28,6 +28,7 @@
 use crate::axis::Axis;
 use crate::device::{AxisMove, Device};
 use crate::error::{Error, Result};
+use fp_core::sync::lock;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -35,7 +36,7 @@ use std::io;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, TryRecvError};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tungstenite::{Message, WebSocket};
@@ -245,11 +246,6 @@ struct Shared {
     devices: Mutex<BTreeMap<u32, ButtplugServerDevice>>,
     last_error: Mutex<Option<String>>,
     next_id: AtomicU32,
-}
-
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    // Plain data; recover from poisoning.
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl Shared {

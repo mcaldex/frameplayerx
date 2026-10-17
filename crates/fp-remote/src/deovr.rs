@@ -14,8 +14,9 @@
 use crate::RemoteError;
 use crate::hub::{RemoteEvent, Shared};
 use crate::net::is_allowed_peer;
-use crate::status::{ChangeTracker, command_is_valid, lock};
+use crate::status::{ChangeTracker, command_is_valid};
 use fp_core::playback::now_ms;
+use fp_core::sync::lock;
 use fp_core::{PlaybackStatus, PlayerCommand};
 use serde_json::{Map, Value};
 use std::io::{self, ErrorKind, Read, Write};

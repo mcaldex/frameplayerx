@@ -263,10 +263,11 @@ mod imp {
     //! The smb-rs backed implementation.
 
     use super::{DirItem, SmbLocation, SmbSource};
-    use crate::cache::{CacheOptions, CachedSource, RangeFetch, lock};
+    use crate::cache::{CacheOptions, CachedSource, RangeFetch};
     use crate::config::SmbConfig;
     use crate::error::{Error, Result};
     use fp_core::source::ByteSource;
+    use fp_core::sync::lock;
     use smb::{
         Client, ClientConfig, ConnectionConfig, DirAccessMask, FileAccessMask, FileCreateArgs,
         FileDirectoryInformation, GetLen, ReadAt, Status, UncPath,

@@ -1,7 +1,7 @@
 //! The [`Library`] handle: opening, reading and changing media rows.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use fp_core::format::{DetectedFormat, Evidence, detect_from_name};
 use fp_core::source::{Entry, EntryKind};
@@ -16,6 +16,7 @@ use crate::record::{
     TagCount, effective_columns, evidence_str, file_name_of, media_from_row, now, stem_of,
 };
 use crate::schema;
+use fp_core::sync::{lock, read, write};
 
 /// Fraction of the duration after which a playback counts as a full watch
 /// and the video drops out of "continue watching".
@@ -684,7 +685,7 @@ impl Library {
     /// Runs `f` with the connection locked.
     pub(crate) fn with<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
         // See the type docs: a poisoned lock holds no partial transaction.
-        let mut guard = self.conn.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut guard = lock(&self.conn);
         f(&mut guard)
     }
 
@@ -703,15 +704,12 @@ impl Library {
     /// source ids only) until changed. Nothing is stored; lookups by id or
     /// location still find them.
     pub fn set_hidden(&self, hidden: Hidden) {
-        *self.hidden.write().unwrap_or_else(PoisonError::into_inner) = hidden;
+        *write(&self.hidden) = hidden;
     }
 
     /// What [`set_hidden`](Self::set_hidden) hides.
     pub fn hidden(&self) -> Hidden {
-        self.hidden
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        read(&self.hidden).clone()
     }
 
     /// Schema version of the open database (`PRAGMA user_version`).

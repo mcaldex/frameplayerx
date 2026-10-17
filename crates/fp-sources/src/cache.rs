@@ -9,10 +9,11 @@
 //! on the network for data it was always going to need.
 
 use fp_core::ByteSource;
+use fp_core::sync::lock;
 use std::collections::HashMap;
 use std::io;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 
 /// Fetches byte ranges from the underlying file.
 pub(crate) trait RangeFetch: Send + Sync + 'static {
@@ -85,12 +86,6 @@ struct Inner<F: RangeFetch> {
     state: Mutex<State>,
     loaded: Condvar,
     ahead: Mutex<Option<Sender<u64>>>,
-}
-
-pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    // A panic while holding the lock cannot leave the cache inconsistent in
-    // a way that matters (worst case a block is refetched).
-    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// A [`ByteSource`] reading through the block cache.

@@ -1,10 +1,11 @@
 //! [`RemoteHub`]: the app-facing entry point that owns both servers.
 
 use crate::deovr::DeovrServer;
-use crate::status::{StatusCell, lock};
+use crate::status::StatusCell;
 use crate::web::WebServer;
 use crate::{RemoteConfig, RemoteError, token};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
+use fp_core::sync::{lock, read, write};
 use fp_core::{PlaybackStatus, PlayerCommand};
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, SocketAddr};
@@ -68,10 +69,7 @@ impl Shared {
     }
 
     pub(crate) fn token(&self) -> String {
-        self.token
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        read(&self.token).clone()
     }
 }
 
@@ -219,11 +217,7 @@ impl RemoteHub {
         if let Some(path) = &self.config.token_path {
             token::store(path, &new)?;
         }
-        *self
-            .shared
-            .token
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = new.clone();
+        *write(&self.shared.token) = new.clone();
         Ok(new)
     }
 

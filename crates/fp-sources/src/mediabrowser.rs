@@ -9,7 +9,6 @@
 //! Playback progress can be reported back to the server using the session API.
 
 use crate::Source;
-use crate::cache::lock;
 use crate::config::{Credentials, MediaBrowserConfig, SourceKind};
 use crate::dir_entry;
 use crate::error::{Error, Result};
@@ -18,6 +17,7 @@ use crate::sidecar::Sidecars;
 use crate::urlutil::redact;
 use fp_core::format::{Projection, StereoLayout, VideoFormat, detect_from_name};
 use fp_core::source::{ByteSource, Entry, EntryKind};
+use fp_core::sync::lock;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt;

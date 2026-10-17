@@ -8,11 +8,13 @@
 //! - [`playback`]: playback status and commands shared with haptics and the
 //!   remote-control API.
 //! - [`dirs`]: where FramePlayerX keeps config, data and cache.
+//! - [`sync`]: locking that survives a panicking thread.
 
 pub mod dirs;
 pub mod format;
 pub mod playback;
 pub mod source;
+pub mod sync;
 pub mod view;
 
 pub use format::{DetectedFormat, Projection, StereoLayout, VideoFormat};

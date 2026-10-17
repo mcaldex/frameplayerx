@@ -59,11 +59,12 @@ use crate::device::{Device, SyncMode};
 use crate::error::{Error, Result};
 use crate::script::Script;
 use fp_core::playback::now_ms;
+use fp_core::sync::lock;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -279,11 +280,6 @@ struct Shared {
     connected: AtomicBool,
     offset_ms: Mutex<i64>,
     state: Mutex<State>,
-}
-
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    // Plain data; recover from poisoning.
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The Handy over the cloud API (HSSP).

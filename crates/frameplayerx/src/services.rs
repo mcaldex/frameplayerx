@@ -4,6 +4,7 @@
 use crate::settings::{HapticDeviceConfig, Settings};
 use fp_core::ByteSource;
 use fp_core::source::FileSource;
+use fp_core::sync::{read, write};
 use fp_haptics::HapticsEngine;
 use fp_library::Library;
 use fp_remote::{RemoteEvent, RemoteHub, RemoteItem, RemoteLibrary};
@@ -38,14 +39,12 @@ impl Opener {
                 Err(e) => errors.push(format!("{}: {e}", c.name())),
             }
         }
-        if let Ok(mut s) = self.sources.write() {
-            *s = map;
-        }
+        *write(&self.sources) = map;
         errors
     }
 
     pub fn source(&self, id: &str) -> Option<Arc<dyn Source>> {
-        self.sources.read().ok()?.get(id).cloned()
+        read(&self.sources).get(id).cloned()
     }
 
     /// Opens `location`, preferring the source `source_id` when given.
@@ -72,11 +71,7 @@ impl Opener {
             return src.open(location).map_err(|e| e.to_string());
         }
         // Try sources whose scheme fits, then plain HTTP.
-        let sources: Vec<Arc<dyn Source>> = self
-            .sources
-            .read()
-            .map(|s| s.values().cloned().collect())
-            .unwrap_or_default();
+        let sources: Vec<Arc<dyn Source>> = read(&self.sources).values().cloned().collect();
         let mut last = String::from("no source can open this location");
         for s in sources {
             match s.open(location) {

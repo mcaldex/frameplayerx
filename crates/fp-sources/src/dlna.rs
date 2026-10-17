@@ -24,6 +24,7 @@ use crate::{Source, dir_entry, sort_entries};
 use fp_core::source::{
     ByteSource, Entry, EntryKind, is_script_name, is_subtitle_name, is_video_name,
 };
+use fp_core::sync::lock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
@@ -589,7 +590,7 @@ impl DlnaSource {
     }
 
     fn control(&self) -> Result<Control> {
-        let mut guard = crate::cache::lock(&self.control);
+        let mut guard = lock(&self.control);
         if let Some(c) = guard.as_ref() {
             return Ok(c.clone());
         }
@@ -648,7 +649,7 @@ impl DlnaSource {
         for _ in 0..MAX_PAGES {
             let page = self.browse(object_id, start, PAGE_SIZE)?;
             {
-                let mut parents = crate::cache::lock(&self.parents);
+                let mut parents = lock(&self.parents);
                 for (loc, parent) in page.parents {
                     parents.insert(loc, parent);
                 }
@@ -711,7 +712,7 @@ impl Source for DlnaSource {
     }
 
     fn parent(&self, location: &str) -> Option<String> {
-        crate::cache::lock(&self.parents)
+        lock(&self.parents)
             .get(location)
             .map(|id| container_location(id))
     }

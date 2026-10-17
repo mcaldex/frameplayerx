@@ -26,10 +26,11 @@ use crate::error::Result;
 use crate::script::Script;
 use crate::settings::{AxisSettings, HapticsSettings};
 use fp_core::playback::PlaybackStatus;
+use fp_core::sync::lock;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -388,12 +389,6 @@ struct Shared {
     status: Mutex<(u64, PlaybackStatus)>,
     devices: Mutex<Vec<DeviceStatus>>,
     settings: Mutex<HapticsSettings>,
-}
-
-fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    // A panic while holding one of these locks cannot leave the plain data
-    // inconsistent, so recover from poisoning.
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Refreshes the shared device list from the worker's view. Membership is
