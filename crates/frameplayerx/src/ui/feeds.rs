@@ -268,7 +268,59 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut F
     if f.details.is_some() {
         return details(ui, v, source, name, f);
     }
-    let lazy = f.kind == SourceKind::HereSphere;
+    let back = header(ui, v.actions, source, name, f);
+    let mut changed = filters(ui, f);
+    let shown = f.visible();
+    let total = shown.len();
+    let mut sort = f.sort;
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        changed |= page::sort_bar(ui, &sort_choices(f), &mut sort);
+        page::count_label(ui, &page::plural(total, "scene", "scenes"));
+    });
+    ui.add_space(10.0);
+    page::status(ui, f.loading && f.order.is_empty(), f.error.as_deref());
+
+    let list: Vec<FeedScene> = shown.into_iter().take(f.shown).cloned().collect();
+    let picked = scene_grid(ui, v.thumbs, f, &list, total);
+    f.sort = sort;
+    if changed {
+        f.shown = PAGE;
+    }
+    if picked.more {
+        f.shown += PAGE;
+    }
+    if let Some(i) = picked.play {
+        let reqs = list.iter().map(|s| request(source, s, None)).collect();
+        v.actions.push(Action::OpenList(reqs, i));
+    }
+    if let Some(url) = picked.open {
+        f.details = Some(Details {
+            url: url.clone(),
+            info: None,
+            loading: true,
+            error: None,
+        });
+        v.actions.push(Action::FeedScene {
+            source: source.to_string(),
+            url,
+        });
+    }
+    if f.kind == SourceKind::HereSphere {
+        fill_details(v.actions, source, f, picked.on_screen);
+    }
+    back
+}
+
+/// The page's title, how many scenes, and Refresh; true when Back was
+/// clicked.
+fn header(
+    ui: &mut egui::Ui,
+    actions: &mut Vec<Action>,
+    source: &str,
+    name: &str,
+    f: &mut FeedView,
+) -> bool {
     let mut subtitle = format!(
         "{} · {}",
         f.kind.label(),
@@ -279,17 +331,22 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut F
     if !f.order.is_empty() && (f.loading || f.scanning) {
         subtitle.push_str(" · updating…");
     }
-    let back = page::header(ui, name, Some(&subtitle), |ui| {
+    page::header(ui, name, Some(&subtitle), |ui| {
         if widgets::icon_button(ui, icons::ARROWS_CLOCKWISE, 44.0, false)
             .tip("Refresh")
             .clicked()
         {
             f.loading = true;
-            v.actions.push(Action::FeedLoad {
+            actions.push(Action::FeedLoad {
                 source: source.to_string(),
             });
         }
-    });
+    })
+}
+
+/// Search, the Scripted and Favorites filters, and the groups; true when
+/// they changed.
+fn filters(ui: &mut egui::Ui, f: &mut FeedView) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
@@ -330,8 +387,11 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut F
                 });
             });
     }
-    let shown = f.visible();
-    let total = shown.len();
+    changed
+}
+
+/// The orders the scenes can be shown in: those the feed has data for.
+fn sort_choices(f: &FeedView) -> Vec<(FeedSort, &'static str)> {
     let mut sorts = vec![(FeedSort::Feed, "Feed order"), (FeedSort::Title, "Title")];
     if f.any(|s| s.released.or(s.added).is_some()) {
         sorts.push((FeedSort::Newest, "Newest"));
@@ -343,18 +403,29 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut F
         (FeedSort::Longest, "Longest"),
         (FeedSort::Shortest, "Shortest"),
     ]);
-    let mut sort = f.sort;
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        changed |= page::sort_bar(ui, &sorts, &mut sort);
-        page::count_label(ui, &page::plural(total, "scene", "scenes"));
-    });
-    ui.add_space(10.0);
-    page::status(ui, f.loading && f.order.is_empty(), f.error.as_deref());
+    sorts
+}
 
-    let list: Vec<FeedScene> = shown.into_iter().take(f.shown).cloned().collect();
-    let mut on_screen = Vec::new();
-    let (mut play, mut open, mut more) = (None, None, false);
+/// What was picked in the grid of scenes.
+#[derive(Default)]
+struct Picked {
+    /// Play scene `.0` of the list.
+    play: Option<usize>,
+    /// Open a scene's page.
+    open: Option<String>,
+    more: bool,
+    /// Scenes on screen still without their details.
+    on_screen: Vec<String>,
+}
+
+fn scene_grid(
+    ui: &mut egui::Ui,
+    thumbs: &mut super::thumbs::Thumbs,
+    f: &FeedView,
+    list: &[FeedScene],
+    total: usize,
+) -> Picked {
+    let mut picked = Picked::default();
     egui::ScrollArea::vertical()
         .auto_shrink(false)
         .show(ui, |ui| {
@@ -376,7 +447,7 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut F
                 let badge = s.format.map(|f| widgets::format_short(&f));
                 let c = page::card(
                     ui,
-                    v.thumbs,
+                    thumbs,
                     &Card {
                         thumb: s.thumbnail_url.as_deref(),
                         placeholder: icons::VIRTUAL_REALITY,
@@ -390,72 +461,53 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut F
                     },
                 );
                 if c.visible && !s.detailed {
-                    on_screen.push(s.url.clone());
+                    picked.on_screen.push(s.url.clone());
                 }
                 if c.open {
-                    play = Some(i);
+                    picked.play = Some(i);
                 }
                 if c.more {
-                    open = Some(s.url.clone());
+                    picked.open = Some(s.url.clone());
                 }
             });
             if total > list.len() {
                 ui.vertical_centered(|ui| {
-                    more = widgets::button(ui, None, "Show more", Kind::Secondary).clicked();
+                    picked.more = widgets::button(ui, None, "Show more", Kind::Secondary).clicked();
                 });
                 ui.add_space(20.0);
             }
         });
+    picked
+}
 
-    if sort != f.sort {
-        f.sort = sort;
-    }
-    if changed {
-        f.shown = PAGE;
-    }
-    if more {
-        f.shown += PAGE;
-    }
-    if let Some(i) = play {
-        let reqs = list.iter().map(|s| request(source, s, None)).collect();
-        v.actions.push(Action::OpenList(reqs, i));
-    }
-    if let Some(url) = open {
-        f.details = Some(Details {
-            url: url.clone(),
-            info: None,
-            loading: true,
-            error: None,
-        });
-        v.actions.push(Action::FeedScene {
+/// Asks for the details of scenes listed by address only (HereSphere):
+/// cards on screen first; while searching, the rest of the group after.
+fn fill_details(
+    actions: &mut Vec<Action>,
+    source: &str,
+    f: &mut FeedView,
+    mut on_screen: Vec<String>,
+) {
+    on_screen.retain(|u| f.requested.insert(u.clone()));
+    if !on_screen.is_empty() {
+        actions.push(Action::FeedFill {
             source: source.to_string(),
-            url,
+            urls: on_screen,
+            front: true,
         });
     }
-    if lazy {
-        // Cards on screen first; while searching, the rest of the group after.
-        on_screen.retain(|u| f.requested.insert(u.clone()));
-        if !on_screen.is_empty() {
-            v.actions.push(Action::FeedFill {
+    // A scan on its way brings what a search looks through anyway.
+    if !f.search.trim().is_empty() && !f.scanning {
+        let rest = f.unfilled();
+        if !rest.is_empty() {
+            f.requested.extend(rest.iter().cloned());
+            actions.push(Action::FeedFill {
                 source: source.to_string(),
-                urls: on_screen,
-                front: true,
+                urls: rest,
+                front: false,
             });
         }
-        // A scan on its way brings what a search looks through anyway.
-        if !f.search.trim().is_empty() && !f.scanning {
-            let rest = f.unfilled();
-            if !rest.is_empty() {
-                f.requested.extend(rest.iter().cloned());
-                v.actions.push(Action::FeedFill {
-                    source: source.to_string(),
-                    urls: rest,
-                    front: false,
-                });
-            }
-        }
     }
-    back
 }
 
 /// A scene's page; true when Back was clicked.

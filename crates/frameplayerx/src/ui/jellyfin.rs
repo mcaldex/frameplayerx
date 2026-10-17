@@ -235,6 +235,16 @@ impl JellyfinView {
     }
 
     /// What brings the page shown up to date (after watching something).
+    /// Opens a page, loading until answer `seq` arrives.
+    fn open(&mut self, seq: u64, body: Body) {
+        self.pages.push(Page {
+            seq,
+            loading: true,
+            error: None,
+            body,
+        });
+    }
+
     pub fn reload(&mut self) -> Option<(u64, Load)> {
         let p = self.pages.last_mut()?;
         p.loading = true;
@@ -404,7 +414,14 @@ pub fn page(
                 Body::Item { item } => details(ui, v, item),
             };
         });
-    let seq = p.seq;
+    if let Some(go) = go {
+        follow(v, source, j, go);
+    }
+    back
+}
+
+/// Carries out what the page asked for.
+fn follow(v: &mut View, source: &str, j: &mut JellyfinView, go: Go) {
     let ask = |v: &mut View, seq: u64, load: Load| {
         v.actions.push(Action::Jellyfin {
             source: source.to_string(),
@@ -413,12 +430,13 @@ pub fn page(
         });
     };
     match go {
-        None => {}
-        Some(Go::Reload(l)) => {
-            p.loading = true;
-            ask(v, seq, l);
+        Go::Reload(load) => {
+            if let Some(p) = j.pages.last_mut() {
+                p.loading = true;
+                ask(v, p.seq, load);
+            }
         }
-        Some(Go::Play(list, i, from_start)) => {
+        Go::Play(list, i, from_start) => {
             let reqs: Vec<OpenRequest> = list
                 .iter()
                 .enumerate()
@@ -426,7 +444,7 @@ pub fn page(
                 .collect();
             v.actions.push(Action::OpenList(reqs, i));
         }
-        Some(Go::Mark(id, mark, on)) => {
+        Go::Mark(id, mark, on) => {
             j.mark(&id, mark, on);
             v.actions.push(Action::JellyfinMark {
                 source: source.to_string(),
@@ -435,7 +453,7 @@ pub fn page(
                 on,
             });
         }
-        Some(Go::Details(item)) => {
+        Go::Details(item) => {
             let seq = v.state.next_seq();
             ask(
                 v,
@@ -444,89 +462,83 @@ pub fn page(
                     id: item.id.clone(),
                 },
             );
-            j.pages.push(Page {
+            j.open(
                 seq,
-                loading: true,
-                error: None,
-                body: Body::Item {
+                Body::Item {
                     item: Box::new(item),
                 },
-            });
+            );
         }
-        Some(Go::Search(text)) => {
+        Go::Search(text) => {
             let seq = v.state.next_seq();
             let text = text.trim().to_string();
             ask(v, seq, Load::Search(text.clone()));
-            j.pages.push(Page {
+            j.open(
                 seq,
-                loading: true,
-                error: None,
-                body: Body::Search {
+                Body::Search {
                     search: text.clone(),
                     typed: None,
                     asked: text,
                     results: Vec::new(),
                 },
-            });
+            );
         }
-        Some(Go::Open(item)) => {
+        Go::Open(item) => {
             let seq = v.state.next_seq();
-            let body = match item.kind {
-                MbKind::Series | MbKind::Season => {
-                    let (id, season) = if item.kind == MbKind::Season {
-                        (
-                            item.series_id.clone().unwrap_or_default(),
-                            Some(item.id.clone()),
-                        )
-                    } else {
-                        (item.id.clone(), None)
-                    };
-                    ask(
-                        v,
-                        seq,
-                        Load::Series {
-                            id: id.clone(),
-                            season: season.clone(),
-                        },
-                    );
-                    let series = MbItem {
-                        id,
-                        name: item.series_name.clone().unwrap_or(item.name.clone()),
-                        kind: MbKind::Series,
-                        ..item
-                    };
-                    Body::Series {
-                        series: Box::new(series),
-                        seasons: Vec::new(),
-                        season,
-                        episodes: Vec::new(),
-                        next_up: None,
-                    }
-                }
-                _ => {
-                    let query = MbQuery {
-                        limit: PAGE,
-                        ..MbQuery::children(&item)
-                    };
-                    ask(v, seq, Load::Grid(query.clone()));
-                    Body::Grid {
-                        title: item.name.clone(),
-                        query,
-                        items: Vec::new(),
-                        total: 0,
-                        typed: None,
-                    }
-                }
-            };
-            j.pages.push(Page {
-                seq,
-                loading: true,
-                error: None,
-                body,
-            });
+            let (load, body) = page_for(item);
+            ask(v, seq, load);
+            j.open(seq, body);
         }
     }
-    back
+}
+
+/// What opening a library, collection, folder, series or season loads,
+/// and the page that shows it.
+fn page_for(item: MbItem) -> (Load, Body) {
+    match item.kind {
+        MbKind::Series | MbKind::Season => {
+            let (id, season) = if item.kind == MbKind::Season {
+                (
+                    item.series_id.clone().unwrap_or_default(),
+                    Some(item.id.clone()),
+                )
+            } else {
+                (item.id.clone(), None)
+            };
+            let load = Load::Series {
+                id: id.clone(),
+                season: season.clone(),
+            };
+            let series = MbItem {
+                id,
+                name: item.series_name.clone().unwrap_or(item.name.clone()),
+                kind: MbKind::Series,
+                ..item
+            };
+            let body = Body::Series {
+                series: Box::new(series),
+                seasons: Vec::new(),
+                season,
+                episodes: Vec::new(),
+                next_up: None,
+            };
+            (load, body)
+        }
+        _ => {
+            let query = MbQuery {
+                limit: PAGE,
+                ..MbQuery::children(&item)
+            };
+            let body = Body::Grid {
+                title: item.name.clone(),
+                query: query.clone(),
+                items: Vec::new(),
+                total: 0,
+                typed: None,
+            };
+            (Load::Grid(query), body)
+        }
+    }
 }
 
 /// Where the page shown is on the server, as the header's second line: the
