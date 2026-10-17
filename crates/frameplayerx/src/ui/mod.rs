@@ -595,6 +595,30 @@ impl UiState {
         self.source.as_mut().and_then(SourceView::folder_mut)
     }
 
+    /// The Jellyfin/Emby page of `source`, if that is what is open.
+    pub fn jellyfin_page(&mut self, source: &str) -> Option<&mut jellyfin::JellyfinView> {
+        match self.source.as_mut()? {
+            SourceView {
+                source: s,
+                page: SourcePage::Jellyfin(j),
+                ..
+            } if s == source => Some(j),
+            _ => None,
+        }
+    }
+
+    /// The scene feed page of `source`, if that is what is open.
+    pub fn feed_page(&mut self, source: &str) -> Option<&mut feeds::FeedView> {
+        match self.source.as_mut()? {
+            SourceView {
+                source: s,
+                page: SourcePage::Feed(f),
+                ..
+            } if s == source => Some(f),
+            _ => None,
+        }
+    }
+
     /// One step back in the source browser; leaving it returns to the
     /// screen it was opened from. Returns what must list again.
     pub fn source_back(&mut self) -> Option<Action> {
