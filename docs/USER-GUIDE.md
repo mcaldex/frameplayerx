@@ -191,8 +191,8 @@ videos, except those you watched or marked.
 | Source | What browsing it offers |
 |---|---|
 | On this device | **Videos**: everything found on the headset, its cards and drives, with search, format filters and sorting. **Folders**: the home folder and the drives as folders |
-| Jellyfin / Emby | Your libraries, *Continue watching*, *Next up* and the latest additions; a search of the whole server by title, as Jellyfin's own search shows it: a row each of movies, shows, collections and other videos, best matches first (episodes are found through their show); poster grids searched, sorted and filtered by the server (unwatched, in progress, favorites); series by season and episode; details with the story, cast and genres. Watched marks, favorites and resume points are the server's: a video resumes where you left it on any device, and what you watch is reported back as you watch it (start, pause, seeks, stop), so the server marks it watched near the end |
-| DeoVR feed / HereSphere API | The server's scene groups as chips over a grid of scenes; search the chosen group (or *All*) across titles, studios, performers and tags; order by title, date, rating or length; a *Favorites* filter (and *Scripted*, with haptics on). ⋯ opens a scene's details: description, performers and tags (tap one to see all their scenes), chapters to start from, and ♡ to make it a favourite on a HereSphere API that takes favourites. The page opens with the scenes from last time while the server sends the current list ("updating…" under the title). A HereSphere API that asks for playback events gets them as HereSphere sends them (open, play, pause, close), so it can count plays and keep resume points |
+| Jellyfin / Emby | Your libraries, *Continue watching*, *Next up* and the latest additions; a search of the whole server by title, as Jellyfin's own search shows it: a row each of movies, shows, collections and other videos, best matches first (episodes are found through their show); poster grids searched, sorted and filtered by the server (unwatched, in progress, favorites); series by season and episode; details with the story, cast and genres. Watched marks, favorites and resume points are the server's (see [Watch sync](#watch-sync-with-jellyfin-emby-and-heresphere)) |
+| DeoVR feed / HereSphere API | The server's scene groups as chips over a grid of scenes; search the chosen group (or *All*) across titles, studios, performers and tags; order by title, date, rating or length; a *Favorites* filter (and *Scripted*, with haptics on). ⋯ opens a scene's details: description, performers and tags (tap one to see all their scenes), chapters to start from, and ♡ to make it a favourite on a HereSphere API that takes favourites. The page opens with the scenes from last time while the server sends the current list ("updating…" under the title). A HereSphere API can also follow what you watch (see [Watch sync](#watch-sync-with-jellyfin-emby-and-heresphere)) |
 | SMB, WebDAV, HTTP folders, DLNA, local folders | Folders and files: search the folder you are in, order by name, date or size, *Play all* |
 
 ### Locking a source with a PIN
@@ -218,6 +218,31 @@ To lock one folder of a NAS, add that folder as its own source
 (`smb://nas/videos/private`) and lock it. Everything in it is then hidden
 everywhere, also when browsing a source for the whole share, and from the
 watch history even if it was played through that source.
+
+### Watch sync with Jellyfin, Emby and HereSphere
+
+These servers keep track of what you watch, and FramePlayerX keeps them in
+step with the headset:
+
+- **Jellyfin and Emby** hear when a video starts, pauses, resumes, jumps or
+  changes speed, where it is every 10 seconds, and where it stopped. The
+  server keeps the resume point, counts the play and marks the video
+  watched when you stop near the end; its dashboard shows it playing on the
+  headset. A video starts at the server's resume point, also when opened
+  from Watch history or Home, so you can carry on where you left off on
+  another device. ♡ and ✓ *Watched* on a Jellyfin page change the marks on
+  the server at once.
+- **HereSphere APIs** that ask for playback events get the ones HereSphere
+  itself sends (open, play, pause and close, with the position), from which
+  the server counts plays and keeps resume points. ♡ on a scene's page
+  makes it a favourite on a server that takes favourites.
+
+Reports go out in the background and in order. Quitting waits a few
+seconds for the last ones; one the server doesn't take (it is offline, or
+the sign-in expired) is noted in frameplayerx.log and not sent again.
+
+DeoVR feeds, DLNA, network shares and folders keep no watch state on the
+server: their resume points, favorites and ratings stay on the headset.
 
 ### microSD cards and USB drives (VR180 and everything else)
 

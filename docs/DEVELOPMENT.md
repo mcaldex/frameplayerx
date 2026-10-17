@@ -103,6 +103,22 @@ projection and stereo layout. HDR is tone mapped there too.
 shared pieces in `ui/page.rs`. Browsing a network source writes nothing to
 the database; a video gets a row when it's opened.
 
+**Watch sync.** Servers that keep watch state (Jellyfin and Emby, HereSphere
+APIs that name an `eventServer`) also implement `Source::watch_session` and
+`Source::report_watch` (`fp-sources/src/watch.rs`). The open video's `Watch`
+(`frameplayerx/src/watch.rs`) turns what the player does each frame into
+events: start, pause, resume, seek, speed, a tick every 10 s, and stop. One
+thread sends every report in order, so a video's stop reaches the server
+before the next one's start, and quitting waits up to 3 s for it. A
+server's resume point (`Entry::resume`) wins over the database's.
+
+**Subtitles.** `frameplayerx/src/subtitles.rs` picks the track a video starts
+with, from the Subtitles setting and the tracks' languages
+(`fp_core::language` reads `ara`, `pt-BR`, `de.forced`). The player decodes
+embedded tracks itself; files are loaded whole. Text cues are set by
+cosmic-text (`ui/subtitle_text.rs`) with the system's fonts, loaded on a
+thread at startup, so every script is shaped; egui sets them until then.
+
 **The database.** SQLite, with the schema version in `PRAGMA user_version`
 and forward-only migrations in `fp-library/src/schema.rs`. The scanner
 marks files missing rather than deleting them, so ratings, resume points
