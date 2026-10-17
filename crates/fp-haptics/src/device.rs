@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 /// One timed move: reach `pos` on `axis` in `duration_ms`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AxisMove {
-    /// Target axis.
     pub axis: Axis,
     /// Target position, `0.0..=1.0`.
     pub pos: f32,

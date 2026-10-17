@@ -7,7 +7,6 @@ use crate::record::{MediaId, PlaylistId};
 /// Everything that can go wrong in the media library.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// SQLite reported an error.
     #[error("database error: {0}")]
     Sqlite(#[from] rusqlite::Error),
     /// A file system operation failed.
@@ -15,7 +14,6 @@ pub enum Error {
     Io {
         /// The file or directory involved.
         path: PathBuf,
-        /// The underlying error.
         #[source]
         source: std::io::Error,
     },
@@ -33,10 +31,8 @@ pub enum Error {
         /// Latest version this build knows.
         supported: i64,
     },
-    /// No media row with this id.
     #[error("media {0} not found")]
     MediaNotFound(MediaId),
-    /// No playlist with this id.
     #[error("playlist {0} not found")]
     PlaylistNotFound(PlaylistId),
     /// A caller passed a value outside its allowed range.
@@ -45,7 +41,6 @@ pub enum Error {
     /// A [`MediaProber`](crate::MediaProber) could not read the media.
     #[error("probe failed: {0}")]
     Probe(String),
-    /// The background worker thread could not be started.
     #[error("could not start worker thread: {0}")]
     Spawn(#[source] std::io::Error),
     /// The prober gave up on a video for now (it is busy with something

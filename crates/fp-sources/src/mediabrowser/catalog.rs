@@ -41,7 +41,6 @@ const NOT_VIDEO: [&str; 6] = [
 /// What a library item is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MbKind {
-    /// A film.
     Movie,
     /// A TV series (holds seasons).
     Series,
@@ -51,11 +50,9 @@ pub enum MbKind {
     Episode,
     /// Any other video (home videos, mixed libraries).
     Video,
-    /// A music video.
     MusicVideo,
     /// A collection of films.
     BoxSet,
-    /// A plain folder.
     Folder,
     /// One of the user's libraries (a view).
     Library,
@@ -102,9 +99,7 @@ impl MbKind {
 pub struct MbItem {
     /// Server id.
     pub id: String,
-    /// Title.
     pub name: String,
-    /// What it is.
     pub kind: MbKind,
     /// Of a library: `movies`, `tvshows`, `boxsets`, `homevideos`...
     pub collection_type: Option<String>,
@@ -118,7 +113,6 @@ pub struct MbItem {
     pub community_rating: Option<f32>,
     /// Age rating ("PG-13").
     pub official_rating: Option<String>,
-    /// Genres.
     pub genres: Vec<String>,
     /// Studios (details only).
     pub studios: Vec<String>,
@@ -272,7 +266,6 @@ pub struct MbQuery {
     pub recursive: bool,
     /// Words to search for; empty lists everything.
     pub search: String,
-    /// Order.
     pub sort: MbSort,
     /// Largest first.
     pub descending: bool,

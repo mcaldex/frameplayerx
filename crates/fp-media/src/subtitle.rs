@@ -145,7 +145,6 @@ pub(crate) fn convert(sub: &ff::AVSubtitle, pkt_pts: f64, pkt_duration: f64) -> 
     })
 }
 
-/// Decodes one subtitle packet.
 pub(crate) fn decode_packet(dec: &mut Decoder, pkt: &Packet) -> Option<Cue> {
     // SAFETY: decoder open for a subtitle stream; sub freed after use.
     unsafe {

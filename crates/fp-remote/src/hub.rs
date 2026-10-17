@@ -27,7 +27,6 @@ pub enum RemoteEvent {
 pub struct RemoteItem {
     /// Library id; used for `GET /api/thumb/<id>`.
     pub id: i64,
-    /// Display title.
     pub title: String,
     /// Location passed back in `PlayerCommand::Open` when tapped.
     pub location: String,

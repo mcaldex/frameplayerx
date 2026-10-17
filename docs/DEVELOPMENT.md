@@ -32,6 +32,25 @@ Under WSL, keep the Linux build off the Windows drive with
 `export CARGO_TARGET_DIR=~/.cache/frameplayerx-target`, as
 `tools/local-xr.sh` does.
 
+## Code style
+
+`cargo fmt` formats. Clippy, with the lints in `[workspace.lints]`, has to
+pass with warnings denied, as it does in CI.
+
+Comments say what the code can't:
+
+- Each module starts with `//!`: what it is for, in a sentence or a short
+  paragraph.
+- `///` documents an item when its name and signature leave something out:
+  units, what `None` means, that it blocks, what it costs. A field called
+  `title` needs no `/// Title.`
+- `//` inside a function says why: a hardware or server quirk, an
+  invariant, a workaround and what it works around. Not what the next line
+  does.
+- Every `unsafe` block has a `// SAFETY:` comment saying why it is sound
+  (clippy checks).
+- No commented-out code. A known gap is an issue, not a `TODO`.
+
 ## Repository layout
 
 | Crate | Purpose |

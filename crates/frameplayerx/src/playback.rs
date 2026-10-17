@@ -16,7 +16,6 @@ use std::sync::Mutex;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-/// What to open.
 #[derive(Clone, Debug, Default)]
 pub struct OpenRequest {
     pub location: String,

@@ -153,7 +153,6 @@ pub enum WorkerEvent {
     /// A video was probed. `warning` explains a missing thumbnail or
     /// preview sheet.
     Processed {
-        /// The video.
         id: MediaId,
         /// Videos handled in this pass, this one included.
         done: usize,
@@ -163,19 +162,16 @@ pub enum WorkerEvent {
         thumbnail: bool,
         /// A preview sheet was written.
         preview_strip: bool,
-        /// Non-fatal problem.
         warning: Option<String>,
     },
     /// Probing failed; the error is stored on the row and the video is not
     /// retried until [`Library::retry_failed_probes`].
     Failed {
-        /// The video.
         id: MediaId,
         /// Videos handled in this pass, this one included.
         done: usize,
         /// `done` plus what is still waiting.
         total: usize,
-        /// What went wrong.
         error: String,
     },
     /// Nothing left to do for now.

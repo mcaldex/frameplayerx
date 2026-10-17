@@ -14,7 +14,6 @@ const GAP: f32 = 7.0;
 /// How a key looks.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Style {
-    /// A character.
     Char,
     /// Shift, arrows, delete: a darker key.
     Function,

@@ -460,7 +460,6 @@ pub fn chip_icon(ui: &mut Ui, icon: Option<&str>, label: &str, selected: bool) -
     resp
 }
 
-/// An on/off switch.
 pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
     let size = Vec2::new(56.0, 32.0);
     let (rect, mut resp) = ui.allocate_exact_size(size, Sense::click());

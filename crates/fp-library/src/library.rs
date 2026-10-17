@@ -147,7 +147,6 @@ pub struct MediaUpsert {
     pub location: String,
     /// Source that produced the entry.
     pub source_id: String,
-    /// Display title.
     pub title: String,
     /// Bytes, when known.
     pub size: Option<u64>,
@@ -258,14 +257,12 @@ pub enum UpsertStatus {
     Added,
     /// An existing row changed.
     Updated,
-    /// Nothing differed.
     Unchanged,
 }
 
 /// Result of [`Library::upsert`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UpsertOutcome {
-    /// Row id.
     pub id: MediaId,
     /// What happened to the row.
     pub status: UpsertStatus,
@@ -719,7 +716,6 @@ impl Library {
 
     // -- reads --------------------------------------------------------------
 
-    /// One record by id.
     pub fn get(&self, id: MediaId) -> Result<Option<MediaRecord>> {
         self.with(|c| get_conn(c, id))
     }

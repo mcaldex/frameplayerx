@@ -28,7 +28,6 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-/// Player settings.
 #[derive(Clone, Debug)]
 pub struct PlayerConfig {
     pub hw_decode: HwDecode,

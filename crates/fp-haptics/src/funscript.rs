@@ -27,7 +27,6 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
-/// A parsed funscript file.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Funscript {
     /// The `version` field, if present.

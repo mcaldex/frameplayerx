@@ -50,7 +50,6 @@ pub enum SourceKind {
     Local,
     /// An HTTP(S) server with autoindex directory listings.
     Http,
-    /// A WebDAV share.
     #[serde(rename = "webdav")]
     WebDav,
     /// A DLNA/UPnP media server.
@@ -89,7 +88,6 @@ impl SourceKind {
 pub struct LocalConfig {
     /// Stable identifier chosen by the app.
     pub id: String,
-    /// Display name.
     pub name: String,
     /// Folder shown at the root of the source.
     pub root: PathBuf,
@@ -100,7 +98,6 @@ pub struct LocalConfig {
 pub struct HttpConfig {
     /// Stable identifier chosen by the app.
     pub id: String,
-    /// Display name.
     pub name: String,
     /// Root folder URL. WebDAV also accepts `webdav(s)://` and `dav(s)://`.
     pub url: String,
@@ -137,7 +134,6 @@ pub struct DlnaConfig {
 pub struct FeedConfig {
     /// Stable identifier chosen by the app.
     pub id: String,
-    /// Display name.
     pub name: String,
     /// Feed URL, e.g. `http://xbvr:9999/deovr` or `http://xbvr:9999/heresphere`.
     pub url: String,
@@ -158,14 +154,12 @@ pub struct FeedConfig {
 pub struct SmbConfig {
     /// Stable identifier chosen by the app.
     pub id: String,
-    /// Display name.
     pub name: String,
     /// Server host name or IP address.
     pub host: String,
     /// TCP port; 445 when absent.
     #[serde(default)]
     pub port: Option<u16>,
-    /// Share name.
     pub share: String,
     /// Folder inside the share shown at the root of the source
     /// (`/`-separated, empty for the share root).
@@ -181,7 +175,6 @@ pub struct SmbConfig {
 pub struct MediaBrowserConfig {
     /// Stable identifier chosen by the app.
     pub id: String,
-    /// Display name.
     pub name: String,
     /// Server base URL, e.g. `http://jellyfin:8096`.
     pub url: String,
@@ -271,11 +264,9 @@ impl fmt::Debug for DlnaConfig {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SourceConfig {
-    /// A local folder.
     Local(LocalConfig),
     /// An HTTP(S) server with autoindex listings.
     Http(HttpConfig),
-    /// A WebDAV share.
     #[serde(rename = "webdav")]
     WebDav(HttpConfig),
     /// A DLNA/UPnP media server.

@@ -509,12 +509,10 @@ impl HapticsEngine {
         lock(&self.shared.devices).clone()
     }
 
-    /// The current settings.
     pub fn settings(&self) -> HapticsSettings {
         lock(&self.shared.settings).clone()
     }
 
-    /// Replaces the settings.
     pub fn set_settings(&self, settings: HapticsSettings) {
         self.update_settings(|s| *s = settings);
     }

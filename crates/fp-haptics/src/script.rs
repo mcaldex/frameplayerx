@@ -23,7 +23,6 @@ impl Action {
 /// second, the convention used by OFS and script sites.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ScriptStats {
-    /// Number of actions.
     pub action_count: usize,
     /// Time of the last action, milliseconds.
     pub duration_ms: i64,

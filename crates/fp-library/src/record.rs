@@ -136,7 +136,6 @@ pub(crate) fn effective_columns(
 pub struct PreviewStrip {
     /// JPEG file, `<cache>/<id>_strip.jpg`.
     pub path: PathBuf,
-    /// Number of frames.
     pub frames: u32,
     /// Frames per row.
     pub columns: u32,
@@ -151,7 +150,6 @@ pub struct PreviewStrip {
 /// One video in the library, mirroring a `media` row plus its tags.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MediaRecord {
-    /// Row id.
     pub id: MediaId,
     /// Path for local files, URL for remote ones. Unique.
     pub location: String,
@@ -181,7 +179,6 @@ pub struct MediaRecord {
     pub keyframes: Keyframes,
     /// 0 (unrated) to 5.
     pub rating: u8,
-    /// Marked as favourite.
     pub favorite: bool,
     /// Times watched to the end (or past 90 %).
     pub play_count: u32,
@@ -205,7 +202,6 @@ pub struct MediaRecord {
     pub probe_error: Option<String>,
     /// Haptic scripts: the main `stem.funscript` first, then axis scripts.
     pub scripts: Vec<String>,
-    /// Subtitle files.
     pub subtitles: Vec<String>,
     /// Tag names, sorted case-insensitively.
     pub tags: Vec<String>,
@@ -256,13 +252,10 @@ pub(crate) fn stem_of(name: &str) -> &str {
 /// A timestamped bookmark inside a video.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Marker {
-    /// Row id.
     pub id: MarkerId,
-    /// Video it belongs to.
     pub media_id: MediaId,
     /// Seconds from the start.
     pub time: f64,
-    /// Label.
     pub name: String,
     /// Provided by the source (chapters); replaced on re-index, never
     /// exported. User markers have this `false`.
@@ -272,9 +265,7 @@ pub struct Marker {
 /// One playback session.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HistoryEntry {
-    /// Session id.
     pub id: SessionId,
-    /// Video watched.
     pub media_id: MediaId,
     /// Unix seconds when playback started.
     pub started_at: i64,

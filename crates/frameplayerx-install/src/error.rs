@@ -30,7 +30,6 @@ pub enum InstallError {
     Remote {
         /// What we were doing.
         what: String,
-        /// Exit code.
         code: Option<i32>,
         /// Last lines of its output.
         detail: String,
@@ -71,7 +70,6 @@ pub enum InstallError {
         action: &'static str,
         /// Local path.
         path: PathBuf,
-        /// Underlying error.
         #[source]
         source: std::io::Error,
     },
@@ -83,7 +81,6 @@ pub enum InstallError {
     Pair {
         /// Headset address used.
         address: String,
-        /// What went wrong.
         detail: String,
     },
     /// The pairing key could not be made or used.

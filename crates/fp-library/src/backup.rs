@@ -39,7 +39,6 @@ pub struct UserDataExport {
     /// User data per video location. Includes every video that has user
     /// data or appears in a playlist.
     pub media: BTreeMap<String, MediaUserData>,
-    /// All playlists.
     pub playlists: Vec<PlaylistExport>,
 }
 
@@ -53,9 +52,7 @@ pub struct MediaUserData {
     pub title: String,
     /// 0–5 stars.
     pub rating: u8,
-    /// Favourite flag.
     pub favorite: bool,
-    /// Tag names.
     pub tags: Vec<String>,
     /// User bookmarks (source chapters are not exported).
     pub markers: Vec<MarkerExport>,
@@ -68,7 +65,6 @@ pub struct MediaUserData {
     pub keyframes: Keyframes,
     /// Resume point in seconds.
     pub resume_position: f64,
-    /// Times watched.
     pub play_count: u32,
     /// Unix seconds of the last playback.
     pub last_played: Option<i64>,
@@ -99,7 +95,6 @@ impl MediaUserData {
 pub struct MarkerExport {
     /// Seconds from the start.
     pub time: f64,
-    /// Label.
     pub name: String,
 }
 
@@ -124,7 +119,6 @@ pub struct ImportReport {
     /// Videos not in the library yet, recreated as missing placeholders
     /// that come back when a scan or source refresh finds them.
     pub media_created: usize,
-    /// New playlists.
     pub playlists_created: usize,
     /// Playlists replaced because one with the same name existed.
     pub playlists_replaced: usize,

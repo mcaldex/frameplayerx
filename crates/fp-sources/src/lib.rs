@@ -21,8 +21,6 @@
 //! [`save_configs`] / [`load_configs`] persist them (credentials included)
 //! in a 0600 JSON file. Blocking I/O and plain threads only.
 
-#![warn(missing_docs)]
-
 pub mod cache;
 pub mod config;
 pub mod dlna;
@@ -72,7 +70,6 @@ pub trait Source: Send + Sync {
     /// Stable identifier (from the configuration).
     fn id(&self) -> &str;
 
-    /// Display name.
     fn name(&self) -> &str;
 
     /// What kind of source this is.

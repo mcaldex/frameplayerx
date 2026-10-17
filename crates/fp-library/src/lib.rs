@@ -18,8 +18,6 @@
 //!   codec and format via an app-provided [`MediaProber`] and writes JPEG
 //!   thumbnails and scrub-preview sheets.
 
-#![warn(missing_docs)]
-
 mod backup;
 mod error;
 mod image;

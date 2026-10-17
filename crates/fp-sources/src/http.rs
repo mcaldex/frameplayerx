@@ -63,11 +63,9 @@ impl Default for HttpOptions {
 /// A complete HTTP response with a bounded body.
 #[derive(Clone, Debug)]
 pub struct HttpReply {
-    /// Status code.
     pub status: u16,
     /// Headers with lower-case names.
     pub headers: Vec<(String, String)>,
-    /// Response body.
     pub body: Vec<u8>,
 }
 

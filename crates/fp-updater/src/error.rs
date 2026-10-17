@@ -12,7 +12,6 @@ pub enum Error {
     Http {
         /// URL being fetched.
         url: String,
-        /// Underlying client error.
         #[source]
         source: Box<ureq::Error>,
     },
@@ -21,7 +20,6 @@ pub enum Error {
     HttpStatus {
         /// URL being fetched.
         url: String,
-        /// HTTP status code.
         status: u16,
     },
     /// A file system operation failed.
@@ -31,7 +29,6 @@ pub enum Error {
         action: &'static str,
         /// File or directory involved.
         path: PathBuf,
-        /// Underlying I/O error.
         #[source]
         source: io::Error,
     },
@@ -41,10 +38,8 @@ pub enum Error {
     /// The detached signature is missing, not base64, or not 64 bytes.
     #[error("release manifest signature is malformed: {0}")]
     MalformedSignature(String),
-    /// The signature does not verify against the trusted key.
     #[error("release manifest signature does not match the trusted release key")]
     SignatureMismatch,
-    /// This build was compiled without a release public key.
     #[error("this build has no release public key, so updates are disabled")]
     NoPublicKey,
     /// A public or private key could not be decoded.
@@ -55,7 +50,6 @@ pub enum Error {
     RejectedUrl {
         /// The rejected URL.
         url: String,
-        /// Why it was rejected.
         reason: String,
     },
     /// The release has no artifact for the requested CPU architecture.
@@ -89,13 +83,11 @@ pub enum Error {
     /// The caller set the cancel flag. The partial file is kept for resume.
     #[error("download cancelled")]
     Cancelled,
-    /// The archive could not be read.
     #[error("cannot read archive: {0}")]
     Zip(#[from] zip::result::ZipError),
     /// An archive entry would land outside the extraction directory.
     #[error("archive entry has an unsafe path: {0:?}")]
     UnsafeArchivePath(String),
-    /// An archive entry is a symbolic link or other special file.
     #[error("archive entry is a symbolic link or special file: {0:?}")]
     UnsupportedArchiveEntry(String),
     /// The archive exceeds the size or entry-count limits.

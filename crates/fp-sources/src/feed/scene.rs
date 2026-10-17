@@ -34,7 +34,6 @@ impl MediaSource {
 /// Everything a feed says about one scene.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SceneInfo {
-    /// Scene title.
     pub title: String,
     /// Length in seconds.
     pub duration: Option<f64>,
@@ -50,7 +49,6 @@ pub struct SceneInfo {
     pub subtitles: Vec<String>,
     /// Named timestamps in seconds.
     pub markers: Vec<(f64, String)>,
-    /// Synopsis.
     pub description: Option<String>,
     /// Release date, Unix seconds.
     pub released: Option<i64>,
@@ -58,7 +56,6 @@ pub struct SceneInfo {
     pub added: Option<i64>,
     /// Studio or site.
     pub studio: Option<String>,
-    /// Performers.
     pub actors: Vec<String>,
     /// Categories and tags.
     pub tags: Vec<String>,
@@ -131,7 +128,6 @@ pub struct SceneGroup {
 pub struct FeedScene {
     /// Scene URL: the location to open and fetch details from.
     pub url: String,
-    /// Title.
     pub title: String,
     /// Length in seconds.
     pub duration: Option<f64>,
@@ -147,7 +143,6 @@ pub struct FeedScene {
     pub favorite: bool,
     /// Studio or site.
     pub studio: Option<String>,
-    /// Performers.
     pub actors: Vec<String>,
     /// Categories and tags.
     pub tags: Vec<String>,

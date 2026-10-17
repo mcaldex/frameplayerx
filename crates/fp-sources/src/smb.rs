@@ -50,7 +50,6 @@ pub struct SmbLocation {
     pub host: String,
     /// TCP port, when given.
     pub port: Option<u16>,
-    /// Share name.
     pub share: String,
     /// Decoded path segments inside the share.
     pub path: Vec<String>,

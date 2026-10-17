@@ -25,7 +25,6 @@ pub use renderer::{EyeTarget, EyeView, PanelId, QuadDraw, QuadTexture, Renderer}
 
 use ash::vk;
 
-/// Renderer errors.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("{context}: {result:?}")]

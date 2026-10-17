@@ -18,7 +18,6 @@ pub fn locked(pins: &BTreeMap<String, String>, unlocked: &HashSet<String>, id: &
     pins.contains_key(id) && !unlocked.contains(id)
 }
 
-/// Every locked source.
 pub fn locked_ids(pins: &BTreeMap<String, String>, unlocked: &HashSet<String>) -> Vec<String> {
     pins.keys()
         .filter(|id| !unlocked.contains(*id))

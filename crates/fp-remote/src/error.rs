@@ -11,7 +11,6 @@ pub enum RemoteError {
     Bind {
         /// Address we tried to bind.
         addr: SocketAddr,
-        /// Underlying OS error.
         #[source]
         source: std::io::Error,
     },
@@ -20,11 +19,9 @@ pub enum RemoteError {
     TokenFile {
         /// Path the app configured for the token.
         path: PathBuf,
-        /// Underlying OS error.
         #[source]
         source: std::io::Error,
     },
-    /// The operating system's random number generator failed.
     #[error("random number generator failed: {0}")]
     Random(String),
     /// The embedded HTTP server failed to start.

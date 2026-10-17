@@ -681,7 +681,6 @@ fn shortcut_app_id_in(doc: &vdf::Map, spec: &ShortcutSpec) -> Option<u32> {
 pub struct Status {
     /// Install folder.
     pub dir: String,
-    /// Installed version.
     pub installed: Option<Version>,
     /// Version kept for rollback.
     pub previous: Option<Version>,

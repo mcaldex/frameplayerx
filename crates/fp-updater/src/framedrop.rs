@@ -36,7 +36,6 @@ pub struct FramedropManifest {
     /// Must be [`FRAMEDROP_SCHEMA`].
     #[serde(default)]
     pub schema: String,
-    /// Display name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Files to install; the first is the title itself.
@@ -44,7 +43,6 @@ pub struct FramedropManifest {
     pub files: Vec<FramedropFile>,
 }
 
-/// One file entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FramedropFile {
     /// Download URL (https, public host).
@@ -73,7 +71,6 @@ pub enum FramedropError {
     /// `schema` missing or different.
     #[error("schema is {0:?}, expected \"framedrop.install/v1\"")]
     WrongSchema(String),
-    /// `files` missing or empty.
     #[error("files is missing or empty")]
     NoFiles,
     /// `name` present but empty or blank.
@@ -82,7 +79,6 @@ pub enum FramedropError {
     /// `name` longer than [`MAX_NAME_CHARS`].
     #[error("name is {0} characters; the limit is 120")]
     NameTooLong(usize),
-    /// A file has no URL.
     #[error("files[{0}].url is missing")]
     MissingUrl(usize),
     /// A file URL breaks a rule.
@@ -90,10 +86,8 @@ pub enum FramedropError {
     BadUrl {
         /// Index into `files`.
         index: usize,
-        /// Which rule was broken.
         reason: String,
     },
-    /// `sha256` is not 64 hex digits.
     #[error("files[{0}].sha256 is not 64 hex digits")]
     BadSha256(usize),
     /// `size` over [`MAX_FILE_BYTES`].
@@ -109,7 +103,6 @@ pub enum FramedropError {
     BadExe {
         /// Index into `files`.
         index: usize,
-        /// Which rule was broken.
         reason: String,
     },
 }

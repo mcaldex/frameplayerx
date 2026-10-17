@@ -51,7 +51,6 @@ pub const MESSAGE_VERSION: u32 = 3;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ButtplugConfig {
-    /// Server URL.
     pub url: String,
     /// Client name shown in Intiface.
     pub client_name: String,

@@ -51,7 +51,6 @@ pub enum Value {
 pub struct Map(pub Vec<(String, Value)>);
 
 impl Map {
-    /// An empty map.
     pub fn new() -> Self {
         Map(Vec::new())
     }
@@ -123,21 +122,17 @@ pub enum VdfError {
     /// A type byte we do not understand.
     #[error("unknown value type 0x{ty:02x} at byte {offset}")]
     UnknownType {
-        /// The type byte.
         ty: u8,
         /// Where it was found.
         offset: usize,
     },
-    /// A key or string is not valid UTF-8.
     #[error("text at byte {0} is not valid UTF-8")]
     NotUtf8(usize),
     /// Bytes follow the final end marker.
     #[error("unexpected data after the end of the document at byte {0}")]
     TrailingData(usize),
-    /// Maps nested deeper than we accept.
     #[error("maps nested too deeply")]
     TooDeep,
-    /// A key or string to be written contains a NUL byte.
     #[error("text {0:?} contains a NUL byte and cannot be stored")]
     NulInText(String),
 }

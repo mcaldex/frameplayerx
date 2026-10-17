@@ -38,7 +38,6 @@ pub struct ArchiveInfo {
     /// Single top-level directory every entry sits in (normally
     /// `frameplayerx`), stripped on extraction.
     pub root: Option<String>,
-    /// Number of entries.
     pub entries: usize,
     /// Sum of uncompressed sizes as declared by the archive.
     pub uncompressed_size: u64,

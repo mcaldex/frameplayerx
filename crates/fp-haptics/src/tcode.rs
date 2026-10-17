@@ -24,10 +24,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// The stop command.
 pub const TCODE_STOP: &str = "DSTOP\n";
 
-/// Default serial speed.
 pub const DEFAULT_BAUD: u32 = 115_200;
 
 /// Formats a position as a 4-digit TCode magnitude (`0.5` → `"5000"`,
@@ -66,7 +64,6 @@ pub fn format_tcode(moves: &[AxisMove]) -> String {
 pub enum TcodeEndpoint {
     /// A serial device such as `/dev/ttyACM0`.
     Serial {
-        /// Device path.
         path: PathBuf,
         /// Baud rate (115200 for every common firmware).
         baud: u32,
@@ -125,7 +122,6 @@ impl TcodeEndpoint {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TcodeConfig {
-    /// Where the device is.
     pub endpoint: TcodeEndpoint,
     /// Axes the device has. TCode cannot report them, so the user picks:
     /// OSR2 is L0 R0 R1 R2, SR6 adds L1 L2.

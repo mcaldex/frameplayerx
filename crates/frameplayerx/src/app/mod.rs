@@ -113,7 +113,6 @@ pub struct App {
     trigger_prev: [f32; 2],
     /// Yaw/pitch when a dome drag began.
     drag_start: Option<(f32, f32)>,
-    /// A panel being moved.
     panel_drag: Option<PanelDrag>,
     /// Where the library and adjust panels sit now (saved when let go).
     offsets: crate::settings::PanelOffsets,

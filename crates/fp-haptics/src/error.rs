@@ -9,7 +9,6 @@ pub enum Error {
     /// A funscript could not be understood at all.
     #[error("invalid funscript: {0}")]
     Script(String),
-    /// JSON (de)serialisation failed.
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
     /// The device is not (or no longer) connected.
@@ -21,13 +20,11 @@ pub enum Error {
     /// An HTTP request failed or the server answered with an error.
     #[error("HTTP error: {0}")]
     Http(String),
-    /// WebSocket transport error.
     #[error("WebSocket error: {0}")]
     WebSocket(String),
     /// The peer answered something we did not expect.
     #[error("protocol error: {0}")]
     Protocol(String),
-    /// Waited too long for an answer.
     #[error("timed out: {0}")]
     Timeout(String),
     /// A configuration value (URL, address, path) is malformed.

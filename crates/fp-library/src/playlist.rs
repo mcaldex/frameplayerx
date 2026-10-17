@@ -11,9 +11,7 @@ use crate::record::{MediaId, MediaRecord, PlaylistId, now};
 /// A playlist summary.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Playlist {
-    /// Row id.
     pub id: PlaylistId,
-    /// Display name.
     pub name: String,
     /// For smart playlists, the query evaluated on every read.
     pub smart_query: Option<Query>,
@@ -149,12 +147,10 @@ impl Library {
         })
     }
 
-    /// One playlist.
     pub fn playlist(&self, id: PlaylistId) -> Result<Option<Playlist>> {
         self.with(|c| playlist_conn(c, id))
     }
 
-    /// Renames a playlist.
     pub fn rename_playlist(&self, id: PlaylistId, name: &str) -> Result<()> {
         let name = check_name(name)?;
         self.with(|c| {

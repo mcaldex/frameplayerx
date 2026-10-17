@@ -47,7 +47,6 @@ pub enum RegisterOutcome {
     NeedsPairingMode(String),
     /// Any other refusal (for example a key it cannot use).
     Refused {
-        /// HTTP status.
         status: u16,
         /// The service's message.
         message: String,

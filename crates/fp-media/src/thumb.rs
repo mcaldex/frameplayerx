@@ -23,7 +23,6 @@ pub enum Crop {
     TopHalfStretched,
 }
 
-/// An RGBA image.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Rgba {
     pub width: u32,
