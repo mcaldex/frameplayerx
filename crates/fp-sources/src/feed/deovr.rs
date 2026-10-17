@@ -94,10 +94,7 @@ pub fn parse_deovr_scene(v: &Value, base: &str) -> SceneInfo {
             .iter()
             .filter_map(|s| url_field(s, "url", base))
             .collect(),
-        subtitles: array(v, "subtitles")
-            .iter()
-            .filter_map(|s| url_field(s, "url", base))
-            .collect(),
+        subtitles: super::subtitle_files(v, base),
         markers,
         description: text(v, "description"),
         released: date_field(v, "date").or_else(|| date_field(v, "releaseDate")),

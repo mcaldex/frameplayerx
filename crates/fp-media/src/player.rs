@@ -207,14 +207,21 @@ pub struct Player {
 }
 
 impl Player {
-    /// Opens `src` and starts playback (or holds paused, per config).
-    pub fn open(src: Arc<dyn ByteSource>, name: &str, config: PlayerConfig) -> Result<Player> {
+    /// Opens `src` and starts playback (or holds paused, per config), showing
+    /// the embedded subtitle stream `subtitle` picks from the file's streams.
+    pub fn open(
+        src: Arc<dyn ByteSource>,
+        name: &str,
+        config: PlayerConfig,
+        subtitle: impl FnOnce(&MediaInfo) -> Option<usize>,
+    ) -> Result<Player> {
         let quit = Arc::new(AtomicBool::new(false));
         let input = Input::open(src, name, quit.clone())?;
         let info = read_info(&input);
         if info.video.is_none() && info.audio.is_none() {
             return Err(Error::NoStream("video or audio"));
         }
+        let subtitle_stream = subtitle(&info);
         let shared = Arc::new(Shared {
             quit,
             clock: Clock::default(),
@@ -223,7 +230,7 @@ impl Player {
                 seek: None,
                 audio_stream: info.audio,
                 audio_changed: false,
-                subtitle_stream: info.subtitle_streams().next().map(|s| s.index),
+                subtitle_stream,
             }),
             ctl_cv: Condvar::new(),
             vpkts: PacketQueue::new(),
@@ -1007,11 +1014,26 @@ mod tests {
     use fp_core::source::FileSource;
     use std::time::Instant;
 
+    /// Opens a test clip showing its first subtitle stream.
     fn open(name: &str, cfg: PlayerConfig) -> Player {
+        open_with(name, cfg, |i| i.subtitle_streams().next().map(|s| s.index))
+    }
+
+    fn open_with(
+        name: &str,
+        cfg: PlayerConfig,
+        subtitle: impl FnOnce(&MediaInfo) -> Option<usize>,
+    ) -> Player {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/data")
             .join(name);
-        Player::open(Arc::new(FileSource::open(&path).unwrap()), name, cfg).unwrap()
+        Player::open(
+            Arc::new(FileSource::open(&path).unwrap()),
+            name,
+            cfg,
+            subtitle,
+        )
+        .unwrap()
     }
 
     fn cfg() -> PlayerConfig {
@@ -1139,6 +1161,24 @@ mod tests {
             p.subtitles().first().map(|c| c.text.clone()).as_deref(),
             Some("Hello world")
         );
+    }
+
+    #[test]
+    fn embedded_subtitles_start_as_picked() {
+        let p = open_with(
+            "hevc10_tb.mkv",
+            PlayerConfig {
+                start_paused: true,
+                start_at: 0.5,
+                ..cfg()
+            },
+            |_| None,
+        );
+        run(&p, 2.0, |p, f| {
+            f.is_some() && p.state() != PlayerState::Buffering
+        });
+        assert_eq!(p.subtitle_stream(), None);
+        assert!(p.subtitles().is_empty());
     }
 
     #[test]

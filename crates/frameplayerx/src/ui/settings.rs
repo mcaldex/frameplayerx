@@ -256,7 +256,8 @@ fn playback(ui: &mut egui::Ui, v: &mut View) {
             2,
         );
     });
-    heading(ui, "Flat videos and subtitles");
+    subtitles(ui, s, &mut v.state.languages_open);
+    heading(ui, "Flat videos");
     let d = &mut s.default_view;
     widgets::rows(ui, |r| {
         r.slider(
@@ -286,15 +287,6 @@ fn playback(ui: &mut egui::Ui, v: &mut View) {
             "",
             2,
         );
-        r.slider(
-            "Subtitle depth",
-            Some("How far away subtitles float."),
-            &mut d.subtitle_distance,
-            0.8..=10.0,
-            2.5,
-            " m",
-            1,
-        );
     });
     heading(ui, "Comfort");
     widgets::rows(ui, |r| {
@@ -306,6 +298,70 @@ fn playback(ui: &mut egui::Ui, v: &mut View) {
             1.0,
             "×",
             2,
+        );
+    });
+}
+
+/// Which subtitles videos start with, in which language, and how far away.
+fn subtitles(ui: &mut egui::Ui, s: &mut crate::settings::Settings, languages_open: &mut bool) {
+    use crate::settings::SubtitleMode;
+    heading(ui, "Subtitles");
+    note(
+        ui,
+        match s.subtitles {
+            SubtitleMode::Off => "Videos start without subtitles.",
+            SubtitleMode::Automatic => {
+                "Subtitles in your language when a video's audio is in another one, \
+                 forced subtitles for the parts in another language, and a subtitle \
+                 file named like the video."
+            }
+            SubtitleMode::Always => "Subtitles in your language whenever a video has them.",
+        },
+    );
+    ui.add_space(6.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+        for (label, mode) in [
+            ("Off", SubtitleMode::Off),
+            ("Automatic", SubtitleMode::Automatic),
+            ("Always", SubtitleMode::Always),
+        ] {
+            if widgets::chip(ui, label, s.subtitles == mode).clicked() {
+                s.subtitles = mode;
+            }
+        }
+    });
+    ui.add_space(6.0);
+    widgets::rows(ui, |r| {
+        if s.subtitles != SubtitleMode::Off {
+            let name = fp_core::language::name(&s.subtitle_language).unwrap_or("Not set");
+            r.row("Your language", Some(name), |ui| {
+                let label = if *languages_open { "Done" } else { "Change" };
+                if widgets::button(ui, None, label, Kind::Secondary).clicked() {
+                    *languages_open = !*languages_open;
+                }
+            });
+            if *languages_open {
+                r.content(|ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+                        for (code, name, _) in fp_core::language::LANGUAGES {
+                            if widgets::chip(ui, name, s.subtitle_language == *code).clicked() {
+                                s.subtitle_language = code.to_string();
+                            }
+                        }
+                    });
+                });
+            }
+        }
+        r.slider(
+            "Subtitle depth",
+            Some("How far away subtitles float."),
+            &mut s.default_view.subtitle_distance,
+            0.8..=10.0,
+            2.5,
+            " m",
+            1,
         );
     });
 }

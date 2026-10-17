@@ -3,7 +3,7 @@
 
 use crate::error::{Error, Result};
 use fp_core::format::{VideoFormat, detect_from_name};
-use fp_core::source::{Entry, EntryKind};
+use fp_core::source::{Entry, EntryKind, SubtitleFile};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -45,8 +45,7 @@ pub struct SceneInfo {
     pub sources: Vec<MediaSource>,
     /// Haptic script URLs.
     pub scripts: Vec<String>,
-    /// Subtitle URLs.
-    pub subtitles: Vec<String>,
+    pub subtitles: Vec<SubtitleFile>,
     /// Named timestamps in seconds.
     pub markers: Vec<(f64, String)>,
     pub description: Option<String>,

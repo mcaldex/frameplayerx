@@ -312,6 +312,26 @@ impl Sim {
                 self.app.repaint_all();
                 self.run_frames(3)?;
             }
+            // `subtitles always ar`, as Settings > Playback does.
+            Some("subtitles") => {
+                use crate::settings::SubtitleMode;
+                self.app.settings.subtitles = match parts.get(1).copied() {
+                    Some("off") => SubtitleMode::Off,
+                    Some("always") => SubtitleMode::Always,
+                    _ => SubtitleMode::Automatic,
+                };
+                if let Some(lang) = parts.get(2) {
+                    self.app.settings.subtitle_language = lang.to_string();
+                }
+                self.app.repaint_all();
+                self.run_frames(3)?;
+            }
+            // Lists the subtitle languages in Settings > Playback.
+            Some("languages") => {
+                self.app.ui.languages_open = true;
+                self.app.repaint_all();
+                self.run_frames(3)?;
+            }
             // Turns the global chroma key on (Settings > Passthrough).
             Some("chroma-global") => {
                 self.app.settings.default_view.chroma_key = true;

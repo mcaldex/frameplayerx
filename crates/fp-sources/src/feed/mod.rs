@@ -33,7 +33,7 @@ use crate::urlutil::{
 use crate::{Source, dir_entry};
 use fp_core::format::StereoLayout;
 use fp_core::source::{
-    ByteSource, Entry, EntryKind, is_script_name, is_subtitle_name, is_video_name,
+    ByteSource, Entry, EntryKind, SubtitleFile, is_script_name, is_subtitle_name, is_video_name,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -76,6 +76,21 @@ fn names(v: &Value, key: &str) -> Vec<String> {
         .iter()
         .filter_map(|x| text(x, "name").or_else(|| x.as_str().map(|s| s.trim().to_string())))
         .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Subtitles from `[{"url": ..., "name": ..., "language": ...}]`.
+fn subtitle_files(v: &Value, base: &str) -> Vec<SubtitleFile> {
+    array(v, "subtitles")
+        .iter()
+        .filter_map(|s| {
+            let mut file = crate::sidecar::subtitle_file(&url_field(s, "url", base)?, "");
+            if let Some(name) = text(s, "name").filter(|n| !n.is_empty()) {
+                file.name = name;
+            }
+            file.language = text(s, "language").filter(|l| !l.is_empty());
+            Some(file)
+        })
         .collect()
 }
 

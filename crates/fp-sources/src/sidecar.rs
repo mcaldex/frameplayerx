@@ -11,6 +11,7 @@
 //! the folder exactly (`Scene.part2.funscript` next to `Scene.part2.mp4`)
 //! belongs to that video, not to `Scene.mp4`.
 
+pub use fp_core::source::SubtitleFile;
 use fp_core::source::{Entry, EntryKind, is_script_name, is_subtitle_name, is_video_name};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -26,18 +27,6 @@ pub struct ScriptFile {
     /// the main stroke script.
     #[serde(default)]
     pub axis: Option<String>,
-}
-
-/// A subtitle file belonging to a video.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SubtitleFile {
-    /// File name or title.
-    pub name: String,
-    /// Location to open with the same source (or a URL for feeds).
-    pub location: String,
-    /// Language tag from the name or the feed (`en`, `de.forced`).
-    #[serde(default)]
-    pub language: Option<String>,
 }
 
 /// Scripts and subtitles found for one video.
@@ -70,18 +59,37 @@ fn suffix_after_stem<'a>(candidate: &'a str, stem: &str) -> Option<Option<&'a st
     None
 }
 
+/// The subtitle file at `location` for the video named `video_name`, its
+/// language tag read from what follows the video's name (`Movie.en.srt`,
+/// `Movie_es.vtt`).
+pub fn subtitle_file(location: &str, video_name: &str) -> SubtitleFile {
+    let name = crate::urlutil::last_segment(location);
+    let stem = strip_ext(video_name);
+    let file_stem = strip_ext(&name);
+    let language = file_stem
+        .get(..stem.len())
+        .filter(|head| !stem.is_empty() && head.eq_ignore_ascii_case(stem))
+        .and_then(|_| file_stem.get(stem.len()..))
+        .map(|rest| rest.trim_start_matches(['.', '_', '-', ' ']))
+        .filter(|tag| !tag.is_empty())
+        .map(str::to_string);
+    SubtitleFile {
+        name,
+        location: location.to_string(),
+        language,
+    }
+}
+
 impl Sidecars {
-    /// Wraps the script and subtitle locations an entry already carries
-    /// (from a feed or DLNA metadata), deriving axis and language from the
-    /// file names.
+    /// Wraps the scripts and subtitles an entry already carries (from a
+    /// feed, a server or DLNA metadata), deriving axes, and languages the
+    /// source didn't give, from the file names.
     pub fn from_entry(video: &Entry) -> Sidecars {
-        let video_name = crate::urlutil::last_segment(&video.location);
-        let stem = strip_ext(if video_name.is_empty() {
-            &video.name
-        } else {
-            &video_name
-        })
-        .to_string();
+        let mut video_name = crate::urlutil::last_segment(&video.location);
+        if video_name.is_empty() {
+            video_name = video.name.clone();
+        }
+        let stem = strip_ext(&video_name).to_string();
         let mut out = Sidecars::default();
         for loc in &video.scripts {
             let name = crate::urlutil::last_segment(loc);
@@ -95,16 +103,12 @@ impl Sidecars {
                 axis,
             });
         }
-        for loc in &video.subtitles {
-            let name = crate::urlutil::last_segment(loc);
-            let language = suffix_after_stem(strip_ext(&name), &stem)
-                .flatten()
-                .map(str::to_string);
-            out.subtitles.push(SubtitleFile {
-                name,
-                location: loc.clone(),
-                language,
-            });
+        for s in &video.subtitles {
+            let mut s = s.clone();
+            if s.language.is_none() {
+                s.language = subtitle_file(&s.location, &video_name).language;
+            }
+            out.subtitles.push(s);
         }
         out
     }
@@ -293,13 +297,30 @@ mod tests {
     }
 
     #[test]
+    fn subtitle_language_from_name() {
+        let lang = |loc: &str, video: &str| subtitle_file(loc, video).language;
+        assert_eq!(lang("/v/Movie.en.srt", "Movie.mkv").as_deref(), Some("en"));
+        assert_eq!(lang("/v/movie_es.vtt", "Movie.mkv").as_deref(), Some("es"));
+        assert_eq!(
+            lang("http://h/Movie%20One.de.forced.ass", "Movie One.mp4").as_deref(),
+            Some("de.forced")
+        );
+        assert_eq!(lang("/v/Movie.srt", "Movie.mkv"), None);
+        assert_eq!(lang("/v/Other.en.srt", "Movie.mkv"), None);
+        assert_eq!(
+            subtitle_file("http://h/Movie%20One.srt", "").name,
+            "Movie One.srt"
+        );
+    }
+
+    #[test]
     fn from_entry_and_merge() {
         let mut e = file_entry("Clip", "http://h/v/Clip.mp4", None, None);
         e.scripts = vec![
             "http://h/v/Clip.funscript".into(),
             "http://h/v/Clip.surge.funscript".into(),
         ];
-        e.subtitles = vec!["http://h/v/Clip.en.srt".into()];
+        e.subtitles = vec![subtitle_file("http://h/v/Clip.en.srt", "")];
         let mut s = Sidecars::from_entry(&e);
         assert_eq!(s.scripts[1].axis.as_deref(), Some("surge"));
         assert_eq!(s.subtitles[0].language.as_deref(), Some("en"));

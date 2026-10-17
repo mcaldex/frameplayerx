@@ -32,6 +32,19 @@ impl HapticDeviceConfig {
     }
 }
 
+/// Which subtitles a video starts with (see [`crate::subtitles::choose`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubtitleMode {
+    Off,
+    /// Forced subtitles, subtitles in your language when the audio is in
+    /// another one, and a subtitle file named like the video.
+    #[default]
+    Automatic,
+    /// Subtitles in your language whenever the video has them.
+    Always,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -44,6 +57,9 @@ pub struct Settings {
     /// ALSA device ("default" routes to PipeWire on SteamOS).
     pub audio_device: String,
     pub volume: f32,
+    pub subtitles: SubtitleMode,
+    /// The language subtitles are wanted in (ISO 639-1).
+    pub subtitle_language: String,
     /// Defaults for videos without saved adjustments.
     pub default_view: ViewSettings,
     /// Show the real world around flat screens and the UI.
@@ -104,6 +120,12 @@ impl Default for Settings {
             hardware_decoding: true,
             audio_device: "default".into(),
             volume: 1.0,
+            subtitles: SubtitleMode::default(),
+            subtitle_language: std::env::var("LANG")
+                .ok()
+                .and_then(|l| fp_core::language::from_locale(&l))
+                .unwrap_or("en")
+                .to_string(),
             default_view: ViewSettings::default(),
             passthrough: false,
             resume: true,

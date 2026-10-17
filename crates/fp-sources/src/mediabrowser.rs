@@ -271,15 +271,35 @@ pub(crate) fn apply_item_details(
             entry.size = num(ms, "Size").filter(|s| *s > 0.0).map(|s| s as u64);
         }
         let media_source_id = text(ms, "Id").unwrap_or_else(|| item_id.to_string());
+        // Embedded subtitles come with the file (it streams as is); the
+        // server only has to hand over the ones beside it.
         for stream in array(ms, "MediaStreams") {
-            if text(stream, "Type").as_deref() == Some("Subtitle") {
-                let codec = text(stream, "Codec").unwrap_or_else(|| "srt".to_string());
-                let index = num(stream, "Index").map(|n| n as u32).unwrap_or(0);
-                let sub_url = format!(
-                    "{base_url}/Videos/{item_id}/{media_source_id}/Subtitles/{index}/Stream.{codec}"
-                );
-                entry.subtitles.push(sub_url);
+            if text(stream, "Type").as_deref() != Some("Subtitle")
+                || boolean(stream, "IsExternal") != Some(true)
+            {
+                continue;
             }
+            let codec = text(stream, "Codec").unwrap_or_else(|| "srt".to_string());
+            let index = num(stream, "Index").map(|n| n as u32).unwrap_or(0);
+            let location = format!(
+                "{base_url}/Videos/{item_id}/{media_source_id}/Subtitles/{index}/Stream.{codec}"
+            );
+            let mut file = crate::sidecar::subtitle_file(&location, "");
+            if let Some(name) = text(stream, "Path")
+                .map(|p| crate::urlutil::last_segment(&p))
+                .or_else(|| text(stream, "Title"))
+                .filter(|n| !n.is_empty())
+            {
+                file.name = name;
+            }
+            file.language = text(stream, "Language").map(|l| {
+                if boolean(stream, "IsForced") == Some(true) {
+                    format!("{l}.forced")
+                } else {
+                    l
+                }
+            });
+            entry.subtitles.push(file);
         }
     }
 
@@ -1098,12 +1118,24 @@ mod tests {
                         {
                             "Type": "Subtitle",
                             "Index": 2,
-                            "Codec": "subrip"
+                            "Codec": "subrip",
+                            "Language": "ara"
                         },
                         {
                             "Type": "Subtitle",
                             "Index": 3,
-                            "Codec": "ass"
+                            "Codec": "ass",
+                            "Language": "eng",
+                            "IsExternal": true,
+                            "Path": "/media/demo_180_sbs.en.ass"
+                        },
+                        {
+                            "Type": "Subtitle",
+                            "Index": 4,
+                            "Codec": "subrip",
+                            "Language": "ger",
+                            "IsForced": true,
+                            "IsExternal": true
                         }
                     ]
                 }
@@ -1130,14 +1162,26 @@ mod tests {
         assert_eq!(entry.duration, Some(600.0));
         assert_eq!(entry.size, Some(104857600));
         assert!(entry.format.is_some());
-        assert_eq!(entry.subtitles.len(), 2);
+        // The embedded Arabic track comes with the file, not as a download.
+        let subs: Vec<_> = entry
+            .subtitles
+            .iter()
+            .map(|s| (s.location.as_str(), s.name.as_str(), s.language.as_deref()))
+            .collect();
         assert_eq!(
-            entry.subtitles[0],
-            "http://server:8096/Videos/item100/ms1/Subtitles/2/Stream.subrip"
-        );
-        assert_eq!(
-            entry.subtitles[1],
-            "http://server:8096/Videos/item100/ms1/Subtitles/3/Stream.ass"
+            subs,
+            [
+                (
+                    "http://server:8096/Videos/item100/ms1/Subtitles/3/Stream.ass",
+                    "demo_180_sbs.en.ass",
+                    Some("eng")
+                ),
+                (
+                    "http://server:8096/Videos/item100/ms1/Subtitles/4/Stream.subrip",
+                    "Stream.subrip",
+                    Some("ger.forced")
+                ),
+            ]
         );
         assert_eq!(entry.markers.len(), 2);
         assert_eq!(entry.markers[0], (0.0, "Intro".to_string()));

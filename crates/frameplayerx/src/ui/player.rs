@@ -1151,11 +1151,7 @@ fn audio_and_text(ui: &mut egui::Ui, pb: &crate::playback::Playback, actions: &m
     } else {
         widgets::rows(ui, |r| {
             for s in &streams {
-                let mut title = s
-                    .title
-                    .clone()
-                    .or_else(|| s.language.clone())
-                    .unwrap_or_else(|| format!("Track {}", s.index));
+                let mut title = crate::subtitles::track_name(s);
                 if s.ambisonic {
                     title += " · spatial";
                 }
@@ -1178,20 +1174,17 @@ fn audio_and_text(ui: &mut egui::Ui, pb: &crate::playback::Playback, actions: &m
                 actions.push(Action::SelectSubtitleStream(None));
             }
         });
-        for (i, (name, _)) in pb.subtitle_files.iter().enumerate() {
-            r.row(name, Some("File"), |ui| {
+        for (i, f) in pb.subtitle_files.iter().enumerate() {
+            let (title, desc) = crate::subtitles::file_label(f);
+            r.row(&title, Some(desc.as_str()), |ui| {
                 if radio(ui, pb.active_subtitle_file == Some(i)).clicked() {
                     actions.push(Action::SelectSubtitleFile(Some(i)));
                 }
             });
         }
         for s in info.subtitle_streams() {
-            let title = s
-                .title
-                .clone()
-                .or_else(|| s.language.clone())
-                .unwrap_or_else(|| format!("Track {}", s.index));
-            let desc = format!("Track {} · {}", s.index, s.codec);
+            let title = crate::subtitles::track_name(s);
+            let desc = crate::subtitles::stream_detail(s);
             r.row(&title, Some(desc.as_str()), |ui| {
                 let on = sub_stream == Some(s.index) && pb.active_subtitle_file.is_none();
                 if radio(ui, on).clicked() {
@@ -1333,11 +1326,14 @@ fn haptics_tab(
     }
 }
 
-/// Subtitle cues, drawn large with an outline on a transparent panel.
+/// Subtitle cues, drawn large on a dark plate on a transparent panel. Text
+/// is set by `shaper` once the fonts have loaded, by egui (Latin, Greek and
+/// Cyrillic only) before.
 pub fn subtitles(
     ctx: &egui::Context,
     cues: &[fp_media::subtitle::Cue],
     textures: &mut Vec<egui::TextureHandle>,
+    shaper: Option<&mut super::subtitle_text::SubtitleText>,
 ) {
     let frame = egui::Frame::new().fill(Color32::TRANSPARENT);
     egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
@@ -1374,16 +1370,34 @@ pub fn subtitles(
                 return;
             }
             let joined = text.join("\n");
-            let font = egui::FontId::proportional(54.0);
-            let galley =
+            let (size, width) = (54.0, ui.available_width() - 40.0);
+            let pad = Vec2::new(18.0, 8.0);
+            if let Some(shaper) = shaper {
+                let ppp = ctx.pixels_per_point();
+                let img = shaper.render(&joined, size * ppp, width * ppp);
+                if img.size[0] == 0 {
+                    return;
+                }
+                let lines = Vec2::new(img.size[0] as f32, img.size[1] as f32) / ppp;
+                let tex = ctx.load_texture("sub-text", img, egui::TextureOptions::LINEAR);
+                let (rect, _) = ui.allocate_exact_size(lines + pad * 2.0, Sense::hover());
                 ui.painter()
-                    .layout(joined, font, Color32::WHITE, ui.available_width() - 40.0);
-            let (rect, _) =
-                ui.allocate_exact_size(galley.size() + Vec2::new(36.0, 16.0), Sense::hover());
+                    .rect_filled(rect, 12.0, Color32::from_black_alpha(150));
+                ui.painter().image(
+                    tex.id(),
+                    egui::Rect::from_center_size(rect.center(), lines),
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+                textures.push(tex);
+                return;
+            }
+            let font = egui::FontId::proportional(size);
+            let galley = ui.painter().layout(joined, font, Color32::WHITE, width);
+            let (rect, _) = ui.allocate_exact_size(galley.size() + pad * 2.0, Sense::hover());
             ui.painter()
                 .rect_filled(rect, 12.0, Color32::from_black_alpha(150));
-            ui.painter()
-                .galley(rect.min + Vec2::new(18.0, 8.0), galley, Color32::WHITE);
+            ui.painter().galley(rect.min + pad, galley, Color32::WHITE);
         });
     });
 }

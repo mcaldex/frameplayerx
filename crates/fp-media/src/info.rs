@@ -32,6 +32,10 @@ pub struct StreamInfo {
     pub language: Option<String>,
     pub title: Option<String>,
     pub default: bool,
+    /// Subtitles for only the parts in another language.
+    pub forced: bool,
+    /// Subtitles that describe sounds too (SDH).
+    pub hearing_impaired: bool,
     // video
     pub width: u32,
     pub height: u32,
@@ -246,6 +250,8 @@ pub fn read_info(input: &Input) -> MediaInfo {
             language: dict_get(st.metadata, "language"),
             title: dict_get(st.metadata, "title"),
             default: st.disposition & ff::AV_DISPOSITION_DEFAULT as i32 != 0,
+            forced: st.disposition & ff::AV_DISPOSITION_FORCED as i32 != 0,
+            hearing_impaired: st.disposition & ff::AV_DISPOSITION_HEARING_IMPAIRED as i32 != 0,
             width: 0,
             height: 0,
             fps: 0.0,

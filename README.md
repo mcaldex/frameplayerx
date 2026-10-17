@@ -25,7 +25,7 @@ A VR video player for the Valve Steam Frame. It plays flat, 180°, 360° and fis
 - **Watch history**: carry on where you left off, and mark favorites and ratings
 - **PIN locks**: hide a source behind a PIN until you unlock it
 - **Passthrough videos**: see your room around the people in passthrough videos, and behind green or blue screens
-- **Subtitles and spatial audio**: subtitles from a file or inside the video, and 360° audio that follows your head
+- **Subtitles and spatial audio**: subtitles from a file or inside the video, picked in your language and shown in any script, and 360° audio that follows your head
 - **Haptic devices**: optional, off until turned on; syncs supported haptic devices with videos that have scripts
 - **Phone remote**: scan a QR code to control playback and browse from your phone. Apps made for DeoVR's remote work too
 - **Custom controls**: choose what each controller button does
@@ -89,7 +89,7 @@ To update later, open **Settings › Updates** and press **Download and install*
 | Language | Rust |
 | VR | OpenXR, talking to the runtime directly (no Khronos loader) |
 | Graphics | Vulkan through [ash](https://github.com/ash-rs/ash); the projections are drawn per pixel in a shader |
-| Interface | [egui](https://github.com/emilk/egui) panels in VR, with the [Inter](https://rsms.me/inter/) font and [Phosphor](https://phosphoricons.com/) icons |
+| Interface | [egui](https://github.com/emilk/egui) panels in VR, with the [Inter](https://rsms.me/inter/) font and [Phosphor](https://phosphoricons.com/) icons; subtitle text set by [cosmic-text](https://github.com/pop-os/cosmic-text) |
 | Video | [FFmpeg](https://ffmpeg.org/) 7.1 for demuxing and software decoding, the Frame's V4L2 hardware decoder, [dav1d](https://code.videolan.org/videolan/dav1d) for AV1 |
 | Audio | ALSA |
 | Storage | SQLite (videos, watch history, adjustments), JSON settings |

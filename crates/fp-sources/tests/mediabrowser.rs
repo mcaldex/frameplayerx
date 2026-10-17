@@ -85,7 +85,7 @@ fn mediabrowser_full_lifecycle_browse_stream_and_progress() {
                         "MediaStreams":[
                             {"Index":0,"Type":"Video","Width":3840,"Height":1920,"Codec":"hevc"},
                             {"Index":1,"Type":"Audio","Codec":"aac"},
-                            {"Index":2,"Type":"Subtitle","Codec":"srt","Language":"eng"}
+                            {"Index":2,"Type":"Subtitle","Codec":"srt","Language":"eng","IsExternal":true}
                         ]
                     }],
                     "Chapters":[
@@ -138,12 +138,15 @@ fn mediabrowser_full_lifecycle_browse_stream_and_progress() {
     assert_eq!(detailed.markers[1], (30.0, "Drop".to_string()));
     assert_eq!(detailed.subtitles.len(), 1);
     assert!(
-        detailed.subtitles[0].contains("/Videos/item_rollercoaster/ms_1/Subtitles/2/Stream.srt")
+        detailed.subtitles[0]
+            .location
+            .contains("/Videos/item_rollercoaster/ms_1/Subtitles/2/Stream.srt")
     );
 
     // 4. Sidecars
     let sidecars = src.sidecars(&vr_items[1]).unwrap();
     assert_eq!(sidecars.subtitles.len(), 1);
+    assert_eq!(sidecars.subtitles[0].language.as_deref(), Some("eng"));
 
     // 5. Open stream and random access read
     let f = src.open(&vr_items[1].location).unwrap();

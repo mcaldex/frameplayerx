@@ -20,6 +20,7 @@ mod prober;
 mod seektest;
 mod services;
 mod settings;
+mod subtitles;
 mod ui;
 mod world;
 

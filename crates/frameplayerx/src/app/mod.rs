@@ -96,6 +96,9 @@ pub struct App {
     subs: Panel,
     sub_key: String,
     sub_textures: Vec<egui::TextureHandle>,
+    /// Sets subtitle text in any script, once its fonts have loaded.
+    sub_shaper: Option<ui::subtitle_text::SubtitleText>,
+    sub_fonts: Jobs<ui::subtitle_text::SubtitleText>,
     pointer: Pointer,
     pub playback: Option<Playback>,
     open_seq: u64,
@@ -180,6 +183,8 @@ impl App {
         let subs = panel([1600, 320], 1.6, 1.0);
         subs.ctx
             .style_mut(|s| s.visuals.panel_fill = egui::Color32::TRANSPARENT);
+        let sub_fonts = Jobs::new();
+        sub_fonts.spawn("fp-fonts", ui::subtitle_text::SubtitleText::load);
         let mut app = App {
             saved: settings.clone(),
             settings,
@@ -190,6 +195,8 @@ impl App {
             subs,
             sub_key: String::new(),
             sub_textures: Vec::new(),
+            sub_shaper: None,
+            sub_fonts,
             pointer: Pointer::default(),
             playback: None,
             open_seq: 0,
@@ -282,7 +289,10 @@ impl App {
 
     /// The renderer's image of a visible panel, for preview screenshots.
     pub fn panel_id(&self, name: &str) -> Option<fp_render::PanelId> {
-        let p = &self.panels[Self::panel_index(name)?];
+        let p = match name {
+            "subs" => &self.subs,
+            _ => &self.panels[Self::panel_index(name)?],
+        };
         p.visible.then_some(p.id).flatten()
     }
 

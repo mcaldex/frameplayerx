@@ -16,6 +16,7 @@ pub mod player;
 pub mod premium;
 pub mod settings;
 pub mod sources;
+pub mod subtitle_text;
 pub mod theme;
 pub mod thumbs;
 pub mod widgets;
@@ -483,6 +484,8 @@ pub struct UiState {
     pub settings_tab: SettingsTab,
     /// The controller input whose choices are open in Settings > Controller.
     pub remap_open: Option<RemapSlot>,
+    /// The subtitle languages are listed in Settings > Playback.
+    pub languages_open: bool,
     pub history: LibraryGrid,
     /// "Clear history" was pressed once: pressing again within a few
     /// seconds clears it.
@@ -535,6 +538,7 @@ impl Default for UiState {
             screen: Screen::Home,
             settings_tab: SettingsTab::Playback,
             remap_open: None,
+            languages_open: false,
             history: LibraryGrid::history(),
             clear_armed: None,
             home: None,

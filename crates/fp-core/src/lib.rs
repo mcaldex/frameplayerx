@@ -7,11 +7,13 @@
 //!   ([`ByteSource`], [`Entry`]).
 //! - [`playback`]: playback status and commands shared with haptics and the
 //!   remote-control API.
+//! - [`language`]: language tags of subtitle and audio tracks.
 //! - [`dirs`]: where FramePlayerX keeps config, data and cache.
 //! - [`sync`]: locking that survives a panicking thread.
 
 pub mod dirs;
 pub mod format;
+pub mod language;
 pub mod playback;
 pub mod source;
 pub mod sync;

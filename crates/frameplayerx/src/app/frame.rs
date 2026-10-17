@@ -391,6 +391,9 @@ impl App {
         anchor: Mat4,
         s: &fp_core::view::ViewSettings,
     ) {
+        if self.sub_shaper.is_none() {
+            self.sub_shaper = self.sub_fonts.poll().pop();
+        }
         let Some(p) = &self.playback else { return };
         let cues = p.player.subtitles();
         let key: String = cues
@@ -405,8 +408,9 @@ impl App {
         if key != self.sub_key && self.subs.visible {
             self.sub_key = key;
             let textures = &mut self.sub_textures;
+            let shaper = &mut self.sub_shaper;
             if let Err(e) = self.subs.paint(renderer, time, |ctx| {
-                ui::player::subtitles(ctx, &cues, textures);
+                ui::player::subtitles(ctx, &cues, textures, shaper.as_mut());
             }) {
                 log::error!("subtitles: {e}");
             }

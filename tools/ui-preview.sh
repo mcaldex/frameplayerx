@@ -32,6 +32,20 @@ cp "$data/camera_clip.mp4" "$home/Private/Rooftop.mp4"
 [{"type": "local", "id": "private", "name": "Private videos", "root": "$home/Private"}]
 EOF
 )
+# A video with Arabic (joined letters, right to left) and English subtitles.
+mkdir -p "$home/Subtitled"
+cp "$data/h264_aac_180_LR.mp4" "$home/Subtitled/Lantern.mp4"
+cat >"$home/Subtitled/Lantern.ar.srt" <<'EOF'
+1
+00:00:00,000 --> 00:10:00,000
+مرحبًا، هذه ترجمة عربية
+فيها كلمة English أيضًا
+EOF
+cat >"$home/Subtitled/Lantern.en.srt" <<'EOF'
+1
+00:00:00,000 --> 00:10:00,000
+Hello, these are English subtitles
+EOF
 
 script="$home/ui.fps"
 cat >"$script" <<EOF
@@ -153,6 +167,25 @@ panel main history
 screen home
 frames 4
 panel main home-watched
+# Subtitles in Settings > Playback, with the languages listed.
+screen settings playback
+languages
+point main 0.6 0.6
+stick 0 -1 30
+frames 8
+panel main settings-subtitles
+# The video with subtitle files, set to start in Arabic: the subtitles and
+# the Audio & subs tab.
+subtitles always ar
+open-in device-home $home/Subtitled/Lantern.mp4
+wait-playing
+wait 1
+pause
+frames 8
+panel subs subtitles-arabic
+adjust 5
+frames 8
+panel adjust adjust-subtitles
 EOF
 
 cargo build -p frameplayerx

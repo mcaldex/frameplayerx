@@ -3,14 +3,16 @@
 
 use crate::services::Opener;
 use crate::settings::Settings;
+use crate::subtitles::{self, Pick};
 use fp_core::format::{self, ContainerHints, DetectedFormat, Evidence, VideoFormat};
-use fp_core::source::Entry;
+use fp_core::source::{Entry, EntryKind, SubtitleFile};
 use fp_core::sync::lock;
 use fp_core::view::{Keyframes, ViewSettings};
 use fp_core::{PlaybackStatus, playback::now_ms};
 use fp_haptics::{Axis, Heatmap, Script};
 use fp_library::{Library, MediaId, SessionId};
 use fp_media::{Player, PlayerConfig, PlayerState, StreamInfo};
+use fp_sources::sidecar::subtitle_file;
 use fp_sources::urlutil::last_segment;
 use std::sync::Mutex;
 use std::thread::JoinHandle;
@@ -49,7 +51,7 @@ pub struct Playback {
     key_saved_at: Instant,
     pub heatmap: Option<Heatmap>,
     pub markers: Vec<(f64, String)>,
-    pub subtitle_files: Vec<(String, String)>,
+    pub subtitle_files: Vec<SubtitleFile>,
     pub active_subtitle_file: Option<usize>,
     pub script_count: usize,
     last_save: Instant,
@@ -149,6 +151,12 @@ pub fn open(
     // Feeds may need a details call to get the stream URL and metadata.
     let entry = match (&req.entry, &source) {
         (Some(e), Some(src)) => Some(src.details(e).unwrap_or_else(|_| e.clone())),
+        // From the library or home: a server's details still carry the
+        // video's subtitle files and chapters.
+        (None, Some(src)) if src.as_media_browser().is_some() => {
+            let e = Entry::new(name.clone(), req.location.clone(), EntryKind::Video);
+            src.details(&e).ok()
+        }
         (e, _) => e.clone(),
     };
     let location = entry
@@ -193,8 +201,26 @@ pub fn open(
     if !wait_closed(CLOSE_WAIT) {
         log::warn!("previous video still closing; opening anyway");
     }
-    let player = Player::open(src, &name, player_config(settings, start_at))
-        .map_err(|e| failed(format!("{name}: {e}")))?;
+    let (script_locs, subs) = sidecars(
+        &location,
+        &name,
+        entry.as_ref(),
+        record.as_ref(),
+        source,
+        settings.haptics_enabled,
+    );
+    let mut pick = Pick::Off;
+    let player = Player::open(src, &name, player_config(settings, start_at), |info| {
+        pick = subtitles::choose(
+            settings.subtitles,
+            &settings.subtitle_language,
+            info,
+            &subs,
+            &name,
+        );
+        pick.stream()
+    })
+    .map_err(|e| failed(format!("{name}: {e}")))?;
     let info = player.info().clone();
     if settings.hardware_decoding {
         warn_if_software(&name, &info, &player.stats());
@@ -202,13 +228,6 @@ pub fn open(
     let (resolved, detected) =
         detect_format(&name, &info, entry.as_ref(), record.as_ref(), settings);
 
-    let (script_locs, subs) = sidecars(
-        &location,
-        entry.as_ref(),
-        record.as_ref(),
-        source,
-        settings.haptics_enabled,
-    );
     let scripts = load_scripts(opener, &script_locs);
     let duration_ms = (info.duration * 1000.0) as i64;
     let heatmap = scripts
@@ -216,7 +235,12 @@ pub fn open(
         .find(|(a, _)| *a == Axis::L0)
         .filter(|_| duration_ms > 0)
         .map(|(_, s)| fp_haptics::heatmap_range(s, 0, duration_ms, 240));
-    let active_subtitle_file = load_first_subtitles(opener, &player, &subs);
+    let active_subtitle_file = match pick {
+        Pick::File(i) => load_subtitle_file(opener, &player, &subs[i])
+            .ok()
+            .map(|()| i),
+        _ => None,
+    };
 
     let settings_v = record
         .as_ref()
@@ -345,35 +369,33 @@ fn detect_format(
     (resolved, detected)
 }
 
-/// Haptic script locations (with `with_scripts`) and (name, location)
-/// subtitles for a video: from its library record, its entry, then the
-/// source's sidecar files; scripts of a local file not otherwise found are
-/// looked for beside it and in the Interactive folder.
+/// Haptic script locations (with `with_scripts`) and subtitle files for the
+/// video `name`: from its library record, its entry, then the source's
+/// sidecar files; scripts of a local file not otherwise found are looked for
+/// beside it and in the Interactive folder.
 fn sidecars(
     location: &str,
+    name: &str,
     entry: Option<&Entry>,
     record: Option<&fp_library::MediaRecord>,
     source: Option<std::sync::Arc<dyn fp_sources::Source>>,
     with_scripts: bool,
-) -> (Vec<String>, Vec<(String, String)>) {
+) -> (Vec<String>, Vec<SubtitleFile>) {
     let mut scripts: Vec<String> = record.map(|r| r.scripts.clone()).unwrap_or_default();
-    let mut subs: Vec<(String, String)> = record
-        .map(|r| {
-            r.subtitles
-                .iter()
-                .map(|s| (last_segment(s), s.clone()))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut subs = Vec::new();
     if let Some(e) = entry {
         scripts.extend(e.scripts.iter().cloned());
-        subs.extend(e.subtitles.iter().map(|s| (last_segment(s), s.clone())));
-        if let Some(src) = source
-            && let Ok(side) = src.sidecars(e)
-        {
-            scripts.extend(side.scripts.into_iter().map(|s| s.location));
-            subs.extend(side.subtitles.into_iter().map(|s| (s.name, s.location)));
+        match source.and_then(|src| src.sidecars(e).ok()) {
+            Some(side) => {
+                scripts.extend(side.scripts.into_iter().map(|s| s.location));
+                subs.extend(side.subtitles);
+            }
+            None => subs.extend(fp_sources::Sidecars::from_entry(e).subtitles),
         }
+    }
+    // The record knows only where its files are; their names tell the rest.
+    if let Some(r) = record {
+        subs.extend(r.subtitles.iter().map(|l| subtitle_file(l, name)));
     }
     if !with_scripts {
         scripts.clear();
@@ -385,7 +407,8 @@ fn sidecars(
             .collect();
     }
     scripts.dedup();
-    subs.dedup_by(|a, b| a.1 == b.1);
+    let mut seen = std::collections::HashSet::new();
+    subs.retain(|s| seen.insert(s.location.clone()));
     (scripts, subs)
 }
 
@@ -403,23 +426,21 @@ fn load_scripts(opener: &Opener, locations: &[String]) -> Vec<(Axis, Script)> {
     scripts
 }
 
-/// Shows the first subtitle file; its index when it loaded.
-fn load_first_subtitles(
+/// Shows a subtitle file in place of any other.
+pub fn load_subtitle_file(
     opener: &Opener,
     player: &Player,
-    subs: &[(String, String)],
-) -> Option<usize> {
-    let (name, loc) = subs.first()?;
-    match opener
-        .open(loc)
-        .and_then(|s| player.load_subtitles(s, name).map_err(|e| e.to_string()))
-    {
-        Ok(_) => Some(0),
-        Err(e) => {
-            log::warn!("subtitles {loc}: {e}");
-            None
-        }
+    file: &SubtitleFile,
+) -> Result<(), String> {
+    let loaded = opener.open(&file.location).and_then(|s| {
+        player
+            .load_subtitles(s, &last_segment(&file.location))
+            .map_err(|e| e.to_string())
+    });
+    if let Err(e) = &loaded {
+        log::warn!("subtitles {}: {e}", file.location);
     }
+    loaded.map(|_| ())
 }
 
 /// Chapters, the source's markers and the user's bookmarks, in time order.
@@ -857,6 +878,8 @@ mod tests {
             language: None,
             title: None,
             default: true,
+            forced: false,
+            hearing_impaired: false,
             width: 8192,
             height: 4096,
             fps: 59.94,

@@ -272,6 +272,33 @@ MP3, DTS, TrueHD, PCM (Blu-ray and DVD LPCM too), and spatial (ambisonic)
 audio that follows your head.
 Subtitles: SRT, ASS/SSA, WebVTT, and embedded text or picture subtitles.
 
+### Subtitles
+
+Subtitles come from inside the video or from files beside it, named after
+it: `Movie.srt`, `Movie.en.srt`, `Movie.de.forced.ass`. Jellyfin and Emby
+servers offer the subtitle files they keep, and DeoVR feeds and HereSphere
+APIs those they list.
+
+Settings › Playback › **Subtitles** sets what a video starts with:
+
+- **Automatic** (the default): subtitles in your language when the audio
+  is in another one, forced subtitles for the parts in another language
+  (signs, a few lines of foreign dialogue), and a subtitle file named
+  exactly like the video.
+- **Always**: subtitles in your language whenever the video has them.
+- **Off**: none.
+
+**Your language** starts as the system's (English when it has none). While
+a video plays, **⚙** › **Audio & subs** lists all its subtitles by
+language and switches between them.
+
+Subtitles show in any script, with the fonts on the headset: Arabic and
+Hebrew read right to left, and Chinese, Japanese or Korean need a font
+that covers them. If subtitles in a language show nothing or boxes, copy a
+font for it (the Noto fonts cover every language) into
+`~/.local/share/fonts` and restart FramePlayerX; frameplayerx.log names
+the characters it had no font for.
+
 ### Videos that stutter: 10-bit HEVC and AV1
 
 The Frame's hardware decoder plays 8-bit 4:2:0 H.264 and HEVC (H.265), up

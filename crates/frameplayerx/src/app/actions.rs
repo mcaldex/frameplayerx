@@ -238,16 +238,11 @@ impl App {
         let Some(p) = &mut self.playback else { return };
         p.player.clear_external_subtitles();
         p.active_subtitle_file = None;
-        let Some((name, loc)) = i.and_then(|i| p.subtitle_files.get(i).cloned()) else {
+        let Some(file) = i.and_then(|i| p.subtitle_files.get(i)) else {
             return;
         };
-        let loaded = self
-            .services
-            .opener
-            .open(&loc)
-            .and_then(|s| p.player.load_subtitles(s, &name).map_err(|e| e.to_string()));
-        match loaded {
-            Ok(_) => p.active_subtitle_file = i,
+        match playback::load_subtitle_file(&self.services.opener, &p.player, file) {
+            Ok(()) => p.active_subtitle_file = i,
             Err(e) => self.ui.toast(format!("Subtitles: {e}")),
         }
     }

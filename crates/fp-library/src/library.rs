@@ -258,7 +258,7 @@ impl MediaUpsert {
         u.duration = entry.duration.filter(|d| d.is_finite() && *d > 0.0);
         u.thumbnail_url = entry.thumbnail_url.clone();
         u.scripts = entry.scripts.clone();
-        u.subtitles = entry.subtitles.clone();
+        u.subtitles = entry.subtitles.iter().map(|s| s.location.clone()).collect();
         u.source_markers = Some(entry.markers.clone());
         Ok(u)
     }

@@ -78,10 +78,7 @@ pub fn parse_heresphere_video(v: &Value, base: &str) -> SceneInfo {
             .iter()
             .filter_map(|s| url_field(s, "url", base))
             .collect(),
-        subtitles: array(v, "subtitles")
-            .iter()
-            .filter_map(|s| url_field(s, "url", base))
-            .collect(),
+        subtitles: super::subtitle_files(v, base),
         markers,
         description: text(v, "description"),
         released: date_field(v, "dateReleased"),
@@ -256,7 +253,14 @@ mod tests {
         );
         assert_eq!(s.best_source(Some(2000)).unwrap().url, "http://x/3k.mp4");
         assert_eq!(s.best_source(None).unwrap().size, Some(123));
-        assert_eq!(s.subtitles, ["http://x/Beach.en.srt"]);
+        assert_eq!(s.subtitles[0].location, "http://x/Beach.en.srt");
+        assert_eq!(
+            (
+                s.subtitles[0].name.as_str(),
+                s.subtitles[0].language.as_deref()
+            ),
+            ("English", Some("en"))
+        );
         assert_eq!(s.markers, [(1.5, "Talk".to_string())]);
     }
 

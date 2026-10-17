@@ -78,6 +78,8 @@ pub fn subhead() -> TextStyle {
     TextStyle::Name("subhead".into())
 }
 
+pub const INTER_REGULAR: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
+
 fn fonts() -> FontDefinitions {
     let mut defs = FontDefinitions::default();
     let fallbacks: Vec<String> = defs.families[&FontFamily::Proportional].clone();
@@ -85,10 +87,7 @@ fn fonts() -> FontDefinitions {
         defs.font_data
             .insert(name.into(), Arc::new(FontData::from_static(bytes)));
     };
-    add(
-        "inter",
-        include_bytes!("../../assets/fonts/Inter-Regular.ttf"),
-    );
+    add("inter", INTER_REGULAR);
     add(
         "inter-medium",
         include_bytes!("../../assets/fonts/Inter-Medium.ttf"),
