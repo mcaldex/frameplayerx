@@ -79,7 +79,7 @@ impl Opener {
                 Err(e) => last = e.to_string(),
             }
         }
-        if location.starts_with("http://") || location.starts_with("https://") {
+        if fp_sources::urlutil::is_http_url(location) {
             return self
                 .http
                 .open(location)

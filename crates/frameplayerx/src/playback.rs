@@ -11,6 +11,7 @@ use fp_core::{PlaybackStatus, playback::now_ms};
 use fp_haptics::{Axis, Heatmap, Script};
 use fp_library::{Library, MediaId, SessionId};
 use fp_media::{Player, PlayerConfig, PlayerState, StreamInfo};
+use fp_sources::urlutil::last_segment;
 use std::sync::Mutex;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -117,33 +118,6 @@ pub struct Opened {
     pub scripts: Vec<(Axis, Script)>,
 }
 
-fn file_name(location: &str) -> String {
-    let trimmed = location.split(['?', '#']).next().unwrap_or(location);
-    let last = trimmed.rsplit('/').next().unwrap_or(trimmed);
-    percent_decode(last)
-}
-
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && i + 2 < bytes.len()
-            && let Some(v) = s
-                .get(i + 1..i + 3)
-                .and_then(|h| u8::from_str_radix(h, 16).ok())
-        {
-            out.push(v);
-            i += 3;
-            continue;
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
 fn title_from_name(name: &str) -> String {
     let stem = name.rsplit_once('.').map(|(s, _)| s).unwrap_or(name);
     stem.replace(['_', '.'], " ").trim().to_string()
@@ -171,7 +145,7 @@ pub fn open(
     library: &Library,
     settings: &Settings,
 ) -> Result<Opened, String> {
-    let name = file_name(&req.location);
+    let name = last_segment(&req.location);
     // Feeds may need a details call to get the stream URL and metadata.
     let entry = match (
         &req.entry,
@@ -315,13 +289,13 @@ pub fn open(
         .map(|r| {
             r.subtitles
                 .iter()
-                .map(|s| (file_name(s), s.clone()))
+                .map(|s| (last_segment(s), s.clone()))
                 .collect()
         })
         .unwrap_or_default();
     if let Some(e) = &entry {
         script_locs.extend(e.scripts.iter().cloned());
-        subs.extend(e.subtitles.iter().map(|s| (file_name(s), s.clone())));
+        subs.extend(e.subtitles.iter().map(|s| (last_segment(s), s.clone())));
         if let Some(src) = req.source_id.as_deref().and_then(|id| opener.source(id))
             && let Ok(side) = src.sidecars(e)
         {
@@ -342,7 +316,7 @@ pub fn open(
     let mut scripts = Vec::new();
     for loc in &script_locs {
         match opener.fetch(loc, 64 << 20).and_then(|bytes| {
-            fp_haptics::funscript::parse_script_file(&file_name(loc), &bytes)
+            fp_haptics::funscript::parse_script_file(&last_segment(loc), &bytes)
                 .map_err(|e| e.to_string())
         }) {
             Ok(mut s) => scripts.append(&mut s),
@@ -753,14 +727,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn names_and_titles() {
-        assert_eq!(
-            file_name("http://h/a%20b/Scene_180_LR.mp4?token=1"),
-            "Scene_180_LR.mp4"
-        );
-        assert_eq!(file_name("/media/x/My.Video_2024.mkv"), "My.Video_2024.mkv");
+    fn titles_from_names() {
         assert_eq!(title_from_name("My.Video_2024.mkv"), "My Video 2024");
-        assert_eq!(percent_decode("a%2Fb%zz"), "a/b%zz");
     }
 
     #[test]
@@ -781,7 +749,7 @@ mod tests {
                 projection: Some(f.projection),
                 stereo: Some(f.stereo),
             });
-            format::resolve(None, hints, &file_name(loc), 2160, 1080).format
+            format::resolve(None, hints, &last_segment(loc), 2160, 1080).format
         };
 
         // From the source's browser and from the library or home (no

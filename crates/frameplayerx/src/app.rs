@@ -1569,12 +1569,7 @@ impl App {
                     f.qc_secret = None;
                 }
                 self.jobs.spawn("quick_connect_initiate", move || {
-                    let addr = if address.starts_with("http://") || address.starts_with("https://")
-                    {
-                        address
-                    } else {
-                        format!("http://{address}")
-                    };
+                    let addr = fp_sources::urlutil::with_http_scheme(&address);
                     Job::QuickConnectInitiated(
                         fp_sources::quick_connect_initiate_url(&addr, insecure_tls)
                             .map_err(|e| e.to_string()),
@@ -1587,12 +1582,7 @@ impl App {
                 insecure_tls,
             } => {
                 self.jobs.spawn("quick_connect_poll", move || {
-                    let addr = if address.starts_with("http://") || address.starts_with("https://")
-                    {
-                        address
-                    } else {
-                        format!("http://{address}")
-                    };
+                    let addr = fp_sources::urlutil::with_http_scheme(&address);
                     Job::QuickConnectPolled(
                         fp_sources::quick_connect_poll_url(&addr, &secret, insecure_tls)
                             .map_err(|e| e.to_string()),

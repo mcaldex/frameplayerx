@@ -5,7 +5,7 @@ use super::theme::{self, Weight};
 use super::widgets::{self, Kind, Tip};
 use super::{Action, Back, PinForm, Screen, SourceForm, SourcePage, View, icons};
 use egui::{Align, Align2, Color32, Layout, RichText, Sense, Vec2};
-use fp_sources::{Credentials, SourceConfig, SourceKind};
+use fp_sources::{Credentials, SourceConfig, SourceKind, urlutil};
 
 pub(super) fn kind_icon(kind: SourceKind) -> &'static str {
     match kind {
@@ -1035,13 +1035,11 @@ pub fn build_config(f: &SourceForm, id: String) -> Result<SourceConfig, String> 
         f.name.trim().to_string()
     };
     let http_url = |a: &str| -> Result<String, String> {
-        let clean = a.trim_end_matches('/');
-        if clean.starts_with("http://") || clean.starts_with("https://") {
-            Ok(clean.to_string())
-        } else if clean.contains("://") {
-            Err("Address must start with http:// or https://".into())
+        let url = urlutil::with_http_scheme(a.trim_end_matches('/'));
+        if urlutil::is_http_url(&url) {
+            Ok(url)
         } else {
-            Ok(format!("http://{clean}"))
+            Err("Address must start with http:// or https://".into())
         }
     };
     Ok(match f.kind {
