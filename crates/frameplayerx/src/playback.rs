@@ -558,14 +558,15 @@ impl Playback {
         self.key_pending = true;
     }
 
-    pub fn add_bookmark(&mut self, library: &Library) {
+    pub fn add_bookmark(&mut self, library: &Library) -> fp_library::Result<()> {
         let t = self.player.position();
         let name = format!("Bookmark {}", crate::ui::fmt_time(t));
         if let Some(id) = self.record_id {
-            let _ = library.add_marker(id, t, &name);
+            library.add_marker(id, t, &name)?;
         }
         self.markers.push((t, name));
         self.markers.sort_by(|a, b| a.0.total_cmp(&b.0));
+        Ok(())
     }
 
     /// Saves where the video was and closes it. The player's threads are
@@ -768,8 +769,11 @@ mod tests {
 
         // A format guessed from the name or shape is not a declaration.
         let local = "/v/Clip_LR.mp4";
-        lib.upsert(&fp_library::MediaUpsert::new(local, "local"))
-            .unwrap();
+        lib.upsert(&fp_library::MediaUpsert::new(
+            local,
+            crate::services::LIBRARY_SOURCE,
+        ))
+        .unwrap();
         let r = lib.get_by_location(local).unwrap();
         assert_eq!(declared_format(None, r.as_ref()), None);
     }

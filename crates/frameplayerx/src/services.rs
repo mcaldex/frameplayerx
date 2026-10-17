@@ -13,6 +13,20 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
+/// A configured source that could not be built.
+#[derive(Debug)]
+pub struct SourceError {
+    pub id: String,
+    pub name: String,
+    pub error: fp_sources::Error,
+}
+
+impl std::fmt::Display for SourceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.name, self.error)
+    }
+}
+
 /// Resolves locations to readable byte sources: local paths directly,
 /// everything else through the configured source that owns it.
 pub struct Opener {
@@ -28,7 +42,7 @@ impl Opener {
         }
     }
 
-    pub fn set_sources(&self, configs: &[SourceConfig]) -> Vec<String> {
+    pub fn set_sources(&self, configs: &[SourceConfig]) -> Vec<SourceError> {
         let mut map = HashMap::new();
         let mut errors = Vec::new();
         for c in builtin_sources().iter().chain(configs) {
@@ -36,7 +50,11 @@ impl Opener {
                 Ok(s) => {
                     map.insert(c.id().to_string(), Arc::<dyn Source>::from(s));
                 }
-                Err(e) => errors.push(format!("{}: {e}", c.name())),
+                Err(error) => errors.push(SourceError {
+                    id: c.id().to_string(),
+                    name: c.name().to_string(),
+                    error,
+                }),
             }
         }
         *write(&self.sources) = map;
@@ -127,6 +145,8 @@ pub fn builtin_sources() -> Vec<SourceConfig> {
     out
 }
 
+/// The source id the library's folder scans record videos under.
+pub const LIBRARY_SOURCE: &str = "local";
 pub const HOME_SOURCE: &str = "device-home";
 pub const REMOVABLE_SOURCE: &str = "device-removable";
 /// The headset as one place to browse: its indexed videos, and the home
@@ -299,13 +319,19 @@ pub struct Services {
     /// Holds the metadata worker off (see [`crate::prober::FfmpegProber`]).
     worker_busy: Arc<std::sync::atomic::AtomicBool>,
     pub haptics: HapticsEngine,
-    pub haptic_devices: Vec<(
-        HapticDeviceConfig,
-        Option<fp_haptics::DeviceId>,
-        Option<String>,
-    )>,
+    /// The configured devices that were tried, in the order they answered.
+    haptic_devices: Vec<HapticDeviceSlot>,
     pub remote: Option<RemoteHub>,
     pub remote_error: Option<String>,
+}
+
+/// A configured haptic device and how connecting it went.
+pub struct HapticDeviceSlot {
+    pub config: HapticDeviceConfig,
+    /// Its id in the haptics engine, once connected.
+    pub id: Option<fp_haptics::DeviceId>,
+    /// Why it could not connect.
+    pub error: Option<String>,
 }
 
 /// Library access for the web remote.
@@ -411,8 +437,13 @@ impl Services {
         }
     }
 
+    /// The configuration of source `id`, if the user added it.
+    pub fn source_config(&self, id: &str) -> Option<&SourceConfig> {
+        self.source_configs.iter().find(|c| c.id() == id)
+    }
+
     /// Persists the source list (mode 0600) and rebuilds the sources.
-    pub fn set_sources(&mut self, configs: Vec<SourceConfig>) -> Vec<String> {
+    pub fn set_sources(&mut self, configs: Vec<SourceConfig>) -> Vec<SourceError> {
         if let Err(e) = fp_sources::save_configs(&Settings::sources_path(), &configs) {
             log::error!("saving sources: {e}");
         }
@@ -423,35 +454,76 @@ impl Services {
 
     /// Connects one haptic device (blocking: call from a job thread).
     pub fn connect_device(cfg: &HapticDeviceConfig) -> Result<Box<dyn fp_haptics::Device>, String> {
+        use fp_haptics::{buttplug, handy, tcode};
+        fn boxed<D: fp_haptics::Device + 'static>(
+            r: Result<D, impl std::fmt::Display>,
+        ) -> Result<Box<dyn fp_haptics::Device>, String> {
+            r.map(|d| Box::new(d) as Box<dyn fp_haptics::Device>)
+                .map_err(|e| e.to_string())
+        }
         match cfg {
             HapticDeviceConfig::Tcode { endpoint } => {
-                let endpoint =
-                    fp_haptics::tcode::TcodeEndpoint::parse(endpoint).map_err(|e| e.to_string())?;
-                fp_haptics::tcode::TcodeDevice::connect(fp_haptics::tcode::TcodeConfig {
+                let endpoint = tcode::TcodeEndpoint::parse(endpoint).map_err(|e| e.to_string())?;
+                boxed(tcode::TcodeDevice::connect(tcode::TcodeConfig {
                     endpoint,
                     ..Default::default()
-                })
-                .map(|d| Box::new(d) as Box<dyn fp_haptics::Device>)
-                .map_err(|e| e.to_string())
+                }))
             }
-            HapticDeviceConfig::Buttplug { url } => fp_haptics::buttplug::ButtplugDevice::connect(
-                fp_haptics::buttplug::ButtplugConfig {
+            HapticDeviceConfig::Buttplug { url } => boxed(buttplug::ButtplugDevice::connect(
+                buttplug::ButtplugConfig {
                     url: url.clone(),
                     client_name: "FramePlayerX".into(),
                     ..Default::default()
                 },
-            )
-            .map(|d| Box::new(d) as Box<dyn fp_haptics::Device>)
-            .map_err(|e| e.to_string()),
+            )),
             HapticDeviceConfig::Handy { key } => {
-                fp_haptics::handy::HandyDevice::connect(fp_haptics::handy::HandyConfig {
+                boxed(handy::HandyDevice::connect(handy::HandyConfig {
                     connection_key: key.clone(),
                     ..Default::default()
-                })
-                .map(|d| Box::new(d) as Box<dyn fp_haptics::Device>)
-                .map_err(|e| e.to_string())
+                }))
             }
         }
+    }
+
+    /// Records how connecting `config` went, replacing an earlier attempt
+    /// (and its device in the engine).
+    pub fn device_connected(
+        &mut self,
+        config: HapticDeviceConfig,
+        result: Result<Box<dyn fp_haptics::Device>, String>,
+    ) {
+        self.remove_device(&config);
+        let (id, error) = match result {
+            Ok(d) => (Some(self.haptics.add_device(d)), None),
+            Err(e) => (None, Some(e)),
+        };
+        self.haptic_devices
+            .push(HapticDeviceSlot { config, id, error });
+    }
+
+    /// Disconnects `config`'s device and forgets how connecting it went.
+    pub fn remove_device(&mut self, config: &HapticDeviceConfig) {
+        self.haptic_devices.retain(|s| {
+            let same = s.config == *config;
+            if same && let Some(id) = s.id {
+                self.haptics.remove_device(id);
+            }
+            !same
+        });
+    }
+
+    /// Disconnects every device.
+    pub fn remove_devices(&mut self) {
+        for s in self.haptic_devices.drain(..) {
+            if let Some(id) = s.id {
+                self.haptics.remove_device(id);
+            }
+        }
+    }
+
+    /// How connecting `config` went; `None` while it is being tried.
+    pub fn haptic_device(&self, config: &HapticDeviceConfig) -> Option<&HapticDeviceSlot> {
+        self.haptic_devices.iter().find(|s| s.config == *config)
     }
 
     /// Starts or stops the remote-control servers to match `config`.

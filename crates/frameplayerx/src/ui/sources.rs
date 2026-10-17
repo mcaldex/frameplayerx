@@ -278,9 +278,7 @@ fn browse(ui: &mut egui::Ui, v: &mut View) {
     };
     let kind = v
         .services
-        .source_configs
-        .iter()
-        .find(|c| c.id() == sv.source)
+        .source_config(&sv.source)
         .map(|c| c.kind().label())
         .unwrap_or("Folder");
     let back = match &mut sv.page {
@@ -327,7 +325,7 @@ fn lock_source(v: &mut View, id: &str, name: &str) {
 
 /// Opens the form editing source `id`.
 fn edit(v: &mut View, id: &str) {
-    if let Some(cfg) = v.services.source_configs.iter().find(|c| c.id() == id) {
+    if let Some(cfg) = v.services.source_config(id) {
         v.state.source_form = Some(edit_form(cfg));
     }
 }

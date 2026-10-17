@@ -445,7 +445,7 @@ impl App {
             let (mut added, mut missing, mut errors) = (0, 0, Vec::new());
             for f in &folders {
                 let mut last = Instant::now();
-                let r = lib.scan_folder(f, "local", &opts, |p| {
+                let r = lib.scan_folder(f, crate::services::LIBRARY_SOURCE, &opts, |p| {
                     if last.elapsed() > Duration::from_millis(300) {
                         last = Instant::now();
                         let _ = tx.send(Job::Status(format!(
@@ -476,16 +476,13 @@ impl App {
         crate::pin::locked(&self.settings.source_pins, &self.ui.unlocked_sources, id)
     }
 
-    /// The sources the user added.
-    pub(crate) fn source_configs(&self) -> &[fp_sources::SourceConfig] {
-        &self.services.source_configs
+    pub(crate) fn source_config(&self, id: &str) -> Option<&fp_sources::SourceConfig> {
+        self.services.source_config(id)
     }
 
     pub(crate) fn source_name(&self, id: &str) -> String {
         self.services
-            .source_configs
-            .iter()
-            .find(|c| c.id() == id)
+            .source_config(id)
             .map(|c| c.name().to_string())
             .unwrap_or_else(|| id.to_string())
     }
@@ -522,9 +519,7 @@ impl App {
         }
         let root = self
             .services
-            .source_configs
-            .iter()
-            .find(|c| c.id() == source)
+            .source_config(source)
             .map(crate::pin::source_root)?;
         self.locked_by(&root)
     }
@@ -661,9 +656,7 @@ impl App {
         }
         let Some(kind) = self
             .services
-            .source_configs
-            .iter()
-            .find(|c| c.id() == source)
+            .source_config(&source)
             .map(fp_sources::SourceConfig::kind)
         else {
             self.ui.toast("That source is not available");
@@ -795,11 +788,7 @@ impl App {
         self.update = None;
         self.update_check += 1;
         let seq = self.update_check;
-        let channel = if self.settings.update_channel == "beta" {
-            fp_updater::Channel::Beta
-        } else {
-            fp_updater::Channel::Stable
-        };
+        let channel = self.settings.update_channel;
         self.jobs.spawn("update-check", move || {
             match fp_updater::check_channel(env!("CARGO_PKG_VERSION"), channel) {
                 Ok(Some(u)) => Job::UpdateChecked(
@@ -991,19 +980,13 @@ impl App {
                         Err(e) => self.ui.toast(format!("Network search failed: {e}")),
                     }
                 }
-                Job::Device(cfg, r) => match r {
-                    Ok(d) => {
-                        let id = self.services.haptics.add_device(d);
-                        self.services.haptic_devices.retain(|(c, _, _)| *c != cfg);
-                        self.services.haptic_devices.push((cfg, Some(id), None));
-                    }
-                    Err(e) => {
+                Job::Device(cfg, r) => {
+                    if let Err(e) = &r {
                         log::warn!("haptics {}: {e}", cfg.label());
                         self.ui.toast(format!("{}: {e}", cfg.label()));
-                        self.services.haptic_devices.retain(|(c, _, _)| *c != cfg);
-                        self.services.haptic_devices.push((cfg, None, Some(e)));
                     }
-                },
+                    self.services.device_connected(cfg, r);
+                }
                 Job::Mounted(device, r) => match r {
                     // check_mounts announces the new drive.
                     Ok(p) => log::info!("mounted /dev/{device} at {}", p.display()),
@@ -1242,8 +1225,10 @@ impl App {
             }
             Action::AddBookmark => {
                 if let Some(p) = &mut self.playback {
-                    p.add_bookmark(&lib);
-                    self.ui.toast("Bookmark added");
+                    match p.add_bookmark(&lib) {
+                        Ok(()) => self.ui.toast("Bookmark added"),
+                        Err(e) => self.not_saved("the bookmark", &e),
+                    }
                 }
             }
             Action::SelectAudio(i) => {
@@ -1271,15 +1256,21 @@ impl App {
                 }
             }
             Action::SetFavorite(id, f) => {
-                let _ = lib.set_favorite(id, f);
+                if let Err(e) = lib.set_favorite(id, f) {
+                    self.not_saved("the favorite", &e);
+                }
                 self.ui.invalidate();
             }
             Action::SetRating(id, r) => {
-                let _ = lib.set_rating(id, r);
+                if let Err(e) = lib.set_rating(id, r) {
+                    self.not_saved("the rating", &e);
+                }
                 self.ui.invalidate();
             }
             Action::SetUserFormat(id, f) => {
-                let _ = lib.set_user_format(id, f);
+                if let Err(e) = lib.set_user_format(id, f) {
+                    self.not_saved("the format", &e);
+                }
                 self.ui.invalidate();
             }
             Action::RemoveFromHistory(id) => {
@@ -1316,8 +1307,8 @@ impl App {
                 let mut list = self.services.source_configs.clone();
                 list.push(cfg.clone());
                 let errors = self.services.set_sources(list);
-                match errors.into_iter().find(|e| e.starts_with(cfg.name())) {
-                    Some(e) => self.ui.toast(e),
+                match errors.into_iter().find(|e| e.id == cfg.id()) {
+                    Some(e) => self.ui.toast(e.to_string()),
                     None => {
                         self.ui.toast(format!("Added {}", cfg.name()));
                         self.open_source(cfg.id().to_string(), Screen::Sources);
@@ -1339,8 +1330,8 @@ impl App {
                     .map(|c| if c.id() == id { cfg.clone() } else { c.clone() })
                     .collect();
                 let errors = self.services.set_sources(list);
-                match errors.into_iter().find(|e| e.starts_with(cfg.name())) {
-                    Some(e) => self.ui.toast(e),
+                match errors.into_iter().find(|e| e.id == id) {
+                    Some(e) => self.ui.toast(e.to_string()),
                     None => self.ui.toast(format!("Saved {}", cfg.name())),
                 }
                 // A browser of it was made with the old details, and so was
@@ -1348,7 +1339,7 @@ impl App {
                 if self.ui.source.as_ref().is_some_and(|s| s.source == id) {
                     self.ui.source = None;
                 }
-                let _ = std::fs::remove_file(feed_listing_path(&id));
+                let _ = std::fs::remove_file(fp_sources::FeedLibrary::cache_path(&id));
                 self.ui.home = None;
             }
             Action::RemoveSource(id) => {
@@ -1361,7 +1352,7 @@ impl App {
                 if self.ui.source.as_ref().is_some_and(|s| s.source == id) {
                     self.ui.source = None;
                 }
-                let _ = std::fs::remove_file(feed_listing_path(&id));
+                let _ = std::fs::remove_file(fp_sources::FeedLibrary::cache_path(&id));
                 // Its videos go with it, except what was watched or marked.
                 match lib.forget_unwatched(&id) {
                     Ok(n) if n > 0 => log::info!("forgot {n} unwatched videos of {id}"),
@@ -1470,7 +1461,7 @@ impl App {
                 };
                 let tx = self.jobs.sender();
                 self.jobs.spawn("feed", move || {
-                    let path = feed_listing_path(&source);
+                    let path = fp_sources::FeedLibrary::cache_path(&source);
                     let save = |lib: &fp_sources::FeedLibrary| {
                         if let Err(e) = lib.save(&path) {
                             log::warn!("saving the listing of {source}: {e}");
@@ -1598,25 +1589,11 @@ impl App {
             Action::RemoveDevice(i) => {
                 if i < self.settings.haptic_devices.len() {
                     let cfg = self.settings.haptic_devices.remove(i);
-                    if let Some(pos) = self
-                        .services
-                        .haptic_devices
-                        .iter()
-                        .position(|(c, _, _)| *c == cfg)
-                    {
-                        let (_, id, _) = self.services.haptic_devices.remove(pos);
-                        if let Some(id) = id {
-                            self.services.haptics.remove_device(id);
-                        }
-                    }
+                    self.services.remove_device(&cfg);
                 }
             }
             Action::ReconnectDevices => {
-                for (_, id, _) in self.services.haptic_devices.drain(..) {
-                    if let Some(id) = id {
-                        self.services.haptics.remove_device(id);
-                    }
-                }
+                self.services.remove_devices();
                 for cfg in self.settings.haptic_devices.clone() {
                     self.connect_device(cfg);
                 }
@@ -1645,6 +1622,12 @@ impl App {
                 self.show_browser = false;
             }
         }
+    }
+
+    /// Tells the user a change to the library could not be saved.
+    fn not_saved(&mut self, what: &str, e: &fp_library::Error) {
+        log::warn!("saving {what}: {e}");
+        self.ui.toast(format!("Couldn't save {what}: {e}"));
     }
 
     /// Saves and applies settings edited through the UI.
@@ -1951,13 +1934,7 @@ impl App {
     fn back(&mut self) {
         if self.panels[KEYBOARD].visible {
             if let Some(i) = self.keyboard_target() {
-                self.panels[i].push(egui::Event::Key {
-                    key: egui::Key::Escape,
-                    physical_key: None,
-                    pressed: true,
-                    repeat: false,
-                    modifiers: egui::Modifiers::NONE,
-                });
+                self.panels[i].push(escape());
             }
             return;
         }
@@ -2215,23 +2192,20 @@ impl App {
             let shift = &mut self.ui.keyboard_shift;
             let symbols = &mut self.ui.keyboard_symbols;
             if self.panels[KEYBOARD].needs_paint() {
-                let _ = self.panels[KEYBOARD].paint(renderer, input.time, |ctx| {
+                let r = self.panels[KEYBOARD].paint(renderer, input.time, |ctx| {
                     let (e, c) = ui::keyboard::keyboard(ctx, shift, symbols);
                     events = e;
                     close = c;
                 });
+                if let Err(e) = r {
+                    log::error!("painting the keyboard: {e}");
+                }
             }
             for e in events {
                 self.panels[target].push(e);
             }
             if close {
-                self.panels[target].push(egui::Event::Key {
-                    key: egui::Key::Escape,
-                    physical_key: None,
-                    pressed: true,
-                    repeat: false,
-                    modifiers: egui::Modifiers::NONE,
-                });
+                self.panels[target].push(escape());
             }
         }
         for a in actions {
@@ -2376,19 +2350,15 @@ impl App {
     }
 }
 
-/// Where a scene feed's last listing is kept, to show at once next time
-/// (see [`fp_sources::FeedLibrary::save`]).
-fn feed_listing_path(source: &str) -> std::path::PathBuf {
-    let name: String = source
-        .chars()
-        .map(|c| match c {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' => c,
-            _ => '_',
-        })
-        .collect();
-    fp_core::dirs::cache_dir()
-        .join("feeds")
-        .join(format!("{name}.json"))
+/// The Escape key, which closes the focused text field's keyboard.
+fn escape() -> egui::Event {
+    egui::Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }
 }
 
 /// A feed scene's details (`full`: with its media sources, for its page).

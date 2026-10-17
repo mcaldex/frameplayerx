@@ -659,6 +659,21 @@ impl FeedLibrary {
         }
     }
 
+    /// Where source `source_id`'s last listing is kept, to show at once
+    /// the next time it is opened.
+    pub fn cache_path(source_id: &str) -> std::path::PathBuf {
+        let name: String = source_id
+            .chars()
+            .map(|c| match c {
+                'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' => c,
+                _ => '_',
+            })
+            .collect();
+        fp_core::dirs::cache_dir()
+            .join("feeds")
+            .join(format!("{name}.json"))
+    }
+
     /// A listing saved by [`FeedLibrary::save`]; `None` when there is none
     /// (or it can't be read).
     pub fn load(path: &Path) -> Option<FeedLibrary> {

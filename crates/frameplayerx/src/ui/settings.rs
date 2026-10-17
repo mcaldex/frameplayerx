@@ -476,14 +476,18 @@ fn haptics(ui: &mut egui::Ui, v: &mut View) {
     let configs = v.settings.haptic_devices.clone();
     widgets::rows(ui, |r| {
         for (i, cfg) in configs.iter().enumerate() {
-            let status = v.devices.get(i);
-            let desc = match status {
-                Some(d) if d.connected => format!("Connected · axes {:?}", d.axes),
-                Some(d) => d
+            let slot = v.services.haptic_device(cfg);
+            let status = slot
+                .and_then(|s| s.id)
+                .and_then(|id| v.devices.iter().find(|d| d.id == id));
+            let desc = match (status, slot) {
+                (Some(d), _) if d.connected => format!("Connected · axes {:?}", d.axes),
+                (Some(d), _) => d
                     .last_error
                     .clone()
                     .unwrap_or_else(|| "Not connected".into()),
-                None => "Not connected".into(),
+                (None, Some(s)) => s.error.clone().unwrap_or_else(|| "Not connected".into()),
+                (None, None) => "Connecting…".into(),
             };
             r.row(&cfg.label(), Some(desc.as_str()), |ui| {
                 if widgets::icon_button(ui, icons::TRASH, 40.0, false)
@@ -699,6 +703,7 @@ fn draw_qr(ui: &mut egui::Ui, qr: &fp_remote::QrMatrix, size: f32) {
 
 fn updates(ui: &mut egui::Ui, v: &mut View) {
     use super::UpdateStatus as U;
+    use fp_updater::Channel;
     heading(ui, &format!("FramePlayerX {}", env!("CARGO_PKG_VERSION")));
     widgets::rows(ui, |r| {
         r.switch(
@@ -707,20 +712,20 @@ fn updates(ui: &mut egui::Ui, v: &mut View) {
             &mut v.settings.check_updates,
         );
         let beta_build = env!("CARGO_PKG_VERSION").contains('-');
-        let about = match (v.settings.update_channel == "beta", beta_build) {
-            (true, _) => "Gets test versions too, before they are released.",
-            (false, false) => "Only finished releases.",
-            (false, true) => {
+        let about = match (v.settings.update_channel, beta_build) {
+            (Channel::Beta, _) => "Gets test versions too, before they are released.",
+            (Channel::Stable, false) => "Only finished releases.",
+            (Channel::Stable, true) => {
                 "Only finished releases: this test version stays until a newer one is out."
             }
         };
         r.row("Channel", Some(about), |ui| {
-            for c in ["beta", "stable"] {
-                let label = if c == "beta" { "Beta" } else { "Stable" };
+            // Right to left: Stable shows first.
+            for (c, label) in [(Channel::Beta, "Beta"), (Channel::Stable, "Stable")] {
                 if widgets::chip(ui, label, v.settings.update_channel == c).clicked()
                     && v.settings.update_channel != c
                 {
-                    v.settings.update_channel = c.into();
+                    v.settings.update_channel = c;
                     // What's on offer depends on the channel: ask again.
                     if fp_updater::RELEASE_PUBLIC_KEY.is_some()
                         && !matches!(v.state.update, U::Downloading { .. } | U::Installed { .. })

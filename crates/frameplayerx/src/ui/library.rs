@@ -321,7 +321,7 @@ fn thumb_key(r: &MediaRecord) -> Option<String> {
 fn request(r: &MediaRecord) -> OpenRequest {
     OpenRequest {
         location: r.location.clone(),
-        source_id: (r.source_id != "local"
+        source_id: (r.source_id != crate::services::LIBRARY_SOURCE
             && !r.source_id.is_empty()
             && !r.location.starts_with('/'))
         .then(|| r.source_id.clone()),

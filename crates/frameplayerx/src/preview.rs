@@ -470,9 +470,7 @@ impl Sim {
                 let id = parts.get(1).ok_or("edit-source needs a source")?;
                 let form = self
                     .app
-                    .source_configs()
-                    .iter()
-                    .find(|c| c.id() == *id)
+                    .source_config(id)
                     .map(crate::ui::sources::edit_form)
                     .ok_or_else(|| format!("no source {id:?}"))?;
                 self.app.ui.screen = crate::ui::Screen::Sources;

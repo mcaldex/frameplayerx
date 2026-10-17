@@ -60,8 +60,7 @@ pub struct Settings {
     pub remote: RemoteConfig,
     pub haptics: HapticsSettings,
     pub haptic_devices: Vec<HapticDeviceConfig>,
-    /// "stable" or "beta".
-    pub update_channel: String,
+    pub update_channel: fp_updater::Channel,
     pub check_updates: bool,
     /// UI text size multiplier.
     pub ui_scale: f32,
@@ -113,9 +112,9 @@ impl Default for Settings {
             haptic_devices: Vec::new(),
             // A beta build keeps getting betas until the user picks Stable.
             update_channel: if env!("CARGO_PKG_VERSION").contains('-') {
-                "beta".into()
+                fp_updater::Channel::Beta
             } else {
-                "stable".into()
+                fp_updater::Channel::Stable
             },
             check_updates: true,
             ui_scale: 1.0,

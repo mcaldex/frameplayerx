@@ -345,7 +345,7 @@ impl LibraryGrid {
     pub fn local() -> LibraryGrid {
         let base = Query {
             sources: [
-                "local",
+                crate::services::LIBRARY_SOURCE,
                 crate::services::HOME_SOURCE,
                 crate::services::REMOVABLE_SOURCE,
             ]
@@ -725,7 +725,12 @@ mod tests {
         assert_eq!(q.projections, [fp_library::ProjectionKind::Equirect180]);
         let local = LibraryGrid::local().query();
         assert!(!local.watched_only);
-        assert!(local.sources.iter().any(|s| s == "local"));
+        assert!(
+            local
+                .sources
+                .iter()
+                .any(|s| s == crate::services::LIBRARY_SOURCE)
+        );
         assert_eq!(local.sort, fp_library::Sort::Added);
     }
 }
