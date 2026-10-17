@@ -401,7 +401,7 @@ fn device(ui: &mut egui::Ui, v: &mut View) {
     }
     heading(ui, "microSD cards and USB drives");
     widgets::rows(ui, |r| {
-        let mounts = crate::services::removable_mounts();
+        let mounts = crate::drives::removable_mounts();
         let names: Vec<String> = mounts.iter().map(|m| m.display().to_string()).collect();
         let desc = if names.is_empty() {
             "None plugged in.".to_string()

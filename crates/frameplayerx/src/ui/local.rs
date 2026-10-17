@@ -119,7 +119,7 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, l: &mut LocalView) -> bool {
 
 /// The places to browse: the home folder and the removable drives.
 fn roots(ui: &mut egui::Ui, v: &mut View, l: &mut LocalView) {
-    let mounts = crate::services::removable_mounts();
+    let mounts = crate::drives::removable_mounts();
     let drives = if mounts.is_empty() {
         "None inserted".to_string()
     } else {

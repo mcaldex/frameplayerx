@@ -405,7 +405,7 @@ impl App {
     /// Mounts cards and drives SteamOS leaves unmounted (exFAT/FAT/NTFS
     /// microSD cards, any USB drive), once per insertion.
     pub(super) fn mount_drives(&mut self) {
-        let drives = crate::services::unmounted_drives();
+        let drives = crate::drives::unmounted_drives();
         // Forget drives that were removed (or mounted), so they are tried
         // again when inserted again.
         self.mount_tried
@@ -417,7 +417,7 @@ impl App {
             log::info!("mounting /dev/{} ({})", d.device, d.fs_type);
             self.mount_tried.push(d.device.clone());
             self.jobs.spawn("mount", move || {
-                let r = crate::services::mount_drive(&d);
+                let r = crate::drives::mount_drive(&d);
                 Job::Mounted(d.device, r)
             });
         }
@@ -430,7 +430,7 @@ impl App {
         }
         self.mounts_checked = Instant::now();
         self.mount_drives();
-        let now = crate::services::removable_mounts();
+        let now = crate::drives::removable_mounts();
         if now == self.mounts {
             return;
         }

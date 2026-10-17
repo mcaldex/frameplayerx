@@ -212,7 +212,7 @@ impl App {
             last_status: None,
             update: None,
             update_check: 0,
-            mounts: crate::services::removable_mounts(),
+            mounts: crate::drives::removable_mounts(),
             // In the past, so the first check (and mount) runs at once.
             mounts_checked: Instant::now()
                 .checked_sub(Duration::from_secs(60))

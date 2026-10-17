@@ -10,6 +10,7 @@
 mod app;
 mod bindings;
 mod controls;
+mod drives;
 mod jobs;
 mod logger;
 mod pin;

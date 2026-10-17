@@ -152,7 +152,7 @@ impl App {
             });
             let result = result.map_err(|e| {
                 let removable = source == crate::services::REMOVABLE_SOURCE;
-                if removable && crate::services::removable_mounts().is_empty() {
+                if removable && crate::drives::removable_mounts().is_empty() {
                     "No microSD card or USB drive is inserted.".to_string()
                 } else {
                     e.to_string()
