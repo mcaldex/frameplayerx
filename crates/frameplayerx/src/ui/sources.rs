@@ -559,8 +559,6 @@ fn name_hint(kind: SourceKind) -> &'static str {
 }
 
 fn add_form(ui: &mut egui::Ui, v: &mut View) {
-    let mut cancel = false;
-    let mut save: Option<SourceConfig> = None;
     let dlna_found = v.state.dlna_found.clone();
     let searching = v.state.dlna_searching;
     let pins = v.settings.source_pins.clone();
@@ -568,6 +566,39 @@ fn add_form(ui: &mut egui::Ui, v: &mut View) {
         return;
     };
     let editing = f.editing.clone();
+    let cancel = form_header(ui, f, editing.as_ref());
+    let id = match &editing {
+        Some(c) => c.id().to_string(),
+        None => format!(
+            "{}-{}",
+            format!("{:?}", f.kind).to_lowercase(),
+            fp_core::playback::now_ms()
+        ),
+    };
+    let save = if let Some(SourceConfig::Dlna(old)) = &editing {
+        dlna_name_form(ui, f, old)
+    } else if f.kind == SourceKind::Dlna {
+        dlna_search(ui, v.actions, &dlna_found, searching, &id)
+    } else {
+        server_form(ui, f, id, editing.as_ref(), v.actions)
+    };
+    if let Some(old) = &editing {
+        pin_rows(ui, v, old.id(), old.name(), pins.contains_key(old.id()));
+    }
+    if let Some(cfg) = save {
+        v.actions.push(match editing {
+            Some(_) => Action::UpdateSource(cfg),
+            None => Action::AddSource(cfg),
+        });
+        v.state.source_form = None;
+    } else if cancel {
+        v.state.source_form = None;
+    }
+}
+
+/// The form's title and its source type; true when cancelled.
+fn form_header(ui: &mut egui::Ui, f: &mut SourceForm, editing: Option<&SourceConfig>) -> bool {
+    let mut cancel = false;
     ui.add_space(12.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 12.0;
@@ -577,7 +608,7 @@ fn add_form(ui: &mut egui::Ui, v: &mut View) {
         {
             cancel = true;
         }
-        let title = match &editing {
+        let title = match editing {
             Some(c) => format!("Edit {}", c.name()),
             None => "Add a source".to_string(),
         };
@@ -613,274 +644,276 @@ fn add_form(ui: &mut egui::Ui, v: &mut View) {
     ui.add_space(4.0);
     ui.label(RichText::new(help).color(theme::TEXT_2));
     ui.add_space(12.0);
-    let id = match &editing {
-        Some(c) => c.id().to_string(),
-        None => format!(
-            "{}-{}",
-            format!("{:?}", f.kind).to_lowercase(),
-            fp_core::playback::now_ms()
-        ),
-    };
-    if let Some(SourceConfig::Dlna(old)) = &editing {
-        // A server found on the network: only its name is the user's.
-        widgets::rows(ui, |r| {
-            r.row("Name", Some(old.location.as_str()), |ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut f.name)
-                        .margin(egui::Margin::symmetric(12, 9))
-                        .font(theme::font(Weight::Regular, 17.0))
-                        .desired_width(460.0),
-                );
-            });
+    cancel
+}
+
+/// A server found on the network: only its name is the user's.
+fn dlna_name_form(
+    ui: &mut egui::Ui,
+    f: &mut SourceForm,
+    old: &fp_sources::DlnaConfig,
+) -> Option<SourceConfig> {
+    let mut save = None;
+    widgets::rows(ui, |r| {
+        r.row("Name", Some(old.location.as_str()), |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut f.name)
+                    .margin(egui::Margin::symmetric(12, 9))
+                    .font(theme::font(Weight::Regular, 17.0))
+                    .desired_width(460.0),
+            );
         });
-        ui.add_space(12.0);
-        let name = f.name.trim();
+    });
+    ui.add_space(12.0);
+    let name = f.name.trim();
+    if ui
+        .add_enabled_ui(!name.is_empty(), |ui| {
+            widgets::button(ui, Some(icons::CHECK), "Save", Kind::Primary)
+        })
+        .inner
+        .clicked()
+    {
+        let mut c = old.clone();
+        c.name = name.to_string();
+        save = Some(SourceConfig::Dlna(c));
+    }
+    save
+}
+
+/// Searching the network for DLNA servers, and adding one.
+fn dlna_search(
+    ui: &mut egui::Ui,
+    actions: &mut Vec<Action>,
+    found: &[fp_sources::DlnaDevice],
+    searching: bool,
+    id: &str,
+) -> Option<SourceConfig> {
+    let mut save = None;
+    ui.horizontal(|ui| {
         if ui
-            .add_enabled_ui(!name.is_empty(), |ui| {
-                widgets::button(ui, Some(icons::CHECK), "Save", Kind::Primary)
+            .add_enabled_ui(!searching, |ui| {
+                widgets::button(
+                    ui,
+                    Some(icons::MAGNIFYING_GLASS),
+                    "Search the network",
+                    Kind::Primary,
+                )
             })
             .inner
             .clicked()
         {
-            let mut c = old.clone();
-            c.name = name.to_string();
-            save = Some(SourceConfig::Dlna(c));
+            actions.push(Action::DiscoverDlna);
         }
-    } else if f.kind == SourceKind::Dlna {
-        ui.horizontal(|ui| {
+        if searching {
+            ui.spinner();
+        }
+    });
+    ui.add_space(8.0);
+    if found.is_empty() {
+        if !searching {
+            ui.label(RichText::new("No servers found yet.").color(theme::TEXT_3));
+        }
+    } else {
+        widgets::rows(ui, |r| {
+            for d in found {
+                r.row(&d.friendly_name, Some(d.manufacturer.as_str()), |ui| {
+                    if widgets::button_sized(ui, Some(icons::PLUS), "Add", Kind::Secondary, 44.0)
+                        .clicked()
+                    {
+                        save = Some(SourceConfig::Dlna(d.to_config(id.to_string())));
+                    }
+                });
+            }
+        });
+    }
+    save
+}
+
+/// The form for a server or folder: where it is and how to sign in.
+fn server_form(
+    ui: &mut egui::Ui,
+    f: &mut SourceForm,
+    id: String,
+    editing: Option<&SourceConfig>,
+    actions: &mut Vec<Action>,
+) -> Option<SourceConfig> {
+    let mut save = None;
+    let local = f.kind == SourceKind::Local;
+    let smb = f.kind == SourceKind::Smb;
+    let is_mb = f.kind == SourceKind::MediaBrowser;
+    if is_mb && f.use_quick_connect {
+        poll_quick_connect(ui, f, actions);
+    }
+    widgets::rows(ui, |r| {
+        r.row(
+            "Name",
+            Some("Optional; the server's name otherwise."),
+            |ui| text_field(ui, &mut f.name, name_hint(f.kind), false),
+        );
+        r.row(if local { "Folder" } else { "Address" }, None, |ui| {
+            text_field(ui, &mut f.address, address_hint(f.kind), false);
+        });
+        if is_mb {
+            r.row(
+                "Sign in with",
+                Some("Quick Connect pairs using a 6-digit code on another device."),
+                |ui| {
+                    if widgets::chip(ui, "Password", !f.use_quick_connect).clicked() {
+                        f.use_quick_connect = false;
+                    }
+                    if widgets::chip(ui, "Quick Connect", f.use_quick_connect).clicked() {
+                        f.use_quick_connect = true;
+                    }
+                },
+            );
+        }
+        if !local {
+            if is_mb && f.use_quick_connect {
+                quick_connect_rows(r, f, actions);
+            } else {
+                r.row("User name", Some("If the server asks for one."), |ui| {
+                    text_field(ui, &mut f.username, "", false);
+                });
+                r.row("Password", None, |ui| {
+                    text_field(ui, &mut f.password, "", true);
+                });
+            }
+            if !smb {
+                r.switch(
+                    "Accept self-signed certificates",
+                    Some("For HTTPS servers on your own network."),
+                    &mut f.insecure_tls,
+                );
+            }
+        }
+    });
+    ui.add_space(12.0);
+    let built = build_config(f, id).map(|cfg| match editing {
+        Some(old) => keep_hidden(cfg, old),
+        None => cfg,
+    });
+    ui.horizontal(|ui| match built {
+        Ok(cfg) => {
+            if widgets::button(ui, Some(icons::CHECK), "Save", Kind::Primary).clicked() {
+                save = Some(cfg);
+            }
+        }
+        Err(e) => {
+            ui.add_enabled_ui(false, |ui| {
+                widgets::button(ui, Some(icons::CHECK), "Save", Kind::Primary)
+            });
+            if !f.address.is_empty() {
+                ui.label(RichText::new(e).color(theme::WARN));
+            }
+        }
+    });
+    if !is_mb || !f.use_quick_connect {
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new("Passwords are stored on this device only, in a file only you can read.")
+                .font(theme::font(Weight::Regular, 15.0))
+                .color(theme::TEXT_3),
+        );
+    }
+    save
+}
+
+fn text_field(ui: &mut egui::Ui, value: &mut String, hint: &str, password: bool) {
+    ui.add(
+        egui::TextEdit::singleline(value)
+            .margin(egui::Margin::symmetric(12, 9))
+            .password(password)
+            .hint_text(hint)
+            .font(theme::font(Weight::Regular, 17.0))
+            .desired_width(460.0),
+    );
+}
+
+/// While a pairing code shows, asks the server every few seconds whether
+/// it was approved.
+fn poll_quick_connect(ui: &egui::Ui, f: &mut SourceForm, actions: &mut Vec<Action>) {
+    if let QuickConnect::Waiting { secret, polled, .. } = &mut f.quick_connect {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(500));
+        if polled.elapsed() >= std::time::Duration::from_secs(2) {
+            *polled = std::time::Instant::now();
+            actions.push(Action::QuickConnectPoll {
+                address: f.address.clone(),
+                secret: secret.clone(),
+                insecure_tls: f.insecure_tls,
+            });
+        }
+    }
+}
+
+/// Signing in with Quick Connect: get a code, wait for it, or done.
+fn quick_connect_rows(r: &mut widgets::Rows, f: &mut SourceForm, actions: &mut Vec<Action>) {
+    let state = f.quick_connect.clone();
+    if let QuickConnect::Authorized { .. } = state {
+        r.row("Quick Connect", Some("Authorized with server."), |ui| {
+            if widgets::button_sized(ui, None, "Clear", Kind::Secondary, 36.0).clicked() {
+                f.quick_connect = QuickConnect::Idle;
+            }
+            ui.label(
+                RichText::new(format!("{} Quick Connect authorized", icons::CHECK_CIRCLE))
+                    .font(theme::font(Weight::SemiBold, 17.0))
+                    .color(theme::OK),
+            );
+        });
+    } else if let QuickConnect::Waiting { code, .. } = state {
+        r.row(
+            "Pairing code",
+            Some("Enter this code in your Jellyfin or Emby app under Quick Connect:"),
+            |ui| {
+                if widgets::button_sized(ui, None, "Cancel", Kind::Secondary, 36.0).clicked() {
+                    f.quick_connect = QuickConnect::Idle;
+                }
+                ui.label(RichText::new("Waiting for approval…").color(theme::TEXT_3));
+                ui.spinner();
+                let spaced: String = code
+                    .chars()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                ui.label(
+                    RichText::new(spaced)
+                        .font(theme::font(Weight::Bold, 26.0))
+                        .color(theme::ACCENT),
+                );
+            },
+        );
+    } else {
+        let desc = if let QuickConnect::Failed(err) = &state {
+            format!("Error: {err}")
+        } else {
+            "Pair without typing your password.".to_string()
+        };
+        let requesting = state == QuickConnect::Requesting;
+        r.row("Quick Connect", Some(&desc), |ui| {
+            let can_initiate = !f.address.trim().is_empty() && !requesting;
             if ui
-                .add_enabled_ui(!searching, |ui| {
+                .add_enabled_ui(can_initiate, |ui| {
                     widgets::button(
                         ui,
-                        Some(icons::MAGNIFYING_GLASS),
-                        "Search the network",
-                        Kind::Primary,
+                        Some(icons::KEY_RETURN),
+                        "Get pairing code",
+                        Kind::Secondary,
                     )
                 })
                 .inner
                 .clicked()
             {
-                v.actions.push(Action::DiscoverDlna);
-            }
-            if searching {
-                ui.spinner();
-            }
-        });
-        ui.add_space(8.0);
-        if dlna_found.is_empty() {
-            if !searching {
-                ui.label(RichText::new("No servers found yet.").color(theme::TEXT_3));
-            }
-        } else {
-            widgets::rows(ui, |r| {
-                for d in &dlna_found {
-                    r.row(&d.friendly_name, Some(d.manufacturer.as_str()), |ui| {
-                        if widgets::button_sized(
-                            ui,
-                            Some(icons::PLUS),
-                            "Add",
-                            Kind::Secondary,
-                            44.0,
-                        )
-                        .clicked()
-                        {
-                            save = Some(SourceConfig::Dlna(d.to_config(id.clone())));
-                        }
-                    });
-                }
-            });
-        }
-    } else {
-        let local = f.kind == SourceKind::Local;
-        let smb = f.kind == SourceKind::Smb;
-        let is_mb = f.kind == SourceKind::MediaBrowser;
-        let field = |ui: &mut egui::Ui, value: &mut String, hint: &str, password: bool| {
-            ui.add(
-                egui::TextEdit::singleline(value)
-                    .margin(egui::Margin::symmetric(12, 9))
-                    .password(password)
-                    .hint_text(hint)
-                    .font(theme::font(Weight::Regular, 17.0))
-                    .desired_width(460.0),
-            );
-        };
-
-        if is_mb
-            && f.use_quick_connect
-            && let QuickConnect::Waiting { secret, polled, .. } = &mut f.quick_connect
-        {
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(500));
-            if polled.elapsed() >= std::time::Duration::from_secs(2) {
-                *polled = std::time::Instant::now();
-                v.actions.push(Action::QuickConnectPoll {
+                f.quick_connect = QuickConnect::Requesting;
+                actions.push(Action::QuickConnectInitiate {
                     address: f.address.clone(),
-                    secret: secret.clone(),
                     insecure_tls: f.insecure_tls,
                 });
             }
-        }
-
-        widgets::rows(ui, |r| {
-            r.row(
-                "Name",
-                Some("Optional; the server's name otherwise."),
-                |ui| field(ui, &mut f.name, name_hint(f.kind), false),
-            );
-            r.row(if local { "Folder" } else { "Address" }, None, |ui| {
-                field(ui, &mut f.address, address_hint(f.kind), false);
-            });
-            if is_mb {
-                r.row(
-                    "Sign in with",
-                    Some("Quick Connect pairs using a 6-digit code on another device."),
-                    |ui| {
-                        if widgets::chip(ui, "Password", !f.use_quick_connect).clicked() {
-                            f.use_quick_connect = false;
-                        }
-                        if widgets::chip(ui, "Quick Connect", f.use_quick_connect).clicked() {
-                            f.use_quick_connect = true;
-                        }
-                    },
-                );
-            }
-            if !local {
-                if is_mb && f.use_quick_connect {
-                    let state = f.quick_connect.clone();
-                    if let QuickConnect::Authorized { .. } = state {
-                        r.row("Quick Connect", Some("Authorized with server."), |ui| {
-                            if widgets::button_sized(ui, None, "Clear", Kind::Secondary, 36.0)
-                                .clicked()
-                            {
-                                f.quick_connect = QuickConnect::Idle;
-                            }
-                            ui.label(
-                                RichText::new(format!(
-                                    "{} Quick Connect authorized",
-                                    icons::CHECK_CIRCLE
-                                ))
-                                .font(theme::font(Weight::SemiBold, 17.0))
-                                .color(theme::OK),
-                            );
-                        });
-                    } else if let QuickConnect::Waiting { code, .. } = state {
-                        r.row(
-                            "Pairing code",
-                            Some(
-                                "Enter this code in your Jellyfin or Emby app under Quick Connect:",
-                            ),
-                            |ui| {
-                                if widgets::button_sized(ui, None, "Cancel", Kind::Secondary, 36.0)
-                                    .clicked()
-                                {
-                                    f.quick_connect = QuickConnect::Idle;
-                                }
-                                ui.label(
-                                    RichText::new("Waiting for approval…").color(theme::TEXT_3),
-                                );
-                                ui.spinner();
-                                let spaced: String = code
-                                    .chars()
-                                    .map(|c| c.to_string())
-                                    .collect::<Vec<_>>()
-                                    .join(" ");
-                                ui.label(
-                                    RichText::new(spaced)
-                                        .font(theme::font(Weight::Bold, 26.0))
-                                        .color(theme::ACCENT),
-                                );
-                            },
-                        );
-                    } else {
-                        let desc = if let QuickConnect::Failed(err) = &state {
-                            format!("Error: {err}")
-                        } else {
-                            "Pair without typing your password.".to_string()
-                        };
-                        let requesting = state == QuickConnect::Requesting;
-                        r.row("Quick Connect", Some(&desc), |ui| {
-                            let can_initiate = !f.address.trim().is_empty() && !requesting;
-                            if ui
-                                .add_enabled_ui(can_initiate, |ui| {
-                                    widgets::button(
-                                        ui,
-                                        Some(icons::KEY_RETURN),
-                                        "Get pairing code",
-                                        Kind::Secondary,
-                                    )
-                                })
-                                .inner
-                                .clicked()
-                            {
-                                f.quick_connect = QuickConnect::Requesting;
-                                v.actions.push(Action::QuickConnectInitiate {
-                                    address: f.address.clone(),
-                                    insecure_tls: f.insecure_tls,
-                                });
-                            }
-                            if requesting {
-                                ui.label(RichText::new("Connecting…").color(theme::TEXT_3));
-                                ui.spinner();
-                            }
-                        });
-                    }
-                } else {
-                    r.row("User name", Some("If the server asks for one."), |ui| {
-                        field(ui, &mut f.username, "", false);
-                    });
-                    r.row("Password", None, |ui| field(ui, &mut f.password, "", true));
-                }
-                if !smb {
-                    r.switch(
-                        "Accept self-signed certificates",
-                        Some("For HTTPS servers on your own network."),
-                        &mut f.insecure_tls,
-                    );
-                }
+            if requesting {
+                ui.label(RichText::new("Connecting…").color(theme::TEXT_3));
+                ui.spinner();
             }
         });
-        ui.add_space(12.0);
-        let built = build_config(f, id).map(|cfg| match &editing {
-            Some(old) => keep_hidden(cfg, old),
-            None => cfg,
-        });
-        ui.horizontal(|ui| match built {
-            Ok(cfg) => {
-                if widgets::button(ui, Some(icons::CHECK), "Save", Kind::Primary).clicked() {
-                    save = Some(cfg);
-                }
-            }
-            Err(e) => {
-                ui.add_enabled_ui(false, |ui| {
-                    widgets::button(ui, Some(icons::CHECK), "Save", Kind::Primary)
-                });
-                if !f.address.is_empty() {
-                    ui.label(RichText::new(e).color(theme::WARN));
-                }
-            }
-        });
-        if !is_mb || !f.use_quick_connect {
-            ui.add_space(8.0);
-            ui.label(
-                RichText::new(
-                    "Passwords are stored on this device only, in a file only you can read.",
-                )
-                .font(theme::font(Weight::Regular, 15.0))
-                .color(theme::TEXT_3),
-            );
-        }
-    }
-    if let Some(old) = &editing {
-        pin_rows(ui, v, old.id(), old.name(), pins.contains_key(old.id()));
-    }
-    if let Some(cfg) = save {
-        v.actions.push(match editing {
-            Some(_) => Action::UpdateSource(cfg),
-            None => Action::AddSource(cfg),
-        });
-        v.state.source_form = None;
-    } else if cancel {
-        v.state.source_form = None;
     }
 }
 
