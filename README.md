@@ -131,7 +131,7 @@ No. It's an independent project and isn't affiliated with or endorsed by Valve. 
 
 ### Why a fork instead of contributing to FramePlayer?
 
-FramePlayer couldn't play from Jellyfin, where most of the films I wanted to watch are, and it didn't support half side-by-side videos. I also had a different idea for browsing sources than its library screen, and while FramePlayer focuses on adult videos, I wanted a player for every kind of media. Together that made a different app rather than a few changes to the original.
+FramePlayer reached Jellyfin, where most of the films I wanted to watch are, only through DLNA, and I wanted to use it directly. It also didn't support half side-by-side videos. I also had a different idea for browsing sources than its library screen, and while FramePlayer focuses on adult videos, I wanted a player for every kind of media. Together that made a different app rather than a few changes to the original.
 
 ---
 
