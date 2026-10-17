@@ -30,6 +30,7 @@ pub mod error;
 pub mod feed;
 pub mod http;
 pub mod httpdir;
+mod json;
 pub mod local;
 pub mod mediabrowser;
 pub mod sidecar;

@@ -19,6 +19,7 @@ use crate::config::{Credentials, FeedConfig, SourceKind};
 use crate::error::{Error, Result};
 use crate::http::{HttpClient, HttpOptions, HttpReply};
 use crate::httpdir::clean_url_and_credentials;
+use crate::json::{array, boolean, get, num, text, uint};
 use crate::sidecar::Sidecars;
 use crate::urlutil::{
     encode_form_value, encode_segment, is_http_url, last_segment, percent_decode, redact, resolve,
@@ -147,59 +148,6 @@ impl SceneInfo {
         entry.subtitles = self.subtitles.clone();
         entry.markers = self.markers.clone();
     }
-}
-
-// ---- tolerant JSON accessors ----
-
-fn get<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
-    v.get(key).filter(|x| !x.is_null())
-}
-
-fn as_f64(v: &Value) -> Option<f64> {
-    match v {
-        Value::Number(n) => n.as_f64(),
-        Value::String(s) => s.trim().parse().ok(),
-        _ => None,
-    }
-    .filter(|x| x.is_finite())
-}
-
-fn num(v: &Value, key: &str) -> Option<f64> {
-    get(v, key).and_then(as_f64)
-}
-
-fn uint(v: &Value, key: &str) -> Option<u32> {
-    num(v, key)
-        .filter(|x| *x > 0.0 && *x < 1e7)
-        .map(|x| x as u32)
-}
-
-fn text(v: &Value, key: &str) -> Option<String> {
-    match get(v, key)? {
-        Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
-        Value::Number(n) => Some(n.to_string()),
-        _ => None,
-    }
-}
-
-fn boolean(v: &Value, key: &str) -> Option<bool> {
-    match get(v, key)? {
-        Value::Bool(b) => Some(*b),
-        Value::Number(n) => n.as_f64().map(|x| x != 0.0),
-        Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
-            "true" | "1" | "yes" => Some(true),
-            "false" | "0" | "no" => Some(false),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn array<'a>(v: &'a Value, key: &str) -> &'a [Value] {
-    get(v, key)
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or(&[])
 }
 
 fn url_field(v: &Value, key: &str, base: &str) -> Option<String> {
