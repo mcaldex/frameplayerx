@@ -208,19 +208,10 @@ impl<F: RangeFetch> Inner<F> {
         out
     }
 
-    fn prefetch(&self, index: u64) {
-        let mut st = lock(&self.state);
-        if st.blocks.contains_key(&index) {
-            return;
-        }
-        if let Some(size) = self.fetcher.size()
-            && index * self.block_size >= size
-        {
-            return;
-        }
-        st.blocks.insert(index, Slot::Loading);
-        st.stats.read_aheads += 1;
-        drop(st);
+    /// Fetches a block reserved for read-ahead (see
+    /// [`CachedSource::note_access`]).
+    fn read_ahead(&self, index: u64) {
+        lock(&self.state).stats.read_aheads += 1;
         if let Err(e) = self.load(index) {
             log::debug!(
                 "read-ahead of block {index} failed for {}: {e}",
@@ -228,16 +219,28 @@ impl<F: RangeFetch> Inner<F> {
             );
         }
     }
+
+    /// Gives up a block reserved for read-ahead; a reader waiting for it
+    /// fetches it itself.
+    fn unreserve(&self, index: u64) {
+        let mut st = lock(&self.state);
+        if matches!(st.blocks.get(&index), Some(Slot::Loading)) {
+            st.blocks.remove(&index);
+        }
+        drop(st);
+        self.loaded.notify_all();
+    }
 }
 
 fn read_ahead_worker<F: RangeFetch>(weak: Weak<Inner<F>>, rx: Receiver<u64>) {
     while let Ok(mut index) = rx.recv() {
+        let Some(inner) = weak.upgrade() else { break };
         // After a seek only the newest request matters.
         while let Ok(newer) = rx.try_recv() {
+            inner.unreserve(index);
             index = newer;
         }
-        let Some(inner) = weak.upgrade() else { break };
-        inner.prefetch(index);
+        inner.read_ahead(index);
     }
 }
 
@@ -250,7 +253,7 @@ impl<F: RangeFetch> CachedSource<F> {
             return;
         }
         let next = index + 1;
-        let want = {
+        {
             let mut st = lock(&inner.state);
             let sequential = matches!(st.last_block, Some(l) if l == index || l + 1 == index);
             st.last_block = Some(index);
@@ -258,10 +261,13 @@ impl<F: RangeFetch> CachedSource<F> {
                 .fetcher
                 .size()
                 .is_none_or(|s| next * inner.block_size < s);
-            sequential && in_file && !st.blocks.contains_key(&next)
-        };
-        if !want {
-            return;
+            if !sequential || !in_file || st.blocks.contains_key(&next) {
+                return;
+            }
+            // Reserved now, not when the thread gets to it: a reader that
+            // gets there first waits for the read-ahead instead of fetching
+            // the block itself.
+            st.blocks.insert(next, Slot::Loading);
         }
         let mut ahead = lock(&inner.ahead);
         if ahead.is_none() {
@@ -272,14 +278,13 @@ impl<F: RangeFetch> CachedSource<F> {
                 .spawn(move || read_ahead_worker(weak, rx))
             {
                 Ok(_) => *ahead = Some(tx),
-                Err(e) => {
-                    log::warn!("cannot start read-ahead thread: {e}");
-                    return;
-                }
+                Err(e) => log::warn!("cannot start read-ahead thread: {e}"),
             }
         }
-        if let Some(tx) = ahead.as_ref() {
-            let _ = tx.send(next);
+        let sent = ahead.as_ref().is_some_and(|tx| tx.send(next).is_ok());
+        drop(ahead);
+        if !sent {
+            inner.unreserve(next);
         }
     }
 }
@@ -441,6 +446,21 @@ mod tests {
         s.read_at(8192, &mut buf).unwrap();
         assert_eq!(s.stats().fetches, before, "block 2 came from read-ahead");
         assert_eq!(buf[..], d[8192..9216]);
+    }
+
+    #[test]
+    fn a_reader_ahead_of_the_read_ahead_waits_for_it() {
+        // Repeated: the reader has to get there before the thread runs.
+        for _ in 0..50 {
+            let (s, _, d) = source(64 * 1024, opts(4096, 8, true));
+            let mut buf = vec![0u8; 2048];
+            s.read_at(0, &mut buf).unwrap();
+            s.read_at(2048, &mut buf).unwrap();
+            s.read_at(4096, &mut buf).unwrap();
+            assert_eq!(buf[..], d[4096..6144]);
+            let st = s.stats();
+            assert_eq!(st.fetches, 1, "only block 0 by a reader: {st:?}");
+        }
     }
 
     #[test]
