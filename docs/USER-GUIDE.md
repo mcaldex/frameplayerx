@@ -295,11 +295,11 @@ keyframes (adjustments that change smoothly along the video).
 
 Flat videos play on a screen in the dark. Set **Environment** to **Cinema**
 (Settings › Playback › Flat videos, or ⚙ › Format › Screen while one plays)
-and the screen hangs in a cinema hall instead: curtains beside it, rows of
-seats stepping down towards it, and walls, seats and floor lit by the
-picture. The house lights come up while the video is paused. The hall
-grows with the screen's width and distance, and your room shows instead
-while passthrough is on.
+and the screen hangs in a cinema hall instead: curtains beside it, a stage
+under it, rows of seats stepping down towards it (you sit in one), and
+walls, seats and floor lit by the picture. The house lights come up while
+the video is paused. The hall grows with the screen's width and distance,
+and your room shows instead while passthrough is on.
 
 Codecs: H.264, HEVC (8/10-bit, HDR10/HLG tone-mapped), AV1, VP9, VP8,
 VC-1, MPEG-4, MPEG-2, ProRes. Audio: AAC, AC-3/E-AC-3, Opus, Vorbis, FLAC,

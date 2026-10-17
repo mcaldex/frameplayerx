@@ -4,10 +4,19 @@ use std::path::PathBuf;
 
 fn main() {
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
-    for name in ["scene", "quad", "egui"] {
+    // The scene shader's cinema lives in a file of its own.
+    for (name, files) in [
+        ("scene", &["scene", "cinema"][..]),
+        ("quad", &["quad"]),
+        ("egui", &["egui"]),
+    ] {
         let path = format!("shaders/{name}.wgsl");
-        println!("cargo:rerun-if-changed={path}");
-        let src = std::fs::read_to_string(&path).expect("shader source");
+        let mut src = String::new();
+        for file in files {
+            let file = format!("shaders/{file}.wgsl");
+            println!("cargo:rerun-if-changed={file}");
+            src += &std::fs::read_to_string(&file).expect("shader source");
+        }
         let module = match naga::front::wgsl::parse_str(&src) {
             Ok(m) => m,
             Err(e) => panic!("{path}:\n{}", e.emit_to_string(&src)),

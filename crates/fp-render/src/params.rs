@@ -34,6 +34,7 @@ pub(crate) struct SceneParams {
     pub env: Vec4,
     pub room: Vec4,
     pub seats: Vec4,
+    pub stage: Vec4,
     pub glow: Vec4,
     pub light_pos: [Vec4; LIGHTS],
     pub light_dir: [Vec4; LIGHTS],
@@ -199,7 +200,7 @@ pub(crate) fn build(
         && kind == 0
         && frame.is_some()
         && video.background[3] > 0.99;
-    let [env, room, seats] = if cinema {
+    let [env, room, seats, stage] = if cinema {
         cinema::hall(
             screen_w,
             screen_h,
@@ -208,7 +209,7 @@ pub(crate) fn build(
             video.house_lights,
         )
     } else {
-        [Vec4::ZERO; 3]
+        [Vec4::ZERO; 4]
     };
     let (light_pos, light_dir, light_rgb) = cinema::lights(screen_w, screen_h, arc, light);
     let glow = light.iter().sum::<glam::Vec3>() / LIGHTS as f32;
@@ -251,6 +252,7 @@ pub(crate) fn build(
         env,
         room,
         seats,
+        stage,
         glow: glow.extend(0.0),
         light_pos,
         light_dir,

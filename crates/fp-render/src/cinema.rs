@@ -1,6 +1,6 @@
 //! The cinema around flat screens: the hall's size, and the light the
 //! picture throws into it. The hall itself is ray traced in
-//! shaders/scene.wgsl, whose constants these must match.
+//! shaders/cinema.wgsl, whose constants these must match.
 
 use crate::params::{FrameDesc, yuv_matrix};
 use fp_core::format::StereoLayout;
@@ -23,13 +23,16 @@ const TAPS: usize = 4;
 
 /// Your eyes above the floor of your row, seated.
 const EYE_HEIGHT: f32 = 1.15;
-const ROW_PITCH: f32 = 1.0;
+const ROW_PITCH: f32 = 1.1;
 const ROWS_BEHIND: i32 = 3;
 const BACK_RISE: f32 = 0.35;
 const SEAT_PITCH: f32 = 0.6;
-const SEAT_TOP: f32 = 0.95;
-/// From your eyes to the back of your seat.
-const SEAT_BACK: f32 = 0.35;
+const SEAT_TOP: f32 = 1.06;
+/// A row's strip of floor reaches this far behind its seats.
+const ROW_BACK: f32 = 0.3;
+/// From your eyes back to your seat.
+const EYE_TO_SEAT: f32 = 0.3;
+const FRONT_WALL: f32 = -0.2;
 
 /// A frame's mean Y, U and V in each cell of the grid, scaled as the shader
 /// samples them.
@@ -158,13 +161,13 @@ fn tonemap(c: Vec3, peak: f32) -> Vec3 {
 /// you: low enough that its seat backs stay under the line from your eyes
 /// to the bottom of the screen.
 fn front_row_floor(k: i32, screen_h: f32, distance: f32) -> f32 {
-    let z = distance + SEAT_BACK - k as f32 * ROW_PITCH - 0.07;
-    (-EYE_HEIGHT).min(-screen_h / 2.0 * (distance - z) / distance - SEAT_TOP - 0.1)
+    let z = distance + EYE_TO_SEAT - k as f32 * ROW_PITCH + 0.15;
+    (-EYE_HEIGHT).min(-screen_h / 2.0 * (distance - z) / distance - SEAT_TOP - 0.08)
 }
 
 /// The hall around a `w` x `h` metre screen curved by `arc` radians, seen
-/// from `distance` metres: the shader's `env`, `room` and `seats`.
-pub(crate) fn hall(w: f32, h: f32, arc: f32, distance: f32, house_lights: f32) -> [Vec4; 3] {
+/// from `distance` metres: the shader's `env`, `room`, `seats` and `stage`.
+pub(crate) fn hall(w: f32, h: f32, arc: f32, distance: f32, house_lights: f32) -> [Vec4; 4] {
     // A curved screen's edges come forward, and in towards the middle.
     let (edge_x, edge_z) = if arc < 1e-3 {
         (w / 2.0, 0.0)
@@ -176,21 +179,31 @@ pub(crate) fn hall(w: f32, h: f32, arc: f32, distance: f32, house_lights: f32) -
     // Seats centred on yours, an aisle each side.
     let seats = ((half_width - 1.6) / SEAT_PITCH).floor().max(1.0);
     let seats_half = (seats + 0.5) * SEAT_PITCH;
-    let row0 = distance + SEAT_BACK;
+    let row0 = distance + EYE_TO_SEAT;
     let nearest = 1.2_f32.max(0.35 * h).max(edge_z + 0.8);
-    let front = (((row0 + 0.07 - nearest) / ROW_PITCH).floor() as i32 - 1).max(0);
+    let front = (((row0 + ROW_BACK - nearest) / ROW_PITCH).floor() as i32 - 1).max(0);
     let row_floor = if front > 0 {
         front_row_floor(front, h, distance)
     } else {
         -EYE_HEIGHT
     };
-    let stage = (-h / 2.0 - 0.35).min(row_floor);
-    let ceiling = (h / 2.0 + 1.0).max(-EYE_HEIGHT + 3.0 + ROWS_BEHIND as f32 * BACK_RISE);
-    let back_wall = row0 + ROWS_BEHIND as f32 * ROW_PITCH + 0.07 + 0.9;
+    let floor = (-h / 2.0 - 0.8).min(row_floor);
+    // A stage under the screen, where the floor in front of the rows has
+    // room for one; otherwise it sinks out of sight under the floor.
+    let rows_start = row0 + ROW_BACK - (front + 1) as f32 * ROW_PITCH;
+    let stage_edge = (rows_start - 0.5).min(0.9);
+    let stage = if stage_edge > FRONT_WALL + 0.4 {
+        Vec4::new(-h / 2.0 - 0.12, stage_edge, 0.0, 0.0)
+    } else {
+        Vec4::new(floor - 0.5, 0.0, 0.0, 0.0)
+    };
+    let ceiling = (h / 2.0 + 0.6).max(-EYE_HEIGHT + ROWS_BEHIND as f32 * BACK_RISE + 2.35);
+    let back_wall = row0 + ROWS_BEHIND as f32 * ROW_PITCH + ROW_BACK + 0.8;
     [
         Vec4::new(1.0, house_lights, front as f32, -ROWS_BEHIND as f32),
-        Vec4::new(half_width, ceiling, back_wall, stage),
+        Vec4::new(half_width, ceiling, back_wall, floor),
         Vec4::new(-EYE_HEIGHT, row0, seats_half, -h / 2.0),
+        stage,
     ]
 }
 
@@ -230,14 +243,19 @@ mod tests {
     #[test]
     fn rows_ahead_stay_under_the_screen() {
         // The default 6 m screen 4 m away: two rows ahead, each lower.
-        let [env, room, seats] = hall(6.0, 3.375, 0.0, 4.0, 0.0);
+        let [env, room, seats, stage] = hall(6.0, 3.375, 0.0, 4.0, 0.0);
         assert_eq!(env.z, 2.0);
         let (a, b) = (
             front_row_floor(1, 3.375, 4.0),
             front_row_floor(2, 3.375, 4.0),
         );
         assert!(-EYE_HEIGHT > a && a > b, "{a} {b}");
-        assert!(room.w <= b && room.w < seats.w, "the stage is lowest");
+        assert!(room.w <= b && room.w < seats.w, "the front floor is lowest");
+        // A stage under the screen, clear of the rows.
+        assert!(
+            stage.x < seats.w && stage.x > room.w && stage.y < 1.3,
+            "{stage}"
+        );
         // Close up there is no room for any.
         assert_eq!(hall(6.0, 3.375, 0.0, 1.5, 0.0)[0].z, 0.0);
     }
@@ -246,7 +264,7 @@ mod tests {
     fn walls_clear_a_curved_screen() {
         let w = 12.0;
         let arc = std::f32::consts::TAU / 3.0;
-        let [_, room, _] = hall(w, w * 9.0 / 16.0, arc, 4.0, 0.0);
+        let [_, room, _, _] = hall(w, w * 9.0 / 16.0, arc, 4.0, 0.0);
         let (pos, dir, _) = lights(w, w * 9.0 / 16.0, arc, &[Vec3::ONE; LIGHTS]);
         for (p, d) in pos.iter().zip(dir) {
             assert!(p.x.abs() < room.x - 1.0 && p.z >= 0.0, "{p}");
