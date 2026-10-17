@@ -166,6 +166,10 @@ pub trait SceneFeed: Send + Sync {
     /// Slower than the library: seconds, and megabytes, for a large one.
     /// See [`FeedLibrary::merge_scan`].
     fn scan(&self) -> Option<Vec<FeedScene>>;
+
+    /// Marks or unmarks a scene as a favourite on the server, for scenes
+    /// whose details say it takes that ([`SceneInfo::write_favorite`]).
+    fn set_favorite(&self, url: &str, favorite: bool) -> Result<()>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -270,11 +274,7 @@ impl FeedSource {
                 None => self.json("GET", url, None, None),
             },
             Protocol::HereSphere => {
-                let mut body = serde_json::Map::new();
-                if let Some(c) = &self.creds {
-                    body.insert("username".into(), Value::String(c.username.clone()));
-                    body.insert("password".into(), Value::String(c.password.clone()));
-                }
+                let mut body = self.heresphere_body();
                 if let Some(m) = with_media {
                     body.insert("needsMediaSource".into(), Value::Bool(m));
                 }
@@ -282,6 +282,17 @@ impl FeedSource {
                 self.json("POST", url, Some("application/json"), Some(&bytes))
             }
         }
+    }
+
+    /// A HereSphere request's body: the user's name and password, when
+    /// configured.
+    fn heresphere_body(&self) -> serde_json::Map<String, Value> {
+        let mut body = serde_json::Map::new();
+        if let Some(c) = &self.creds {
+            body.insert("username".into(), Value::String(c.username.clone()));
+            body.insert("password".into(), Value::String(c.password.clone()));
+        }
+        body
     }
 
     fn fetch_required(&self, url: &str, with_media: Option<bool>) -> Result<Value> {
@@ -399,6 +410,22 @@ impl SceneFeed for FeedSource {
             lock(&self.event_servers).insert(url.to_string(), events.clone());
         }
         Ok(info)
+    }
+
+    /// HereSphere posts the change to the video's own URL, as it does
+    /// when the favourite is toggled in the player.
+    fn set_favorite(&self, url: &str, favorite: bool) -> Result<()> {
+        if self.protocol != Protocol::HereSphere {
+            return Err(Error::Unsupported(
+                "a DeoVR feed takes no favourites".into(),
+            ));
+        }
+        let mut body = self.heresphere_body();
+        body.insert("isFavorite".into(), Value::Bool(favorite));
+        body.insert("needsMediaSource".into(), Value::Bool(false));
+        let bytes = serde_json::to_vec(&Value::Object(body))?;
+        self.json("POST", url, Some("application/json"), Some(&bytes))?;
+        Ok(())
     }
 
     fn scan(&self) -> Option<Vec<FeedScene>> {

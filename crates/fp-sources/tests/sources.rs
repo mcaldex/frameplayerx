@@ -357,6 +357,13 @@ fn deovr_feed_groups_scenes_details_and_open() {
     .unwrap();
     let groups = src.list(None).unwrap();
     assert_eq!(names(&groups), ["Recent", "Favourites"]);
+    // DeoVR has no way to take one back.
+    assert!(matches!(
+        src.as_scene_feed()
+            .unwrap()
+            .set_favorite(&groups[0].location, true),
+        Err(Error::Unsupported(_))
+    ));
     assert!(groups.iter().all(|g| g.kind == EntryKind::Directory));
     assert_eq!(
         groups[0].thumbnail_url.as_deref(),
@@ -465,7 +472,8 @@ fn heresphere_library_details_and_open() {
                     "scripts":[{"name":"Beach Day.funscript","url":"/files/1.funscript"}],
                     "subtitles":[{"name":"English","language":"en","url":"/files/1.en.srt"}],
                     "tags":[{"name":"Swim","start":95000.0,"end":120000.0},{"name":"Studio:X"}],
-                    "eventServer":"/heresphere/events/1"}"#
+                    "eventServer":"/heresphere/events/1",
+                    "isFavorite":false,"writeFavorite":true}"#
                     .into(),
             ),
             ("GET", "/files/3k.mp4") => serve_bytes(req, b"three k vid", true),
@@ -565,6 +573,23 @@ fn heresphere_library_details_and_open() {
         && e["username"] == "bob"
         && e["title"] == "Beach Day"
         && e.get("password").is_none()));
+
+    // A favourite goes to the video's own URL, as HereSphere sends it.
+    let scenes_api = src.as_scene_feed().unwrap();
+    let info = scenes_api.scene(&beach.location, false).unwrap();
+    assert_eq!((info.favorite, info.write_favorite), (Some(false), true));
+    scenes_api.set_favorite(&beach.location, true).unwrap();
+    let last: serde_json::Value = server
+        .requests()
+        .iter()
+        .rev()
+        .find(|r| r.path() == "/heresphere/1")
+        .map(|r| serde_json::from_str(&r.body).unwrap())
+        .unwrap();
+    assert_eq!(
+        (&last["isFavorite"], &last["username"], &last["password"]),
+        (&true.into(), &"bob".into(), &"pw".into())
+    );
 
     let wrong = build(&SourceConfig::HereSphere(feed(
         server.url("/heresphere"),

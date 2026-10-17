@@ -153,6 +153,12 @@ pub enum Action {
         source: String,
         url: String,
     },
+    /// Marks or unmarks a feed scene as a favourite on the server.
+    FeedFavorite {
+        source: String,
+        url: String,
+        on: bool,
+    },
     DiscoverDlna,
     /// Request a Quick Connect code from a Jellyfin/Emby server.
     QuickConnectInitiate {

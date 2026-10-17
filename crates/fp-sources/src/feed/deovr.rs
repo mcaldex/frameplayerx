@@ -105,8 +105,9 @@ pub fn parse_deovr_scene(v: &Value, base: &str) -> SceneInfo {
         actors: names(v, "actors"),
         tags,
         rating: rating_field(v, "rating_avg").or_else(|| rating_field(v, "rating")),
-        favorite: boolean(v, "isFavorite").unwrap_or(false),
+        favorite: boolean(v, "isFavorite"),
         event_server: None,
+        write_favorite: false,
     }
 }
 
@@ -285,7 +286,7 @@ mod tests {
         assert_eq!(s.actors, ["Jane", "Ann"]);
         assert_eq!(s.tags, ["Outdoor", "POV"]);
         assert_eq!(s.rating, Some(4.5));
-        assert!(s.favorite);
+        assert_eq!(s.favorite, Some(true));
         // Milliseconds and ISO dates both work.
         assert_eq!(
             parse_deovr_scene(&json!({"date": 1_700_000_000_000_i64}), "http://h/").released,

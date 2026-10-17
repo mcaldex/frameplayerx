@@ -60,10 +60,13 @@ pub struct SceneInfo {
     pub tags: Vec<String>,
     /// Rating out of 5.
     pub rating: Option<f32>,
-    /// The user's favourite on the server.
-    pub favorite: bool,
+    /// The user's favourite on the server; `None` when it doesn't say.
+    pub favorite: Option<bool>,
     /// Where the server takes playback events (HereSphere's `eventServer`).
     pub event_server: Option<String>,
+    /// The server takes changes to [`Self::favorite`] (HereSphere's
+    /// `writeFavorite`).
+    pub write_favorite: bool,
 }
 
 impl SceneInfo {
@@ -187,7 +190,9 @@ impl FeedScene {
         self.released = info.released.or(self.released);
         self.added = info.added.or(self.added);
         self.rating = info.rating.or(self.rating);
-        self.favorite |= info.favorite;
+        if let Some(f) = info.favorite {
+            self.favorite = f;
+        }
         if info.studio.is_some() {
             self.studio = info.studio.clone();
         }
@@ -329,6 +334,22 @@ impl FeedLibrary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn details_set_the_favourite_only_when_they_say() {
+        let mut s = FeedScene {
+            favorite: true,
+            ..FeedScene::default()
+        };
+        s.apply(&SceneInfo::default());
+        assert!(s.favorite, "details that don't say keep the listing's");
+        // Unmarked since the listing was made.
+        s.apply(&SceneInfo {
+            favorite: Some(false),
+            ..SceneInfo::default()
+        });
+        assert!(!s.favorite);
+    }
 
     #[test]
     fn listings_take_a_scan_and_save() {

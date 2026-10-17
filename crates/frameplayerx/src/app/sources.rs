@@ -488,6 +488,22 @@ impl App {
         });
     }
 
+    /// Marks a HereSphere scene as a favourite on the server, or unmarks it.
+    pub(super) fn mark_feed_favorite(&mut self, source: &str, url: String, on: bool) {
+        let Some(src) = self.services.opener.source(source) else {
+            return;
+        };
+        self.jobs.spawn("feed-favorite", move || {
+            let Some(feed) = src.as_scene_feed() else {
+                return Job::Toast("Not a DeoVR feed or HereSphere API".into());
+            };
+            match feed.set_favorite(&url, on) {
+                Ok(()) => Job::Done,
+                Err(e) => Job::Toast(format!("The server did not take it: {e}")),
+            }
+        });
+    }
+
     /// Lists a feed's scenes: the last listing at once, then the server's,
     /// then (HereSphere) its scan.
     pub(super) fn load_feed(&mut self, source: String) {

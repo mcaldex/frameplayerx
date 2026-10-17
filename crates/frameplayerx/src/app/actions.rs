@@ -128,6 +128,7 @@ impl App {
                 front,
             } => self.queue_feed_scenes(&source, urls, front),
             Action::FeedScene { source, url } => self.load_feed_scene(source, url),
+            Action::FeedFavorite { source, url, on } => self.mark_feed_favorite(&source, url, on),
             Action::DiscoverDlna => self.discover_dlna(),
             Action::QuickConnectInitiate {
                 address,

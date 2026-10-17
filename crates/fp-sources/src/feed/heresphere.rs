@@ -87,8 +87,9 @@ pub fn parse_heresphere_video(v: &Value, base: &str) -> SceneInfo {
         actors: meta.actors,
         tags: meta.tags,
         rating: rating_field(v, "rating"),
-        favorite: boolean(v, "isFavorite").unwrap_or(false),
+        favorite: boolean(v, "isFavorite"),
         event_server: url_field(v, "eventServer", base),
+        write_favorite: boolean(v, "writeFavorite").unwrap_or(false),
     }
 }
 
@@ -318,7 +319,7 @@ mod tests {
         );
         assert!(s.released.is_some() && s.added > s.released);
         assert_eq!(s.rating, Some(4.0));
-        assert!(s.favorite);
+        assert_eq!(s.favorite, Some(true));
     }
 
     #[test]

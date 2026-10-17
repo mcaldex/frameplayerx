@@ -143,6 +143,22 @@ impl FeedView {
         }
     }
 
+    /// Shows a favourite at once, on the scene's card and page; the server
+    /// is told separately.
+    pub fn mark_favorite(&mut self, url: &str, on: bool) {
+        if let Some(s) = self.scenes.get_mut(url) {
+            s.favorite = on;
+        }
+        if let Some(info) = self
+            .details
+            .as_mut()
+            .filter(|d| d.url == url)
+            .and_then(|d| d.info.as_mut())
+        {
+            info.favorite = Some(on);
+        }
+    }
+
     /// Takes a scene's details: into its card, and its page when open
     /// (`full`: with media, for the page).
     pub fn scene_loaded(&mut self, url: &str, result: Result<SceneInfo, String>, full: bool) {
@@ -532,7 +548,10 @@ fn details(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut Fe
     let back = page::header(ui, name, Some(&title), |_| {});
     page::status(ui, d.loading, d.error.as_deref());
     let info = d.info.clone();
+    // The server says whether it takes favourites from players.
+    let writable = info.as_ref().is_some_and(|i| i.write_favorite);
     let (mut play_at, mut search) = (None::<f64>, None::<String>);
+    let mut favorite = None::<bool>;
     egui::ScrollArea::vertical()
         .auto_shrink(false)
         .show(ui, |ui| {
@@ -569,7 +588,7 @@ fn details(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut Fe
                     if let Some(r) = scene.rating {
                         facts.push(page::rating(r));
                     }
-                    if scene.favorite {
+                    if scene.favorite && !writable {
                         facts.push(format!("{}  Favorite", icons::HEART));
                     }
                     if scene.scripted && v.settings.haptics_enabled {
@@ -579,6 +598,18 @@ fn details(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut Fe
                     ui.add_space(10.0);
                     if widgets::button(ui, Some(icons::PLAY), "Play", Kind::Primary).clicked() {
                         play_at = Some(0.0);
+                    }
+                    if writable {
+                        let label = if scene.favorite {
+                            "Favorite"
+                        } else {
+                            "Add to favorites"
+                        };
+                        if widgets::chip_icon(ui, Some(icons::HEART), label, scene.favorite)
+                            .clicked()
+                        {
+                            favorite = Some(!scene.favorite);
+                        }
                     }
                     if let Some(info) = &info
                         && !info.sources.is_empty()
@@ -652,6 +683,14 @@ fn details(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut Fe
             req.entry = Some(e);
         }
         v.actions.push(Action::Open(req));
+    }
+    if let Some(on) = favorite {
+        f.mark_favorite(&scene.url, on);
+        v.actions.push(Action::FeedFavorite {
+            source: source.to_string(),
+            url: scene.url.clone(),
+            on,
+        });
     }
     if let Some(s) = search {
         // A performer or tag: the scenes that have it.
@@ -735,6 +774,27 @@ mod tests {
         f.sort = FeedSort::Feed;
         f.scripted_only = true;
         assert_eq!(titles(&f), ["Alps"]);
+    }
+
+    #[test]
+    fn favourites_show_at_once() {
+        let mut f = view();
+        f.details = Some(Details {
+            url: "a".into(),
+            info: Some(Box::new(SceneInfo {
+                favorite: Some(false),
+                write_favorite: true,
+                ..SceneInfo::default()
+            })),
+            loading: false,
+            error: None,
+        });
+        f.mark_favorite("a", true);
+        assert!(f.scenes["a"].favorite);
+        let d = f.details.as_ref().unwrap();
+        assert_eq!(d.info.as_ref().unwrap().favorite, Some(true));
+        f.favorites_only = true;
+        assert_eq!(titles(&f), ["Beach"]);
     }
 
     #[test]
