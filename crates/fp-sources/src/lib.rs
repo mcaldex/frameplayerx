@@ -47,7 +47,7 @@ pub use config::{
 };
 pub use dlna::{DlnaDevice, DlnaSource, SsdpResponse, discover};
 pub use error::{Error, Result};
-pub use feed::{DeoVrSource, FeedLibrary, FeedScene, HereSphereSource, MediaSource, SceneInfo};
+pub use feed::{FeedLibrary, FeedScene, FeedSource, MediaSource, SceneFeed, SceneInfo};
 pub use http::{HttpClient, HttpFile, HttpOptions};
 pub use httpdir::HttpDirSource;
 pub use local::LocalSource;
@@ -63,24 +63,12 @@ use fp_core::source::{ByteSource, Entry, EntryKind, is_video_name};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-/// Gives a [`Source`] as [`std::any::Any`]; implemented for every type.
-pub trait AsAny {
-    /// `self` as `Any`.
-    fn as_any(&self) -> &dyn std::any::Any;
-}
-
-impl<T: std::any::Any> AsAny for T {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
 /// A place media can be browsed and read from.
 ///
 /// Locations are opaque strings produced by the source itself (in
 /// [`Entry::location`]); pass them back unchanged. Implementations block and
 /// may be called from any thread.
-pub trait Source: AsAny + Send + Sync {
+pub trait Source: Send + Sync {
     /// Stable identifier (from the configuration).
     fn id(&self) -> &str;
 
@@ -118,13 +106,15 @@ pub trait Source: AsAny + Send + Sync {
     fn sidecars(&self, video: &Entry) -> Result<Sidecars> {
         sidecars_from_folder(self, video)
     }
-}
 
-impl dyn Source {
-    /// The source as its concrete type, to reach what only that kind offers
-    /// (a Jellyfin server's catalog, a feed's scene groups).
-    pub fn downcast_ref<T: Source + 'static>(&self) -> Option<&T> {
-        self.as_any().downcast_ref()
+    /// This source as a DeoVR feed or HereSphere API, when it is one.
+    fn as_scene_feed(&self) -> Option<&dyn SceneFeed> {
+        None
+    }
+
+    /// This source as a Jellyfin/Emby server, when it is one.
+    fn as_media_browser(&self) -> Option<&MediaBrowserSource> {
+        None
     }
 }
 
@@ -151,8 +141,8 @@ pub fn build(config: &SourceConfig) -> Result<Box<dyn Source>> {
         SourceConfig::Http(c) => Box::new(HttpDirSource::new(c)?),
         SourceConfig::WebDav(c) => Box::new(WebDavSource::new(c)?),
         SourceConfig::Dlna(c) => Box::new(DlnaSource::new(c)?),
-        SourceConfig::DeoVr(c) => Box::new(DeoVrSource::new(c)?),
-        SourceConfig::HereSphere(c) => Box::new(HereSphereSource::new(c)?),
+        SourceConfig::DeoVr(c) => Box::new(FeedSource::deovr(c)?),
+        SourceConfig::HereSphere(c) => Box::new(FeedSource::heresphere(c)?),
         SourceConfig::Smb(c) => Box::new(SmbSource::new(c)?),
         SourceConfig::MediaBrowser(c) => Box::new(MediaBrowserSource::new(c)?),
     })

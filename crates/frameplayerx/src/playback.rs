@@ -81,7 +81,7 @@ impl ServerReport {
             return None;
         }
         let source = opener.source(source_id?)?;
-        source.downcast_ref::<fp_sources::MediaBrowserSource>()?;
+        source.as_media_browser()?;
         Some(ServerReport {
             source,
             item: location.to_string(),
@@ -100,7 +100,7 @@ impl ServerReport {
         let sent = std::thread::Builder::new()
             .name("fp-report".into())
             .spawn(move || {
-                if let Some(mb) = source.downcast_ref::<fp_sources::MediaBrowserSource>()
+                if let Some(mb) = source.as_media_browser()
                     && let Err(e) = report(mb, &item)
                 {
                     log::debug!("reporting playback of {item}: {e}");

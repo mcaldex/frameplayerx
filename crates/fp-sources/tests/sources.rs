@@ -367,6 +367,14 @@ fn deovr_feed_groups_scenes_details_and_open() {
     assert_eq!(scenes[0].location, server.url("/deovr/1"));
     assert_eq!(scenes[0].duration, Some(1800.0));
     assert!(scenes[0].format.is_none());
+
+    // The same listing through the feed interface, which has no scan.
+    let feed = src.as_scene_feed().expect("a scene feed");
+    let lib = feed.library().unwrap();
+    assert_eq!(lib.groups.len(), 2);
+    assert!(lib.scenes.iter().all(|s| !s.bare));
+    assert!(feed.scan().is_none());
+    assert!(src.as_media_browser().is_none());
     assert_eq!(
         scenes[1].format.unwrap().projection,
         Projection::EQUIRECT_360

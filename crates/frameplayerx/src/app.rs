@@ -764,7 +764,7 @@ impl App {
         };
         self.jobs.spawn("jellyfin", move || {
             std::thread::sleep(delay);
-            let result = match src.downcast_ref::<fp_sources::MediaBrowserSource>() {
+            let result = match src.as_media_browser() {
                 Some(mb) => ui::jellyfin::run(mb, &load).map_err(|e| e.to_string()),
                 None => Err("not a Jellyfin or Emby server".to_string()),
             };
@@ -1439,7 +1439,7 @@ impl App {
                     return;
                 };
                 self.jobs.spawn("jellyfin-mark", move || {
-                    let Some(mb) = src.downcast_ref::<fp_sources::MediaBrowserSource>() else {
+                    let Some(mb) = src.as_media_browser() else {
                         return Job::Toast("Not a Jellyfin or Emby server".into());
                     };
                     let r = match mark {
@@ -1459,15 +1459,10 @@ impl App {
                 let tx = self.jobs.sender();
                 self.jobs.spawn("feed", move || {
                     let path = fp_sources::FeedLibrary::cache_path(&source);
-                    let save = |lib: &fp_sources::FeedLibrary| {
-                        if let Err(e) = lib.save(&path) {
-                            log::warn!("saving the listing of {source}: {e}");
-                        }
-                    };
-                    let listed = |result: fp_sources::Result<fp_sources::FeedLibrary>, cached| {
+                    let listed = |result: Result<fp_sources::FeedLibrary, String>, cached| {
                         Job::FeedLibrary {
                             source: source.clone(),
-                            result: result.map_err(|e| e.to_string()),
+                            result,
                             cached,
                         }
                     };
@@ -1476,32 +1471,23 @@ impl App {
                     if let Some(lib) = fp_sources::FeedLibrary::load(&path) {
                         let _ = tx.send(listed(Ok(lib), true));
                     }
-                    let any = src.as_ref();
-                    if let Some(d) = any.downcast_ref::<fp_sources::DeoVrSource>() {
-                        let result = d.library();
-                        if let Ok(lib) = &result {
-                            save(lib);
-                        }
-                        return listed(result, false);
-                    }
-                    let Some(h) = any.downcast_ref::<fp_sources::HereSphereSource>() else {
-                        return listed(
-                            Err(fp_sources::Error::NotFound("not a scene feed".into())),
-                            false,
-                        );
+                    let Some(feed) = src.as_scene_feed() else {
+                        return listed(Err("not a scene feed".into()), false);
                     };
-                    // The listing (quick, addresses only) to browse at once,
-                    // then the scan (slow) with every scene's titles and tags.
-                    let mut lib = match h.library() {
+                    // The listing to browse at once, then the scan (slow,
+                    // HereSphere only) with every scene's titles and tags.
+                    let mut lib = match feed.library() {
                         Ok(lib) => lib,
-                        Err(e) => return listed(Err(e), false),
+                        Err(e) => return listed(Err(e.to_string()), false),
                     };
                     let _ = tx.send(listed(Ok(lib.clone()), false));
-                    let scenes = h.scan();
+                    let scenes = feed.scan();
                     if let Some(s) = &scenes {
                         lib.merge_scan(s.clone());
                     }
-                    save(&lib);
+                    if let Err(e) = lib.save(&path) {
+                        log::warn!("saving the listing of {source}: {e}");
+                    }
                     Job::FeedScan {
                         source: source.clone(),
                         scenes,
@@ -2355,16 +2341,10 @@ fn escape() -> egui::Event {
 /// A feed scene's details (`full`: with its media sources, for its page).
 /// Blocking: call from a job thread.
 fn scene_details(
-    src: &(dyn fp_sources::Source + 'static),
+    src: &dyn fp_sources::Source,
     url: &str,
     full: bool,
 ) -> Result<fp_sources::SceneInfo, String> {
-    let r = if let Some(h) = src.downcast_ref::<fp_sources::HereSphereSource>() {
-        h.video(url, full)
-    } else if let Some(d) = src.downcast_ref::<fp_sources::DeoVrSource>() {
-        d.scene(url)
-    } else {
-        return Err("not a scene feed".into());
-    };
-    r.map_err(|e| e.to_string())
+    let feed = src.as_scene_feed().ok_or("not a scene feed")?;
+    feed.scene(url, full).map_err(|e| e.to_string())
 }
