@@ -85,6 +85,7 @@ screen settings controller-stick
 panel main settings-controller-stick
 screen settings device
 panel main settings-device
+haptics on
 screen settings haptics
 panel main settings-haptics
 screen settings remote

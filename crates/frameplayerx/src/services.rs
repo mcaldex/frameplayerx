@@ -174,7 +174,8 @@ pub struct Services {
     pub worker_events: Option<std::sync::mpsc::Receiver<fp_library::WorkerEvent>>,
     /// Holds the metadata worker off (see [`crate::prober::FfmpegProber`]).
     worker_busy: Arc<std::sync::atomic::AtomicBool>,
-    pub haptics: HapticsEngine,
+    /// Plays scripts on the devices; only while haptics are turned on.
+    haptics: Option<HapticsEngine>,
     /// The configured devices that were tried, in the order they answered.
     haptic_devices: Vec<HapticDeviceSlot>,
     pub remote: Option<RemoteHub>,
@@ -240,8 +241,6 @@ impl Services {
         for e in opener.set_sources(&source_configs) {
             log::warn!("source unavailable: {e}");
         }
-        let haptics = HapticsEngine::new();
-        haptics.set_settings(settings.haptics.clone());
         let mut s = Services {
             library,
             opener,
@@ -249,11 +248,12 @@ impl Services {
             worker: None,
             worker_events: None,
             worker_busy: Default::default(),
-            haptics,
+            haptics: None,
             haptic_devices: Vec::new(),
             remote: None,
             remote_error: None,
         };
+        s.set_haptics(settings);
         s.start_worker();
         s.apply_remote(&settings.remote);
         s
@@ -341,16 +341,55 @@ impl Services {
         }
     }
 
+    /// Starts the haptics engine when haptics are turned on and stops it,
+    /// with every device, when they are turned off; applies their settings.
+    pub fn set_haptics(&mut self, settings: &Settings) {
+        if !settings.haptics_enabled {
+            self.remove_devices();
+            self.haptics = None;
+            return;
+        }
+        if self.haptics.is_none() {
+            match HapticsEngine::with_clock(
+                Arc::new(fp_haptics::engine::SystemClock),
+                fp_haptics::engine::DEFAULT_TICK,
+            ) {
+                Ok(engine) => self.haptics = Some(engine),
+                Err(e) => log::error!("haptics engine: {e}"),
+            }
+        }
+        if let Some(h) = &self.haptics {
+            h.set_settings(settings.haptics.clone());
+        }
+    }
+
+    /// The haptics engine, while haptics are turned on.
+    pub fn haptics(&self) -> Option<&HapticsEngine> {
+        self.haptics.as_ref()
+    }
+
+    /// The connected devices' state, for the haptics settings.
+    pub fn haptic_statuses(&self) -> Vec<fp_haptics::DeviceStatus> {
+        self.haptics
+            .as_ref()
+            .map(HapticsEngine::devices)
+            .unwrap_or_default()
+    }
+
     /// Records how connecting `config` went, replacing an earlier attempt
-    /// (and its device in the engine).
+    /// (and its device in the engine). A device that connects after
+    /// haptics were turned off is let go.
     pub fn device_connected(
         &mut self,
         config: HapticDeviceConfig,
         result: Result<Box<dyn fp_haptics::Device>, String>,
     ) {
         self.remove_device(&config);
+        let Some(engine) = &self.haptics else {
+            return;
+        };
         let (id, error) = match result {
-            Ok(d) => (Some(self.haptics.add_device(d)), None),
+            Ok(d) => (Some(engine.add_device(d)), None),
             Err(e) => (None, Some(e)),
         };
         self.haptic_devices
@@ -361,8 +400,8 @@ impl Services {
     pub fn remove_device(&mut self, config: &HapticDeviceConfig) {
         self.haptic_devices.retain(|s| {
             let same = s.config == *config;
-            if same && let Some(id) = s.id {
-                self.haptics.remove_device(id);
+            if same && let (Some(id), Some(h)) = (s.id, &self.haptics) {
+                h.remove_device(id);
             }
             !same
         });
@@ -371,8 +410,8 @@ impl Services {
     /// Disconnects every device.
     pub fn remove_devices(&mut self) {
         for s in self.haptic_devices.drain(..) {
-            if let Some(id) = s.id {
-                self.haptics.remove_device(id);
+            if let (Some(id), Some(h)) = (s.id, &self.haptics) {
+                h.remove_device(id);
             }
         }
     }

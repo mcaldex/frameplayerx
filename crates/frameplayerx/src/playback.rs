@@ -202,7 +202,13 @@ pub fn open(
     let (resolved, detected) =
         detect_format(&name, &info, entry.as_ref(), record.as_ref(), settings);
 
-    let (script_locs, subs) = sidecars(&location, entry.as_ref(), record.as_ref(), source);
+    let (script_locs, subs) = sidecars(
+        &location,
+        entry.as_ref(),
+        record.as_ref(),
+        source,
+        settings.haptics_enabled,
+    );
     let scripts = load_scripts(opener, &script_locs);
     let duration_ms = (info.duration * 1000.0) as i64;
     let heatmap = scripts
@@ -339,15 +345,16 @@ fn detect_format(
     (resolved, detected)
 }
 
-/// Haptic script locations and (name, location) subtitles for a video: from
-/// its library record, its entry, then the source's sidecar files; scripts
-/// of a local file not otherwise found are looked for beside it and in the
-/// Interactive folder.
+/// Haptic script locations (with `with_scripts`) and (name, location)
+/// subtitles for a video: from its library record, its entry, then the
+/// source's sidecar files; scripts of a local file not otherwise found are
+/// looked for beside it and in the Interactive folder.
 fn sidecars(
     location: &str,
     entry: Option<&Entry>,
     record: Option<&fp_library::MediaRecord>,
     source: Option<std::sync::Arc<dyn fp_sources::Source>>,
+    with_scripts: bool,
 ) -> (Vec<String>, Vec<(String, String)>) {
     let mut scripts: Vec<String> = record.map(|r| r.scripts.clone()).unwrap_or_default();
     let mut subs: Vec<(String, String)> = record
@@ -368,7 +375,9 @@ fn sidecars(
             subs.extend(side.subtitles.into_iter().map(|s| (s.name, s.location)));
         }
     }
-    if scripts.is_empty() && location.starts_with('/') {
+    if !with_scripts {
+        scripts.clear();
+    } else if scripts.is_empty() && location.starts_with('/') {
         let dirs = vec![fp_core::dirs::interactive_dir()];
         scripts = fp_haptics::funscript::find_scripts(std::path::Path::new(location), &dirs)
             .into_iter()

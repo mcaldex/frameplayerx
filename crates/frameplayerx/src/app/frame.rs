@@ -230,7 +230,7 @@ impl App {
         if self.thumbs.poll(&self.panels[MAIN].ctx) {
             self.panels[MAIN].request_repaint();
         }
-        let devices = self.services.haptics.devices();
+        let devices = self.services.haptic_statuses();
         let passthrough_available = input.passthrough_available;
         for idx in [MAIN, BAR, ADJUST] {
             if !self.panels[idx].needs_paint() {

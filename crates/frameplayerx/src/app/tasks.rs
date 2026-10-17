@@ -103,7 +103,17 @@ impl App {
         });
     }
 
+    /// Connects every configured device, while haptics are turned on.
+    pub(super) fn connect_devices(&mut self) {
+        for cfg in self.settings.haptic_devices.clone() {
+            self.connect_device(cfg);
+        }
+    }
+
     pub(super) fn connect_device(&mut self, cfg: crate::settings::HapticDeviceConfig) {
+        if !self.settings.haptics_enabled {
+            return;
+        }
         self.jobs.spawn("haptics", move || {
             let r = Services::connect_device(&cfg);
             Job::Device(cfg, r)
@@ -284,7 +294,9 @@ impl App {
                 if let Some(old) = self.playback.take() {
                     old.close(&self.services.library);
                 }
-                self.services.haptics.load(o.scripts);
+                if let Some(h) = self.services.haptics() {
+                    h.load(o.scripts);
+                }
                 self.playback = Some(o.playback);
                 self.ui.open_error = None;
                 self.ui.adjust_open = false;
@@ -477,7 +489,9 @@ impl App {
         // closes on a thread of its own; the open job waits for it.
         if let Some(p) = self.playback.take() {
             p.close(&self.services.library);
-            self.services.haptics.clear();
+            if let Some(h) = self.services.haptics() {
+                h.clear();
+            }
             self.ui.invalidate();
         }
         self.open_seq += 1;

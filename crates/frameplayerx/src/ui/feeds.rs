@@ -268,8 +268,12 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut F
     if f.details.is_some() {
         return details(ui, v, source, name, f);
     }
+    let haptics = v.settings.haptics_enabled;
+    if !haptics {
+        f.scripted_only = false;
+    }
     let back = header(ui, v.actions, source, name, f);
-    let mut changed = filters(ui, f);
+    let mut changed = filters(ui, f, haptics);
     let shown = f.visible();
     let total = shown.len();
     let mut sort = f.sort;
@@ -282,7 +286,7 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut F
     page::status(ui, f.loading && f.order.is_empty(), f.error.as_deref());
 
     let list: Vec<FeedScene> = shown.into_iter().take(f.shown).cloned().collect();
-    let picked = scene_grid(ui, v.thumbs, f, &list, total);
+    let picked = scene_grid(ui, v.thumbs, f, &list, total, haptics);
     f.sort = sort;
     if changed {
         f.shown = PAGE;
@@ -346,13 +350,14 @@ fn header(
 
 /// Search, the Scripted and Favorites filters, and the groups; true when
 /// they changed.
-fn filters(ui: &mut egui::Ui, f: &mut FeedView) -> bool {
+fn filters(ui: &mut egui::Ui, f: &mut FeedView, haptics: bool) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         changed |= page::search_field(ui, &mut f.search, "Search titles, people, tags", 300.0);
         ui.add_space(10.0);
-        if f.any(|s| s.scripted)
+        if haptics
+            && f.any(|s| s.scripted)
             && widgets::chip_icon(ui, Some(icons::WAVEFORM), "Scripted", f.scripted_only).clicked()
         {
             f.scripted_only = !f.scripted_only;
@@ -424,6 +429,7 @@ fn scene_grid(
     f: &FeedView,
     list: &[FeedScene],
     total: usize,
+    haptics: bool,
 ) -> Picked {
     let mut picked = Picked::default();
     egui::ScrollArea::vertical()
@@ -454,7 +460,7 @@ fn scene_grid(
                         title: &title,
                         facts: &facts,
                         badge: badge.as_deref(),
-                        corner: s.scripted.then_some(icons::WAVEFORM),
+                        corner: (haptics && s.scripted).then_some(icons::WAVEFORM),
                         favorite: s.favorite,
                         more: true,
                         ..Card::default()
@@ -566,7 +572,7 @@ fn details(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut Fe
                     if scene.favorite {
                         facts.push(format!("{}  Favorite", icons::HEART));
                     }
-                    if scene.scripted {
+                    if scene.scripted && v.settings.haptics_enabled {
                         facts.push(format!("{}  Haptics", icons::WAVEFORM));
                     }
                     page::facts(ui, &facts);

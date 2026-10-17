@@ -649,7 +649,12 @@ pub fn adjust_panel(ctx: &egui::Context, v: &mut View) {
                 .color(theme::TEXT),
         );
         ui.add_space(4.0);
-        if let Some(i) = widgets::segmented(ui, &TABS, v.state.adjust_tab) {
+        // Haptics is the last tab, left out while haptics are off.
+        let tabs = &TABS[..TABS.len() - usize::from(!v.settings.haptics_enabled)];
+        if v.state.adjust_tab >= tabs.len() {
+            v.state.adjust_tab = 0;
+        }
+        if let Some(i) = widgets::segmented(ui, tabs, v.state.adjust_tab) {
             v.state.adjust_tab = i;
         }
         ui.add_space(10.0);

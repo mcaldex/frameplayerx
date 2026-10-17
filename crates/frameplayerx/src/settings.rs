@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 pub enum HapticDeviceConfig {
     /// TCode over serial (`/dev/ttyACM0`), `tcp://host:port` or `udp://host:port`.
     Tcode { endpoint: String },
-    /// Intiface Central / Buttplug server.
+    /// Intiface Central's server.
     Buttplug { url: String },
     /// The Handy, by connection key.
     Handy { key: String },
@@ -58,6 +58,9 @@ pub struct Settings {
     /// Thumbstick seek step in seconds.
     pub seek_step: f64,
     pub remote: RemoteConfig,
+    /// Haptic devices and scripts. Off, the app shows nothing about them,
+    /// loads no scripts and runs no haptics engine.
+    pub haptics_enabled: bool,
     pub haptics: HapticsSettings,
     pub haptic_devices: Vec<HapticDeviceConfig>,
     pub update_channel: fp_updater::Channel,
@@ -108,6 +111,7 @@ impl Default for Settings {
             auto_hide_secs: 4.0,
             seek_step: 10.0,
             remote: RemoteConfig::default(),
+            haptics_enabled: false,
             haptics: HapticsSettings::default(),
             haptic_devices: Vec::new(),
             // A beta build keeps getting betas until the user picks Stable.
@@ -219,6 +223,7 @@ mod tests {
         let p = Settings::load(&path);
         assert_eq!(p.volume, 0.25);
         assert_eq!(p.seek_step, 10.0);
+        assert!(!p.haptics_enabled, "haptics stay off until turned on");
         assert_eq!(p.default_format, fp_core::format::VideoFormat::FALLBACK);
         // Saved before the global chroma key: the old green default goes.
         std::fs::write(

@@ -854,7 +854,7 @@ fn details_side(ui: &mut egui::Ui, v: &mut View, r: &MediaRecord) {
     if !r.tags.is_empty() {
         ui.label(RichText::new(r.tags.join("  ·  ")).color(theme::TEXT_2));
     }
-    if !r.scripts.is_empty() {
+    if !r.scripts.is_empty() && v.settings.haptics_enabled {
         let n = r.scripts.len();
         ui.label(
             RichText::new(format!(

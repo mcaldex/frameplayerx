@@ -306,6 +306,12 @@ impl Sim {
                 self.app.repaint_all();
                 self.run_frames(3)?;
             }
+            // `haptics on` / `haptics off`, as Settings > Playback does.
+            Some("haptics") => {
+                self.app.settings.haptics_enabled = parts.get(1) != Some(&"off");
+                self.app.repaint_all();
+                self.run_frames(3)?;
+            }
             // Turns the global chroma key on (Settings > Passthrough).
             Some("chroma-global") => {
                 self.app.settings.default_view.chroma_key = true;

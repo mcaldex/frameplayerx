@@ -216,7 +216,7 @@ fn row(ui: &mut egui::Ui, v: &mut View, e: &Entry) -> bool {
     if let Some(t) = e.modified {
         facts.push(fmt_date(t));
     }
-    if !e.scripts.is_empty() {
+    if !e.scripts.is_empty() && v.settings.haptics_enabled {
         facts.push("haptics".into());
     }
     painter.text(

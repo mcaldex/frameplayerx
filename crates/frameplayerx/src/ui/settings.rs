@@ -24,6 +24,10 @@ const TABS: [(SettingsTab, &str, &str); 8] = [
 ];
 
 pub fn settings(ui: &mut egui::Ui, v: &mut View) {
+    let haptics_on = v.settings.haptics_enabled;
+    if v.state.settings_tab == SettingsTab::Haptics && !haptics_on {
+        v.state.settings_tab = SettingsTab::Playback;
+    }
     ui.add_space(12.0);
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 28.0;
@@ -31,6 +35,9 @@ pub fn settings(ui: &mut egui::Ui, v: &mut View) {
             ui.set_width(240.0);
             ui.spacing_mut().item_spacing.y = 4.0;
             for (t, icon, label) in TABS {
+                if t == SettingsTab::Haptics && !haptics_on {
+                    continue;
+                }
                 if side_tab(ui, icon, label, v.state.settings_tab == t).clicked() {
                     v.state.settings_tab = t;
                 }
@@ -199,6 +206,11 @@ fn playback(ui: &mut egui::Ui, v: &mut View) {
             4.0,
             " s",
             0,
+        );
+        r.switch(
+            "Haptic devices",
+            Some("Sync connected haptic devices with videos that have scripts."),
+            &mut s.haptics_enabled,
         );
     });
     heading(ui, "Default format");
@@ -592,7 +604,7 @@ fn haptics(ui: &mut egui::Ui, v: &mut View) {
         );
         r.switch(
             "Strokes as vibration",
-            Some("For vibrate-only toys."),
+            Some("For devices that only vibrate."),
             &mut h.stroke_to_vibration,
         );
     });

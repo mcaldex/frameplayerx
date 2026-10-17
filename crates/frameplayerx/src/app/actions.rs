@@ -152,9 +152,7 @@ impl App {
             }
             Action::ReconnectDevices => {
                 self.services.remove_devices();
-                for cfg in self.settings.haptic_devices.clone() {
-                    self.connect_device(cfg);
-                }
+                self.connect_devices();
             }
             Action::RegenerateToken => {
                 if let Some(h) = &self.services.remote
@@ -210,7 +208,9 @@ impl App {
         if let Some(p) = self.playback.take() {
             p.close(&self.services.library);
         }
-        self.services.haptics.clear();
+        if let Some(h) = self.services.haptics() {
+            h.clear();
+        }
         self.show_browser = true;
         self.ui_visible = true;
         self.ui.invalidate();

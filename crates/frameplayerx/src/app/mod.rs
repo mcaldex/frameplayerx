@@ -223,9 +223,7 @@ impl App {
         };
         app.offsets = app.settings.panel_offsets;
         app.rescan(false);
-        for cfg in app.settings.haptic_devices.clone() {
-            app.connect_device(cfg);
-        }
+        app.connect_devices();
         if app.settings.check_updates && fp_updater::RELEASE_PUBLIC_KEY.is_some() {
             app.check_updates();
         }
@@ -306,10 +304,13 @@ impl App {
         if self.settings.remote != self.saved.remote {
             self.services.apply_remote(&self.settings.remote);
         }
-        if self.settings.haptics != self.saved.haptics {
-            self.services
-                .haptics
-                .set_settings(self.settings.haptics.clone());
+        if self.settings.haptics_enabled != self.saved.haptics_enabled
+            || self.settings.haptics != self.saved.haptics
+        {
+            self.services.set_haptics(&self.settings);
+            if self.settings.haptics_enabled && !self.saved.haptics_enabled {
+                self.connect_devices();
+            }
         }
         if self.settings.ui_scale != self.saved.ui_scale {
             for p in self.panels.iter_mut() {
@@ -390,7 +391,9 @@ impl App {
             None => true,
         };
         if changed {
-            self.services.haptics.set_status(s.clone());
+            if let Some(h) = self.services.haptics() {
+                h.set_status(s.clone());
+            }
             if let Some(r) = &self.services.remote {
                 r.publish(&s);
             }

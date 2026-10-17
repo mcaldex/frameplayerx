@@ -26,7 +26,7 @@ A VR video player for the Valve Steam Frame. It plays flat, 180°, 360° and fis
 - **PIN locks**: hide a source behind a PIN until you unlock it
 - **Passthrough videos**: see your room around the people in passthrough videos, and behind green or blue screens
 - **Subtitles and spatial audio**: subtitles from a file or inside the video, and 360° audio that follows your head
-- **Haptic devices**: plays funscripts on The Handy, devices that work with Intiface Central, and OSR2 and SR6
+- **Haptic devices**: optional, off until turned on; syncs supported haptic devices with videos that have scripts
 - **Phone remote**: scan a QR code to control playback and browse from your phone. Apps made for DeoVR's remote work too
 - **Custom controls**: choose what each controller button does
 - **Updates**: checks for a new version when it starts, and installs it from Settings when you choose to, on a Stable or a Beta channel

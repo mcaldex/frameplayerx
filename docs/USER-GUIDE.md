@@ -192,7 +192,7 @@ videos, except those you watched or marked.
 |---|---|
 | On this device | **Videos**: everything found on the headset, its cards and drives, with search, format filters and sorting. **Folders**: the home folder and the drives as folders |
 | Jellyfin / Emby | Your libraries, *Continue watching*, *Next up* and the latest additions; a search of the whole server by title, as Jellyfin's own search shows it: a row each of movies, shows, collections and other videos, best matches first (episodes are found through their show); poster grids searched, sorted and filtered by the server (unwatched, in progress, favorites); series by season and episode; details with the story, cast and genres. Watched marks, favorites and resume points are the server's, and what you watch is reported back to it |
-| DeoVR feed / HereSphere API | The server's scene groups as chips over a grid of scenes; search the chosen group (or *All*) across titles, studios, performers and tags; order by title, date, rating or length; *Scripted* and *Favorites* filters. ⋯ opens a scene's details: description, performers and tags (tap one to see all their scenes), and chapters to start from. The page opens with the scenes from last time while the server sends the current list ("updating…" under the title) |
+| DeoVR feed / HereSphere API | The server's scene groups as chips over a grid of scenes; search the chosen group (or *All*) across titles, studios, performers and tags; order by title, date, rating or length; a *Favorites* filter (and *Scripted*, with haptics on). ⋯ opens a scene's details: description, performers and tags (tap one to see all their scenes), and chapters to start from. The page opens with the scenes from last time while the server sends the current list ("updating…" under the title) |
 | SMB, WebDAV, HTTP folders, DLNA, local folders | Folders and files: search the folder you are in, order by name, date or size, *Play all* |
 
 ### Locking a source with a PIN
@@ -389,12 +389,15 @@ adjustment), and turning **Own settings for this video** off makes it follow
 Settings again.
 ## Haptics
 
+Haptics are off until you turn on **Settings › Playback › Haptic devices**.
+Until then FramePlayerX shows nothing about them and loads no scripts.
+
 Scripts (`.funscript`, including multi-axis `video.surge.funscript` etc.)
 are found next to the video, in `~/.local/share/frameplayerx/Interactive`
 (Settings › On this device shows it), or supplied by the server.
-Add a device in **Settings › Haptics**: Intiface Central (Buttplug), TCode
-devices (OSR2/SR6 over USB serial, TCP or UDP), or The Handy (connection
-key). The seek bar shows the script's intensity.
+Add a device in **Settings › Haptics**: Intiface Central, TCode devices
+(OSR2/SR6 over USB serial, TCP or UDP), or The Handy (connection key). The
+seek bar shows the script's intensity.
 
 ## Remote control
 
