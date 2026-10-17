@@ -146,18 +146,15 @@ pub fn open(
     settings: &Settings,
 ) -> Result<Opened, String> {
     let name = last_segment(&req.location);
+    let source = req.source_id.as_deref().and_then(|id| opener.source(id));
     // Feeds may need a details call to get the stream URL and metadata.
-    let entry = match (
-        &req.entry,
-        req.source_id.as_deref().and_then(|id| opener.source(id)),
-    ) {
+    let entry = match (&req.entry, &source) {
         (Some(e), Some(src)) => Some(src.details(e).unwrap_or_else(|_| e.clone())),
         (e, _) => e.clone(),
     };
     let location = entry
         .as_ref()
-        .map(|e| e.location.clone())
-        .unwrap_or_else(|| req.location.clone());
+        .map_or_else(|| req.location.clone(), |e| e.location.clone());
 
     // Library record: existing, or created for remote entries (and deleted
     // again if the video doesn't open, so nothing invisible is left behind).
@@ -192,76 +189,29 @@ pub fn open(
                 .filter(|p| *p > 1.0)
         })
         .unwrap_or(0.0);
-    let cfg = PlayerConfig {
-        hw_decode: if settings.hardware_decoding {
-            fp_media::HwDecode::Auto
-        } else {
-            fp_media::HwDecode::Off
-        },
-        audio: fp_media::audio::output::Backend::Alsa {
-            device: settings.audio_device.clone(),
-            latency_ms: 80,
-        },
-        start_at,
-        volume: settings.volume,
-        ..Default::default()
-    };
     // The previous video's decoder must be released first (see
     // App::open_request); a close stuck on the network is not waited out.
     if !wait_closed(CLOSE_WAIT) {
         log::warn!("previous video still closing; opening anyway");
     }
-    let player = Player::open(src, &name, cfg).map_err(|e| failed(format!("{name}: {e}")))?;
+    let player = Player::open(src, &name, player_config(settings, start_at))
+        .map_err(|e| failed(format!("{name}: {e}")))?;
     let info = player.info().clone();
-    let st = player.stats();
-    if settings.hardware_decoding
-        && !st.hardware
-        && info.video_stream().is_some_and(has_hardware_decoder)
-    {
-        log::warn!(
-            "{name}: no hardware decoder ({}), decoding with {}; {}",
-            st.hardware_error.as_deref().unwrap_or("not tried"),
-            st.video_decoder,
-            hardware_holders()
-        );
+    if settings.hardware_decoding {
+        warn_if_software(&name, &info, &player.stats());
     }
-    let (w, h) = info
-        .video_stream()
-        .map(|v| (v.width, v.height))
-        .unwrap_or((0, 0));
+    let (resolved, detected) =
+        detect_format(&name, &info, entry.as_ref(), record.as_ref(), settings);
 
-    // Format: user override > container metadata > declared by the source >
-    // file name > aspect ratio.
-    let user = record.as_ref().and_then(|r| r.user_format);
-    let hints = if info.hints.projection.is_some() || info.hints.stereo.is_some() {
-        info.hints
-    } else if let Some(f) = declared_format(entry.as_ref(), record.as_ref()) {
-        ContainerHints {
-            projection: Some(f.projection),
-            stereo: Some(f.stereo),
-        }
-    } else {
-        info.hints
-    };
-    // A video nothing identifies starts in the format chosen in Settings.
-    let unidentified = |mut d: DetectedFormat| {
-        if d.evidence == Evidence::Default {
-            d.format = settings.default_format;
-        }
-        d
-    };
-    let resolved = unidentified(format::resolve(user, hints, &name, w, h));
-    let detected = unidentified(format::resolve(None, hints, &name, w, h));
-    log::info!(
-        "format {}{} ({}), {w}x{h}",
-        resolved.format.label(),
-        if resolved.format.alpha_packed {
-            " with mask"
-        } else {
-            ""
-        },
-        resolved.evidence.label()
-    );
+    let (script_locs, subs) = sidecars(&location, entry.as_ref(), record.as_ref(), source);
+    let scripts = load_scripts(opener, &script_locs);
+    let duration_ms = (info.duration * 1000.0) as i64;
+    let heatmap = scripts
+        .iter()
+        .find(|(a, _)| *a == Axis::L0)
+        .filter(|_| duration_ms > 0)
+        .map(|(_, s)| fp_haptics::heatmap_range(s, 0, duration_ms, 240));
+    let active_subtitle_file = load_first_subtitles(opener, &player, &subs);
 
     let settings_v = record
         .as_ref()
@@ -278,89 +228,9 @@ pub fn open(
         .or_else(|| info.title.clone())
         .or_else(|| entry.as_ref().map(|e| e.name.clone()))
         .unwrap_or_else(|| title_from_name(&name));
-
-    // Scripts and subtitles: library record, entry, then the source's sidecars.
-    let mut script_locs: Vec<String> = record
-        .as_ref()
-        .map(|r| r.scripts.clone())
-        .unwrap_or_default();
-    let mut subs: Vec<(String, String)> = record
-        .as_ref()
-        .map(|r| {
-            r.subtitles
-                .iter()
-                .map(|s| (last_segment(s), s.clone()))
-                .collect()
-        })
-        .unwrap_or_default();
-    if let Some(e) = &entry {
-        script_locs.extend(e.scripts.iter().cloned());
-        subs.extend(e.subtitles.iter().map(|s| (last_segment(s), s.clone())));
-        if let Some(src) = req.source_id.as_deref().and_then(|id| opener.source(id))
-            && let Ok(side) = src.sidecars(e)
-        {
-            script_locs.extend(side.scripts.into_iter().map(|s| s.location));
-            subs.extend(side.subtitles.into_iter().map(|s| (s.name, s.location)));
-        }
-    }
-    if script_locs.is_empty() && location.starts_with('/') {
-        let dirs = vec![fp_core::dirs::interactive_dir()];
-        script_locs = fp_haptics::funscript::find_scripts(std::path::Path::new(&location), &dirs)
-            .into_iter()
-            .map(|(_, p)| p.display().to_string())
-            .collect();
-    }
-    script_locs.dedup();
-    subs.dedup_by(|a, b| a.1 == b.1);
-
-    let mut scripts = Vec::new();
-    for loc in &script_locs {
-        match opener.fetch(loc, 64 << 20).and_then(|bytes| {
-            fp_haptics::funscript::parse_script_file(&last_segment(loc), &bytes)
-                .map_err(|e| e.to_string())
-        }) {
-            Ok(mut s) => scripts.append(&mut s),
-            Err(e) => log::warn!("script {loc}: {e}"),
-        }
-    }
-    let duration_ms = (info.duration * 1000.0) as i64;
-    let heatmap = scripts
-        .iter()
-        .find(|(a, _)| *a == Axis::L0)
-        .filter(|_| duration_ms > 0)
-        .map(|(_, s)| fp_haptics::heatmap_range(s, 0, duration_ms, 240));
-
-    let mut active_subtitle_file = None;
-    if let Some((i, (n, loc))) = subs.iter().enumerate().next() {
-        match opener
-            .open(loc)
-            .map_err(|e| e.to_string())
-            .and_then(|s| player.load_subtitles(s, n).map_err(|e| e.to_string()))
-        {
-            Ok(_) => active_subtitle_file = Some(i),
-            Err(e) => log::warn!("subtitles {loc}: {e}"),
-        }
-    }
-
-    let mut markers: Vec<(f64, String)> = info
-        .chapters
-        .iter()
-        .map(|c| (c.start, c.title.clone()))
-        .collect();
-    if let Some(e) = &entry {
-        markers.extend(e.markers.iter().cloned());
-    }
-    if let Some(r) = &record
-        && let Ok(m) = library.markers(r.id)
-    {
-        markers.extend(m.into_iter().map(|m| (m.time, m.name)));
-    }
-    markers.sort_by(|a, b| a.0.total_cmp(&b.0));
-    markers.dedup_by(|a, b| (a.0 - b.0).abs() < 0.5 && a.1 == b.1);
-
+    let markers = markers(&info, entry.as_ref(), record.as_ref(), library);
     let record_id = record.as_ref().map(|r| r.id);
     let session = record_id.and_then(|id| library.start_playback(id).ok());
-    let script_count = scripts.len();
     let server = ServerReport::new(opener, req.source_id.as_deref(), &location);
     if let Some(s) = &server {
         s.send(fp_sources::MediaBrowserSource::report_playback_start);
@@ -385,7 +255,7 @@ pub fn open(
             markers,
             subtitle_files: subs,
             active_subtitle_file,
-            script_count,
+            script_count: scripts.len(),
             last_save: Instant::now(),
             notice: None,
             decode_check: (Instant::now(), 0, 0, 0),
@@ -393,6 +263,180 @@ pub fn open(
         },
         scripts,
     })
+}
+
+fn player_config(settings: &Settings, start_at: f64) -> PlayerConfig {
+    PlayerConfig {
+        hw_decode: if settings.hardware_decoding {
+            fp_media::HwDecode::Auto
+        } else {
+            fp_media::HwDecode::Off
+        },
+        audio: fp_media::audio::output::Backend::Alsa {
+            device: settings.audio_device.clone(),
+            latency_ms: 80,
+        },
+        start_at,
+        volume: settings.volume,
+        ..Default::default()
+    }
+}
+
+/// Logs why a video the hardware could decode is decoded in software.
+fn warn_if_software(name: &str, info: &fp_media::MediaInfo, st: &fp_media::Stats) {
+    if !st.hardware && info.video_stream().is_some_and(has_hardware_decoder) {
+        log::warn!(
+            "{name}: no hardware decoder ({}), decoding with {}; {}",
+            st.hardware_error.as_deref().unwrap_or("not tried"),
+            st.video_decoder,
+            hardware_holders()
+        );
+    }
+}
+
+/// The format to play the video in, and the one detected without the
+/// user's override: user override > container metadata > declared by the
+/// source > file name > aspect ratio > the default chosen in Settings.
+fn detect_format(
+    name: &str,
+    info: &fp_media::MediaInfo,
+    entry: Option<&Entry>,
+    record: Option<&fp_library::MediaRecord>,
+    settings: &Settings,
+) -> (DetectedFormat, DetectedFormat) {
+    let (w, h) = info
+        .video_stream()
+        .map(|v| (v.width, v.height))
+        .unwrap_or((0, 0));
+    let user = record.and_then(|r| r.user_format);
+    let hints = if info.hints.projection.is_some() || info.hints.stereo.is_some() {
+        info.hints
+    } else if let Some(f) = declared_format(entry, record) {
+        ContainerHints {
+            projection: Some(f.projection),
+            stereo: Some(f.stereo),
+        }
+    } else {
+        info.hints
+    };
+    let unidentified = |mut d: DetectedFormat| {
+        if d.evidence == Evidence::Default {
+            d.format = settings.default_format;
+        }
+        d
+    };
+    let resolved = unidentified(format::resolve(user, hints, name, w, h));
+    let detected = unidentified(format::resolve(None, hints, name, w, h));
+    log::info!(
+        "format {}{} ({}), {w}x{h}",
+        resolved.format.label(),
+        if resolved.format.alpha_packed {
+            " with mask"
+        } else {
+            ""
+        },
+        resolved.evidence.label()
+    );
+    (resolved, detected)
+}
+
+/// Haptic script locations and (name, location) subtitles for a video: from
+/// its library record, its entry, then the source's sidecar files; scripts
+/// of a local file not otherwise found are looked for beside it and in the
+/// Interactive folder.
+fn sidecars(
+    location: &str,
+    entry: Option<&Entry>,
+    record: Option<&fp_library::MediaRecord>,
+    source: Option<std::sync::Arc<dyn fp_sources::Source>>,
+) -> (Vec<String>, Vec<(String, String)>) {
+    let mut scripts: Vec<String> = record.map(|r| r.scripts.clone()).unwrap_or_default();
+    let mut subs: Vec<(String, String)> = record
+        .map(|r| {
+            r.subtitles
+                .iter()
+                .map(|s| (last_segment(s), s.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(e) = entry {
+        scripts.extend(e.scripts.iter().cloned());
+        subs.extend(e.subtitles.iter().map(|s| (last_segment(s), s.clone())));
+        if let Some(src) = source
+            && let Ok(side) = src.sidecars(e)
+        {
+            scripts.extend(side.scripts.into_iter().map(|s| s.location));
+            subs.extend(side.subtitles.into_iter().map(|s| (s.name, s.location)));
+        }
+    }
+    if scripts.is_empty() && location.starts_with('/') {
+        let dirs = vec![fp_core::dirs::interactive_dir()];
+        scripts = fp_haptics::funscript::find_scripts(std::path::Path::new(location), &dirs)
+            .into_iter()
+            .map(|(_, p)| p.display().to_string())
+            .collect();
+    }
+    scripts.dedup();
+    subs.dedup_by(|a, b| a.1 == b.1);
+    (scripts, subs)
+}
+
+fn load_scripts(opener: &Opener, locations: &[String]) -> Vec<(Axis, Script)> {
+    let mut scripts = Vec::new();
+    for loc in locations {
+        match opener.fetch(loc, 64 << 20).and_then(|bytes| {
+            fp_haptics::funscript::parse_script_file(&last_segment(loc), &bytes)
+                .map_err(|e| e.to_string())
+        }) {
+            Ok(mut s) => scripts.append(&mut s),
+            Err(e) => log::warn!("script {loc}: {e}"),
+        }
+    }
+    scripts
+}
+
+/// Shows the first subtitle file; its index when it loaded.
+fn load_first_subtitles(
+    opener: &Opener,
+    player: &Player,
+    subs: &[(String, String)],
+) -> Option<usize> {
+    let (name, loc) = subs.first()?;
+    match opener
+        .open(loc)
+        .and_then(|s| player.load_subtitles(s, name).map_err(|e| e.to_string()))
+    {
+        Ok(_) => Some(0),
+        Err(e) => {
+            log::warn!("subtitles {loc}: {e}");
+            None
+        }
+    }
+}
+
+/// Chapters, the source's markers and the user's bookmarks, in time order.
+fn markers(
+    info: &fp_media::MediaInfo,
+    entry: Option<&Entry>,
+    record: Option<&fp_library::MediaRecord>,
+    library: &Library,
+) -> Vec<(f64, String)> {
+    let mut markers: Vec<(f64, String)> = info
+        .chapters
+        .iter()
+        .map(|c| (c.start, c.title.clone()))
+        .collect();
+    if let Some(e) = entry {
+        markers.extend(e.markers.iter().cloned());
+    }
+    if let Some(r) = record
+        && let Ok(m) = library.markers(r.id)
+    {
+        markers.extend(m.into_iter().map(|m| (m.time, m.name)));
+    }
+    markers.sort_by(|a, b| a.0.total_cmp(&b.0));
+    markers.dedup_by(|a, b| (a.0 - b.0).abs() < 0.5 && a.1 == b.1);
+    markers
 }
 
 impl Playback {
