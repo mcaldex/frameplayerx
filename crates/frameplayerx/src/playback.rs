@@ -15,7 +15,7 @@ use fp_library::{Library, MediaId, SessionId};
 use fp_media::{Cue, Player, PlayerConfig, PlayerState, StreamInfo};
 use fp_sources::sidecar::subtitle_file;
 use fp_sources::urlutil::last_segment;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -111,6 +111,7 @@ pub fn open(
     library: &Library,
     settings: &Settings,
     reports: &Reports,
+    gpu: Option<Arc<dyn fp_media::GpuCopier>>,
 ) -> Result<Opened, String> {
     let name = last_segment(&req.location);
     let source = req.source_id.as_deref().and_then(|id| opener.source(id));
@@ -178,7 +179,7 @@ pub fn open(
         settings.haptics_enabled,
     );
     let mut pick = Pick::Off;
-    let player = Player::open(src, &name, player_config(settings, start_at), |info| {
+    let player = Player::open(src, &name, player_config(settings, start_at, gpu), |info| {
         pick = subtitles::choose(
             settings.subtitles,
             &settings.subtitle_language,
@@ -278,7 +279,11 @@ pub fn open(
     })
 }
 
-fn player_config(settings: &Settings, start_at: f64) -> PlayerConfig {
+fn player_config(
+    settings: &Settings,
+    start_at: f64,
+    gpu: Option<Arc<dyn fp_media::GpuCopier>>,
+) -> PlayerConfig {
     PlayerConfig {
         hw_decode: if settings.hardware_decoding {
             fp_media::HwDecode::Auto
@@ -291,6 +296,7 @@ fn player_config(settings: &Settings, start_at: f64) -> PlayerConfig {
         },
         start_at,
         volume: settings.volume,
+        gpu,
         ..Default::default()
     }
 }
@@ -362,7 +368,7 @@ fn sidecars(
     name: &str,
     entry: Option<&Entry>,
     record: Option<&fp_library::MediaRecord>,
-    source: Option<std::sync::Arc<dyn fp_sources::Source>>,
+    source: Option<Arc<dyn fp_sources::Source>>,
     with_scripts: bool,
 ) -> (Vec<String>, Vec<SubtitleFile>) {
     let mut scripts: Vec<String> = record.map(|r| r.scripts.clone()).unwrap_or_default();

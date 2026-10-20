@@ -85,7 +85,7 @@ pub(crate) fn yuv_matrix(color: &ColorInfo, layout: PixelLayout) -> ([Vec4; 3], 
     let bits = match layout {
         PixelLayout::I420 { bits } => bits,
         PixelLayout::Nv12 => 8,
-        PixelLayout::P010 | PixelLayout::DrmPrime | PixelLayout::Q10c => 10,
+        PixelLayout::P010 | PixelLayout::Q10c => 10,
     };
     let max = ((1u32 << bits) - 1) as f32;
     // Sample scale: values are normalised by the texture format's range.

@@ -8,6 +8,7 @@
 //! - `v4l2`: the native V4L2 stateful decoder for H.264/HEVC (10-bit HEVC as
 //!   Q10C), with the Steam Frame's admission-check workaround.
 //! - [`frame`]: decoded video frames in GPU-uploadable layouts.
+//! - [`gpu`]: pictures the GPU copies out of the hardware decoder.
 //! - [`player`]: the threaded player with a video-master clock.
 //! - [`audio`]: output, time-stretch and ambisonic rendering.
 //! - [`thumb`]: probing and frame grabs for the library.
@@ -17,6 +18,7 @@ pub mod bench;
 pub mod clock;
 pub(crate) mod decode;
 pub mod frame;
+pub mod gpu;
 pub mod info;
 pub(crate) mod input;
 pub(crate) mod io;
@@ -26,7 +28,8 @@ pub mod thumb;
 pub(crate) mod v4l2;
 
 pub use decode::{HwDecode, hardware_sessions, hevc_10bit_hardware, set_hevc_10bit_hardware};
-pub use frame::{ColorInfo, PixelLayout, Q10cPicture, VideoFrame};
+pub use frame::{ColorInfo, GpuPicture, PixelLayout, Q10cPicture, VideoFrame};
+pub use gpu::{DecoderBuffer, GpuBuffer, GpuBytes, GpuCopier};
 pub use info::{MediaInfo, StreamInfo, StreamKind};
 pub use player::{Player, PlayerConfig, PlayerState, Stats};
 pub use subtitle::Cue;

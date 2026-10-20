@@ -10,8 +10,10 @@
 //! - [`capture`]: offscreen eye targets with read-back, for tests and
 //!   screenshots.
 //! - `q10c`: shows the Steam Frame decoder's 10-bit (Q10C) pictures.
+//! - [`frames`]: copies the hardware decoder's pictures out on the GPU.
 
 pub mod capture;
+pub mod frames;
 pub mod gpu;
 pub mod math;
 pub mod mem;
@@ -21,6 +23,7 @@ mod q10c;
 pub mod renderer;
 mod video;
 
+pub use frames::GpuFrames;
 pub use gpu::{Creator, DirectCreator, Gpu};
 pub use params::VideoParams;
 pub use renderer::{EyeTarget, EyeView, PanelId, QuadDraw, QuadTexture, Renderer};

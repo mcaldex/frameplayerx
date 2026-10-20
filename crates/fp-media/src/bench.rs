@@ -22,6 +22,8 @@ pub struct BenchOptions {
     pub frames_after_seek: usize,
     /// Checksum these frame numbers (0-based, counted from the start).
     pub checksum: Vec<usize>,
+    /// Copies hardware-decoded pictures out on the GPU, as the player does.
+    pub gpu: Option<Arc<dyn crate::GpuCopier>>,
 }
 
 impl Default for BenchOptions {
@@ -32,6 +34,7 @@ impl Default for BenchOptions {
             seek: None,
             frames_after_seek: 60,
             checksum: Vec::new(),
+            gpu: None,
         }
     }
 }
@@ -51,6 +54,8 @@ pub struct BenchRun {
 pub struct BenchReport {
     pub decoder: String,
     pub hardware: bool,
+    /// The pictures came out in GPU memory.
+    pub gpu: bool,
     pub width: u32,
     pub height: u32,
     pub layout: Option<PixelLayout>,
@@ -61,15 +66,37 @@ pub struct BenchReport {
 }
 
 /// FNV-1a over Y, then U, then V samples, so NV12 and I420 decodes of the
-/// same picture hash alike. Q10C frames hash their compressed buffer, which
-/// only matches other Q10C decodes.
+/// same picture hash alike, whether the CPU or the GPU copied it out of the
+/// decoder. Q10C frames hash their compressed buffer, which only matches
+/// other Q10C decodes.
 pub fn yuv_checksum(f: &VideoFrame) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mut eat = |b: u8| {
         h ^= b as u64;
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     };
-    let planes = f.packed_planes();
+    let planes = match f.gpu() {
+        Some(g) => {
+            let Ok(bytes) = g.bytes.read() else {
+                return 0;
+            };
+            if f.layout == PixelLayout::Q10c {
+                bytes.iter().for_each(|&b| eat(b));
+                return h;
+            }
+            let rows = |offset: usize, width: u32, height: u32| -> Vec<u8> {
+                (0..height as usize)
+                    .flat_map(|y| {
+                        let at = offset + y * g.stride as usize;
+                        bytes[at..at + width as usize].iter().copied()
+                    })
+                    .collect()
+            };
+            let (cw, ch) = (f.width.div_ceil(2), f.height.div_ceil(2));
+            vec![rows(0, f.width, f.height), rows(g.uv_offset, cw * 2, ch)]
+        }
+        None => f.packed_planes(),
+    };
     match f.layout {
         PixelLayout::Nv12 | PixelLayout::P010 => {
             let bps = f.layout.bytes_per_sample() as usize;
@@ -182,7 +209,10 @@ pub fn decode_bench(
     let vi = input
         .best_stream(ff::AVMEDIA_TYPE_VIDEO)
         .ok_or(Error::NoStream("video"))?;
-    let dec = Decoder::open(input.streams()[vi], opts.hw)?;
+    let mut dec = Decoder::open(input.streams()[vi], opts.hw)?;
+    if let Some(g) = &opts.gpu {
+        dec.use_gpu(g.clone());
+    }
     let mut report = BenchReport {
         decoder: dec.name.clone(),
         hardware: dec.hardware,
@@ -203,6 +233,7 @@ pub fn decode_bench(
     let mut dims = None;
     report.run = s.run(opts.frames, |i, f| {
         dims.get_or_insert((f.width, f.height, f.layout));
+        report.gpu |= f.gpu().is_some();
         if opts.checksum.contains(&i) {
             sums.push((i, f.pts, yuv_checksum(f)));
         }

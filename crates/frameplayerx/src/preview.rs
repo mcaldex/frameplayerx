@@ -594,6 +594,7 @@ pub fn run(args: &Args, out: &Path) -> Result<(), Error> {
     let size = args.size.unwrap_or(1024);
     let eyes = OffscreenEyes::new(&renderer, size, size)?;
     let mut app = crate::make_app()?;
+    app.set_gpu_frames(crate::gpu_frames(&renderer));
     // The rows a Steam Frame shows, so screenshots cover long values.
     app.set_about(vec![
         ("Mode".into(), "Preview (no headset)".into()),

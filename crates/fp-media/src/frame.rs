@@ -14,8 +14,6 @@ pub enum PixelLayout {
     Nv12,
     /// Y plane plus interleaved UV plane, 16 bits with 10 significant high bits.
     P010,
-    /// GPU buffer shared as DMA-BUF file descriptors (zero copy).
-    DrmPrime,
     /// The Steam Frame decoder's 10-bit output, Q10C: Qualcomm's compressed
     /// (UBWC) TP10, three 10-bit samples in four bytes, as one buffer of Y
     /// metadata, Y, UV metadata and UV ([`VideoFrame::q10c`]). Only the GPU
@@ -64,6 +62,23 @@ pub struct Q10cPicture<'a> {
 /// `AVFrame::format` of [`PixelLayout::Q10c`] frames. FFmpeg has no such
 /// format, so this is its fourcc, far outside FFmpeg's own values.
 pub(crate) const PIX_FMT_Q10C: ff::AVPixelFormat = 0x4330_3151;
+
+/// `AVFrame::format` of frames whose picture is in GPU memory ("GPU0").
+pub(crate) const PIX_FMT_GPU: ff::AVPixelFormat = 0x3055_5047;
+
+/// A picture the GPU copied out of the hardware decoder, laid out as in the
+/// decoder's buffer: NV12 with its planes stacked, or a whole Q10C buffer.
+pub struct GpuPicture {
+    /// [`PixelLayout::Nv12`] or [`PixelLayout::Q10c`].
+    pub layout: PixelLayout,
+    pub bytes: crate::GpuBytes,
+    /// Bytes per row of both planes.
+    pub stride: u32,
+    /// Luma rows the buffer is laid out for (the frame height or more).
+    pub rows: u32,
+    /// Where the UV plane (its metadata first, for Q10C) starts.
+    pub uv_offset: usize,
+}
 
 /// One plane of a frame.
 pub struct Plane<'a> {
@@ -128,8 +143,11 @@ impl VideoFrame {
         let (n, chroma_components) = match self.layout {
             PixelLayout::I420 { .. } => (3, 1),
             PixelLayout::Nv12 | PixelLayout::P010 => (2, 2),
-            PixelLayout::DrmPrime | PixelLayout::Q10c => return Vec::new(),
+            PixelLayout::Q10c => return Vec::new(),
         };
+        if self.gpu().is_some() {
+            return Vec::new();
+        }
         let bps = self.layout.bytes_per_sample();
         // SAFETY: frame is a valid decoded frame of this layout; plane sizes
         // follow from the 4:2:0 subsampling.
@@ -185,7 +203,7 @@ impl VideoFrame {
     }
 
     /// Like [`VideoFrame::from_rgba`], converted to BT.709 in `layout` (any
-    /// but `DrmPrime`), full or limited range: frames shaped like the hardware
+    /// but `Q10c`), full or limited range: frames shaped like the hardware
     /// decoders' (NV12, P010) for tests.
     pub fn from_rgba_as(
         width: u32,
@@ -289,13 +307,16 @@ impl VideoFrame {
         }
     }
 
-    /// DMA-BUF description for zero-copy import, when the layout is DrmPrime.
-    pub fn drm_descriptor(&self) -> Option<&ff::AVDRMFrameDescriptor> {
-        if self.layout != PixelLayout::DrmPrime {
-            return None;
+    /// The picture, when the GPU copied it out of the hardware decoder (the
+    /// CPU then has no copy: [`VideoFrame::planes`] is empty).
+    pub fn gpu(&self) -> Option<&GpuPicture> {
+        // SAFETY: frames of format PIX_FMT_GPU are built by `set_gpu`, whose
+        // buf[0] owns the picture data[0] points at.
+        unsafe {
+            let f = self.frame.as_ref()?;
+            (f.format == PIX_FMT_GPU && !f.data[0].is_null())
+                .then(|| &*(f.data[0] as *const GpuPicture))
         }
-        // SAFETY: for DRM_PRIME frames data[0] points at the descriptor.
-        unsafe { ((*self.frame).data[0] as *const ff::AVDRMFrameDescriptor).as_ref() }
     }
 
     /// The decoder's buffer, when the layout is Q10c. Such frames keep the
@@ -366,6 +387,45 @@ pub(crate) unsafe fn set_q10c(
     f.format = PIX_FMT_Q10C;
     f.width = size.0 as i32;
     f.height = size.1 as i32;
+}
+
+/// Makes `f` a frame holding `picture`, read back by [`VideoFrame::gpu`].
+/// The frame's buffer owns the picture, so the GPU memory is given back when
+/// the last reference to the frame goes.
+///
+/// # Safety
+/// `f` is an unreferenced frame.
+pub(crate) unsafe fn set_gpu(
+    f: &mut ff::AVFrame,
+    picture: GpuPicture,
+    size: (u32, u32),
+) -> Result<()> {
+    unsafe extern "C" fn free(_opaque: *mut std::ffi::c_void, data: *mut u8) {
+        // SAFETY: `data` is the box `set_gpu` gave the buffer.
+        drop(unsafe { Box::from_raw(data as *mut GpuPicture) });
+    }
+    let data = Box::into_raw(Box::new(picture)) as *mut u8;
+    // SAFETY: the buffer takes the box; `free` drops it.
+    let buf = unsafe {
+        ff::av_buffer_create(
+            data,
+            size_of::<GpuPicture>(),
+            Some(free),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if buf.is_null() {
+        // SAFETY: the buffer didn't take the box.
+        drop(unsafe { Box::from_raw(data as *mut GpuPicture) });
+        return Err(Error::Unsupported("out of memory for a frame".into()));
+    }
+    f.buf[0] = buf;
+    f.data[0] = data;
+    f.format = PIX_FMT_GPU;
+    f.width = size.0 as i32;
+    f.height = size.1 as i32;
+    Ok(())
 }
 
 fn color_info(f: &ff::AVFrame) -> ColorInfo {
@@ -470,6 +530,8 @@ impl FrameConverter {
             ff::AV_PIX_FMT_NV12 => Some(PixelLayout::Nv12),
             ff::AV_PIX_FMT_P010LE => Some(PixelLayout::P010),
             PIX_FMT_Q10C => Some(PixelLayout::Q10c),
+            // SAFETY: built by `set_gpu`, data[0] is its picture.
+            PIX_FMT_GPU => Some(unsafe { (*(f.data[0] as *const GpuPicture)).layout }),
             _ => None,
         }
         // Rows stored bottom up (negative strides) go through swscale, which

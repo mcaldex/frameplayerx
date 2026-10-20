@@ -308,6 +308,12 @@ impl App {
         self.ui.about = about;
     }
 
+    /// The renderer's copier for hardware-decoded pictures, for players
+    /// (see [`fp_render::Renderer::gpu_frames`]).
+    pub fn set_gpu_frames(&mut self, frames: Option<Arc<dyn fp_media::GpuCopier>>) {
+        self.services.gpu_frames = frames;
+    }
+
     /// Opens a location (path or URL) as if picked in the UI.
     pub fn open(&mut self, req: OpenRequest) {
         self.apply(Action::Open(req));

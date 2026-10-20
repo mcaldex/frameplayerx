@@ -246,6 +246,7 @@ Steam can't pass environment variables to an app, so the launcher reads
 | `FRAMEPLAYERX_DEBUG_INPUT` | | `1` logs each controller's input when it changes |
 | `FRAMEPLAYERX_V4L2` | | `0` turns off the native V4L2 decoder |
 | `FRAMEPLAYERX_V4L2_DEVICE` | | The V4L2 device to decode with, instead of the one found |
+| `FRAMEPLAYERX_GPU_FRAMES` | | `0` has the CPU copy hardware-decoded pictures out of the decoder, instead of the GPU |
 
 ### Steam Frame notes
 

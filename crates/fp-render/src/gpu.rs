@@ -89,6 +89,11 @@ pub struct Gpu {
     /// buffer device addresses, DRM format modifiers and 16-bit storage
     /// images.
     pub(crate) q10c_features: bool,
+    /// DMA-BUF import is enabled, for [`crate::frames`].
+    pub(crate) dma_buf: bool,
+    /// The device has one queue, which the decoder thread's copies, the
+    /// renderer and the OpenXR runtime share (see [`Gpu::lock_queue`]).
+    queue_lock: Mutex<()>,
 }
 
 /// Device extensions [`crate::q10c`] needs.
@@ -97,19 +102,23 @@ const Q10C_EXTENSIONS: [&std::ffi::CStr; 2] = [
     ash::ext::descriptor_buffer::NAME,
 ];
 
-/// Whether `pdev` is Turnip with everything [`crate::q10c`] needs.
+/// Device extensions [`crate::frames`] needs: importing the decoder's
+/// buffers, and handing them back and forth with it.
+const DMA_BUF_EXTENSIONS: [&std::ffi::CStr; 3] = [
+    ash::khr::external_memory_fd::NAME,
+    ash::ext::external_memory_dma_buf::NAME,
+    ash::ext::queue_family_foreign::NAME,
+];
+
+/// Whether `pdev` is Turnip with everything [`crate::q10c`] needs, given
+/// its extensions `has`.
 fn q10c_supported(
     instance: &ash::Instance,
     pdev: vk::PhysicalDevice,
     driver: vk::DriverId,
+    has: impl Fn(&std::ffi::CStr) -> bool,
 ) -> bool {
-    if driver != vk::DriverId::MESA_TURNIP {
-        return false;
-    }
-    // SAFETY: valid physical device.
-    let exts = unsafe { instance.enumerate_device_extension_properties(pdev) }.unwrap_or_default();
-    let has = |n: &std::ffi::CStr| exts.iter().any(|e| e.extension_name_as_c_str() == Ok(n));
-    if !Q10C_EXTENSIONS.iter().all(|n| has(n)) {
+    if driver != vk::DriverId::MESA_TURNIP || !Q10C_EXTENSIONS.iter().all(|n| has(n)) {
         return false;
     }
     let mut f12 = vk::PhysicalDeviceVulkan12Features::default();
@@ -171,8 +180,23 @@ impl Gpu {
         let mut f13 = vk::PhysicalDeviceVulkan13Features::default()
             .dynamic_rendering(true)
             .synchronization2(true);
-        let q10c_features = q10c_supported(&instance, pdev, driver_props.driver_id);
-        let q10c_exts = Q10C_EXTENSIONS.map(std::ffi::CStr::as_ptr);
+        // SAFETY: valid physical device.
+        let available =
+            unsafe { instance.enumerate_device_extension_properties(pdev) }.unwrap_or_default();
+        let has = |n: &std::ffi::CStr| {
+            available
+                .iter()
+                .any(|e| e.extension_name_as_c_str() == Ok(n))
+        };
+        let q10c_features = q10c_supported(&instance, pdev, driver_props.driver_id, has);
+        let dma_buf = DMA_BUF_EXTENSIONS.iter().all(|n| has(n));
+        let mut exts = Vec::new();
+        if q10c_features {
+            exts.extend(Q10C_EXTENSIONS.map(std::ffi::CStr::as_ptr));
+        }
+        if dma_buf {
+            exts.extend(DMA_BUF_EXTENSIONS.map(std::ffi::CStr::as_ptr));
+        }
         let mut f12 = vk::PhysicalDeviceVulkan12Features::default().buffer_device_address(true);
         let mut fdb =
             vk::PhysicalDeviceDescriptorBufferFeaturesEXT::default().descriptor_buffer(true);
@@ -180,10 +204,10 @@ impl Gpu {
             vk::PhysicalDeviceFeatures::default().shader_storage_image_extended_formats(true);
         let mut dci = vk::DeviceCreateInfo::default()
             .queue_create_infos(&qci)
+            .enabled_extension_names(&exts)
             .push_next(&mut f13);
         if q10c_features {
             dci = dci
-                .enabled_extension_names(&q10c_exts)
                 .enabled_features(&features)
                 .push_next(&mut f12)
                 .push_next(&mut fdb);
@@ -214,7 +238,23 @@ impl Gpu {
             device_name,
             driver,
             q10c_features,
+            dma_buf,
+            queue_lock: Mutex::new(()),
         })
+    }
+
+    /// Holds the queue: while held, nothing else submits to it. The OpenXR
+    /// runtime uses the queue in xrBeginFrame, xrEndFrame and when swapchain
+    /// images are acquired or released, so those are called holding it.
+    pub fn lock_queue(&self) -> std::sync::MutexGuard<'_, ()> {
+        lock(&self.queue_lock)
+    }
+
+    /// `vkQueueSubmit`, holding the queue.
+    pub fn submit(&self, submits: &[vk::SubmitInfo<'_>], fence: vk::Fence) -> Result<()> {
+        let _queue = self.lock_queue();
+        // SAFETY: the queue is held; the submissions are the caller's.
+        unsafe { self.device.queue_submit(self.queue, submits, fence) }.ctx("submit")
     }
 
     /// Headless device for tests and tools.

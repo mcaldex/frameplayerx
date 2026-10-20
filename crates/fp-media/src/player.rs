@@ -42,6 +42,8 @@ pub struct PlayerConfig {
     pub start_at: f64,
     pub start_paused: bool,
     pub volume: f32,
+    /// Copies hardware-decoded pictures out on the GPU (see [`crate::gpu`]).
+    pub gpu: Option<Arc<dyn crate::GpuCopier>>,
 }
 
 impl Default for PlayerConfig {
@@ -55,6 +57,7 @@ impl Default for PlayerConfig {
             start_at: 0.0,
             start_paused: false,
             volume: 1.0,
+            gpu: None,
         }
     }
 }
@@ -79,6 +82,8 @@ pub struct Stats {
     pub audio_sink: String,
     pub frames_shown: u64,
     pub frames_dropped: u64,
+    /// The frame shown last came out of the hardware decoder on the GPU.
+    pub gpu_frames: bool,
     /// Times the clock was held because decoding fell behind.
     pub stalls: u64,
     pub video_queue: usize,
@@ -264,7 +269,13 @@ impl Player {
 
         // Decoders are opened here so errors surface from open().
         let video_dec = match info.video {
-            Some(i) => Some(Decoder::open(input.streams()[i], config.hw_decode)?),
+            Some(i) => {
+                let mut d = Decoder::open(input.streams()[i], config.hw_decode)?;
+                if let Some(g) = &config.gpu {
+                    d.use_gpu(g.clone());
+                }
+                Some(d)
+            }
             None => None,
         };
         if let Some(d) = &video_dec {
@@ -533,8 +544,12 @@ impl Player {
                 if let Some(f) = frames.pop_front() {
                     // Start the clock exactly at the first frame shown.
                     s.clock.set(f.pts);
+                    let gpu = f.gpu().is_some();
                     *lock(&s.current) = Some(f);
-                    s.stats().frames_shown += 1;
+                    let mut st = s.stats();
+                    st.frames_shown += 1;
+                    st.gpu_frames = gpu;
+                    drop(st);
                     s.frames_cv.notify_all();
                 }
                 s.buffering.store(false, Ordering::Release);
@@ -553,9 +568,11 @@ impl Player {
                 shown = frames.pop_front();
             }
             if let Some(f) = shown {
+                let gpu = f.gpu().is_some();
                 *lock(&s.current) = Some(f);
                 let mut st = s.stats();
                 st.frames_shown += 1;
+                st.gpu_frames = gpu;
                 st.frames_dropped += dropped;
                 s.frames_cv.notify_all();
             }

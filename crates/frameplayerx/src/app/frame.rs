@@ -262,8 +262,15 @@ impl App {
             let (at, shown, dropped) = last?;
             let s = now.duration_since(at).as_secs_f32().max(1e-3);
             let v = p.player.info().video_stream()?;
-            let (badge, _) =
+            let (mut badge, _) =
                 ui::player::stream_info_labels(v, &st, self.settings.hardware_decoding);
+            if st.hardware {
+                badge += if st.gpu_frames {
+                    " · GPU copy"
+                } else {
+                    " · CPU copy"
+                };
+            }
             Some((
                 st.frames_shown.saturating_sub(shown) as f32 / s,
                 st.frames_dropped.saturating_sub(dropped) as f32 / s,

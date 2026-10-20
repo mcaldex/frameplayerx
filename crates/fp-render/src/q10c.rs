@@ -309,6 +309,9 @@ pub(crate) struct Picture {
     pub geometry: Geometry,
     memory: vk::DeviceMemory,
     mapped: *mut u8,
+    /// `memory` as a buffer, for pictures the GPU copies in (null when no
+    /// memory type suits both it and the carriers).
+    buffer: vk::Buffer,
     carriers: Carriers,
     descriptors: vk::Buffer,
     descriptor_memory: vk::DeviceMemory,
@@ -329,10 +332,41 @@ impl Picture {
         unsafe { std::slice::from_raw_parts_mut(self.mapped, self.geometry.len) }
     }
 
+    /// Records a copy of a GPU picture of `geometry.len` bytes in `src`
+    /// into the picture, ready for [`Converter::record`].
+    pub fn copy_from(&self, gpu: &Gpu, cmd: vk::CommandBuffer, src: vk::Buffer) -> Result<()> {
+        if self.buffer == vk::Buffer::null() {
+            return Err(Error::Unsupported(
+                "no memory for copying Q10C pictures on the GPU".into(),
+            ));
+        }
+        let region = vk::BufferCopy {
+            src_offset: 0,
+            dst_offset: 0,
+            size: self.geometry.len as u64,
+        };
+        let copied = vk::MemoryBarrier2::default()
+            .src_stage_mask(vk::PipelineStageFlags2::COPY)
+            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+            .dst_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ);
+        // SAFETY: recording; both buffers hold the picture.
+        unsafe {
+            gpu.device.cmd_copy_buffer(cmd, src, self.buffer, &[region]);
+            gpu.device.cmd_pipeline_barrier2(
+                cmd,
+                &vk::DependencyInfo::default().memory_barriers(&[copied]),
+            );
+        }
+        Ok(())
+    }
+
     pub fn destroy(&mut self, gpu: &Gpu) {
         self.carriers.destroy(gpu);
         // SAFETY: not in use; null handles are ignored.
         unsafe {
+            gpu.device
+                .destroy_buffer(std::mem::take(&mut self.buffer), None);
             gpu.device
                 .destroy_buffer(std::mem::take(&mut self.descriptors), None);
             gpu.device
@@ -591,21 +625,50 @@ impl Converter {
     /// The resources to convert pictures of geometry `g` into `outputs`
     /// (the Y and UV planes, R16 and R16G16).
     pub fn picture(&self, gpu: &Gpu, g: Geometry, outputs: &[Image]) -> Result<Picture> {
+        let d = &gpu.device;
+        // SAFETY: a buffer the picture owns, bound to its memory below.
+        let mut buffer = unsafe {
+            d.create_buffer(
+                &vk::BufferCreateInfo::default()
+                    .size(g.len as u64)
+                    .usage(vk::BufferUsageFlags::TRANSFER_DST),
+                None,
+            )
+        }
+        .ctx("Q10C copy buffer")?;
+        // SAFETY: valid buffer.
+        let buffer_req = unsafe { d.get_buffer_memory_requirements(buffer) };
         let mut memory = vk::DeviceMemory::null();
+        let mut shared = false;
         let carriers = Carriers::new(gpu, &g, |reqs| {
             let bits = reqs[0].memory_type_bits & reqs[1].memory_type_bits;
+            shared = bits & buffer_req.memory_type_bits != 0 && buffer_req.size <= g.len as u64;
+            let bits = if shared {
+                bits & buffer_req.memory_type_bits
+            } else {
+                bits
+            };
             memory = allocate(gpu, g.len as u64, bits, false)?;
             Ok(memory)
         });
+        // SAFETY: the buffer fits the memory when `shared`; else unused.
+        if !shared || unsafe { d.bind_buffer_memory(buffer, memory, 0) }.is_err() {
+            // SAFETY: unused.
+            unsafe { d.destroy_buffer(std::mem::take(&mut buffer), None) };
+        }
         let mut p = Picture {
             geometry: g,
             memory,
             mapped: std::ptr::null_mut(),
+            buffer,
             carriers: match carriers {
                 Ok(c) => c,
                 Err(e) => {
                     // SAFETY: unused (null is ignored).
-                    unsafe { gpu.device.free_memory(memory, None) };
+                    unsafe {
+                        d.destroy_buffer(buffer, None);
+                        d.free_memory(memory, None);
+                    }
                     return Err(e);
                 }
             },

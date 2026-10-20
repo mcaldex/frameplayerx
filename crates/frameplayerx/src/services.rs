@@ -226,6 +226,8 @@ pub struct Services {
     pub remote_error: Option<String>,
     /// Sends watch sync reports to servers.
     pub watch: crate::watch::Reports,
+    /// The renderer's copier for hardware-decoded pictures, given to players.
+    pub gpu_frames: Option<Arc<dyn fp_media::GpuCopier>>,
 }
 
 /// A configured haptic device and how connecting it went.
@@ -332,6 +334,7 @@ impl Services {
             remote: None,
             remote_error: None,
             watch: crate::watch::Reports::start(),
+            gpu_frames: None,
         };
         s.set_haptics(settings);
         s.start_worker();

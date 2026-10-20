@@ -619,6 +619,16 @@ impl Decoder {
         let _ = flag;
     }
 
+    /// Has the native hardware decoder copy its pictures out on the GPU.
+    pub(crate) fn use_gpu(&mut self, copier: Arc<dyn crate::GpuCopier>) {
+        #[cfg(target_os = "linux")]
+        if let Some(n) = self.native.as_mut() {
+            n.dec.set_gpu(copier);
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = copier;
+    }
+
     pub fn flush(&mut self) {
         #[cfg(target_os = "linux")]
         if let Some(n) = self.native.as_mut() {

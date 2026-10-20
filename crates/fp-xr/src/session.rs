@@ -324,7 +324,10 @@ impl XrSession {
     /// images. Call [`XrSession::end_frame`] after submitting GPU work.
     pub fn begin_frame(&mut self) -> Result<FrameCtx> {
         let state = self.waiter.wait().ctx("xrWaitFrame")?;
-        self.stream.begin().ctx("xrBeginFrame")?;
+        {
+            let _queue = self.gpu.lock_queue();
+            self.stream.begin().ctx("xrBeginFrame")?;
+        }
         let mut ctx = FrameCtx {
             state,
             eyes: None,
@@ -371,7 +374,10 @@ impl XrSession {
         ctx.eyes = Some([eye(&views[0]), eye(&views[1])]);
         let mut targets = Vec::new();
         for e in &mut self.eyes {
-            let i = e.swapchain.acquire_image().ctx("xrAcquireSwapchainImage")? as usize;
+            let i = {
+                let _queue = self.gpu.lock_queue();
+                e.swapchain.acquire_image().ctx("xrAcquireSwapchainImage")? as usize
+            };
             e.swapchain
                 .wait_image(xr::Duration::INFINITE)
                 .ctx("xrWaitSwapchainImage")?;
@@ -443,11 +449,14 @@ impl XrSession {
     /// writes into this frame's GPU work; [`XrSession::end_frame`] releases
     /// it. Call at most once per key and frame.
     pub fn quad_layer_image(&mut self, key: u64, width: u32, height: u32) -> Result<vk::Image> {
+        let gpu = self.gpu.clone();
         let q = self.quad_layer(key, width, height)?;
-        let i = q
-            .swapchain
-            .acquire_image()
-            .ctx("xrAcquireSwapchainImage (quad layer)")? as usize;
+        let i = {
+            let _queue = gpu.lock_queue();
+            q.swapchain
+                .acquire_image()
+                .ctx("xrAcquireSwapchainImage (quad layer)")? as usize
+        };
         q.swapchain
             .wait_image(xr::Duration::INFINITE)
             .ctx("xrWaitSwapchainImage (quad layer)")?;
@@ -475,9 +484,12 @@ impl XrSession {
         let image = self.quad_layer_image(key, width, height)?;
         fill(image).map_err(Error::Runtime)?;
         let q = self.quads.get_mut(&key).expect("created above");
-        q.swapchain
-            .release_image()
-            .ctx("xrReleaseSwapchainImage (quad layer)")?;
+        {
+            let _queue = self.gpu.lock_queue();
+            q.swapchain
+                .release_image()
+                .ctx("xrReleaseSwapchainImage (quad layer)")?;
+        }
         q.acquired = false;
         q.ready = true;
         Ok(())
@@ -487,6 +499,8 @@ impl XrSession {
     /// on top of it in order.
     pub fn end_frame(&mut self, ctx: FrameCtx, quads: &[QuadSubmit]) -> Result<()> {
         let time = ctx.state.predicted_display_time;
+        let gpu = self.gpu.clone();
+        let _queue = gpu.lock_queue();
         for q in self.quads.values_mut() {
             if q.acquired {
                 q.swapchain

@@ -615,11 +615,12 @@ impl App {
         let opener = self.services.opener.clone();
         let settings = self.settings.clone();
         let reports = self.services.watch.clone();
+        let gpu = self.services.gpu_frames.clone();
         self.ui.opening = Some(req.shown_title());
         self.ui.open_error = None;
         self.services.set_worker_busy(true);
         self.jobs.spawn("open", move || {
-            let opened = playback::open(req, &opener, &lib, &settings, &reports);
+            let opened = playback::open(req, &opener, &lib, &settings, &reports, gpu);
             Job::Opened(seq, Box::new(opened))
         });
     }

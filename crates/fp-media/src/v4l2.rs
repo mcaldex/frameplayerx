@@ -29,8 +29,9 @@
 //!
 //! Seeks never restart a queue (that would re-run the check): queued
 //! bitstream from before the seek is decoded and its frames are dropped by
-//! timestamp. Decoded frames are copied out of the driver's buffers into
-//! pooled `AVFrame`s, so the CAPTURE buffers go straight back to the decoder.
+//! timestamp. Decoded frames are copied out of the driver's buffers, so the
+//! CAPTURE buffers go straight back to the decoder: by the GPU when the player
+//! was given a [`crate::GpuCopier`], else by the CPU into pooled `AVFrame`s.
 //!
 //! 10-bit HEVC comes out correctly only as Q10C, Qualcomm's compressed TP10
 //! ([`Q10cLayout`]): asked for NV12, the decoder clamps the 10-bit samples
@@ -544,6 +545,17 @@ mod sys {
         pub reserved: [u32; 9],
     }
 
+    #[repr(C)]
+    #[derive(Default)]
+    pub struct ExportBuffer {
+        pub type_: u32,
+        pub index: u32,
+        pub plane: u32,
+        pub flags: u32,
+        pub fd: i32,
+        pub reserved: [u32; 11],
+    }
+
     const WRITE: u64 = 1;
     const READ: u64 = 2;
     const fn ioc(dir: u64, nr: u64, size: usize) -> u64 {
@@ -566,6 +578,7 @@ mod sys {
     pub const VIDIOC_REQBUFS: u64 = iowr::<RequestBuffers>(8);
     pub const VIDIOC_QUERYBUF: u64 = iowr::<Buffer>(9);
     pub const VIDIOC_QBUF: u64 = iowr::<Buffer>(15);
+    pub const VIDIOC_EXPBUF: u64 = iowr::<ExportBuffer>(16);
     pub const VIDIOC_DQBUF: u64 = iowr::<Buffer>(17);
     pub const VIDIOC_STREAMON: u64 = iow::<i32>(18);
     pub const VIDIOC_STREAMOFF: u64 = iow::<i32>(19);
@@ -587,11 +600,13 @@ mod sys {
     const _: () = assert!(size_of::<DecoderCmd>() == 72);
     const _: () = assert!(size_of::<Control>() == 8);
     const _: () = assert!(size_of::<Selection>() == 64);
+    const _: () = assert!(size_of::<ExportBuffer>() == 64);
 
     // Known values from videodev2.h, as a check on the encoding.
     const _: () = assert!(VIDIOC_QUERYCAP == 0x8068_5600);
     const _: () = assert!(VIDIOC_S_FMT == 0xc0d0_5605);
     const _: () = assert!(VIDIOC_QBUF == 0xc058_560f);
+    const _: () = assert!(VIDIOC_EXPBUF == 0xc040_5610);
     const _: () = assert!(VIDIOC_STREAMON == 0x4004_5612);
     const _: () = assert!(VIDIOC_DQEVENT == 0x8088_5659);
 }
@@ -716,8 +731,47 @@ mod linux {
         }
     }
 
+    /// Has the GPU copy the picture laid out as `layout` out of `src`, the
+    /// CAPTURE buffer it was decoded into, as the CPU copy would.
+    fn copy_on_gpu(
+        src: &dyn crate::DecoderBuffer,
+        layout: Layout,
+    ) -> std::result::Result<crate::GpuPicture, String> {
+        let (layout, ranges, stride, rows, uv_offset) = match layout {
+            Layout::Nv12(l) => {
+                let y_len = l.stride * l.height as usize;
+                let uv_len = l.stride * l.height.div_ceil(2) as usize;
+                let ranges = vec![(0, y_len), (l.uv_offset, uv_len)];
+                (crate::PixelLayout::Nv12, ranges, l.stride, l.height, y_len)
+            }
+            Layout::Q10c(l) => {
+                let ranges = vec![(0, l.size)];
+                (
+                    crate::PixelLayout::Q10c,
+                    ranges,
+                    l.stride,
+                    l.rows,
+                    l.uv_offset,
+                )
+            }
+        };
+        Ok(crate::GpuPicture {
+            layout,
+            bytes: src.copy(&ranges)?,
+            stride: stride as u32,
+            rows,
+            uv_offset,
+        })
+    }
+
     struct Capture {
         bufs: Vec<Mapping>,
+        /// The buffers as the GPU copier imported them; empty when pictures
+        /// are copied out by the CPU.
+        gpu: Vec<Box<dyn crate::DecoderBuffer>>,
+        /// Buffers the GPU is copying a picture out of, handed back to the
+        /// decoder when done.
+        copying: Vec<u32>,
         /// Coded size (CAPTURE format) the buffers were allocated for.
         allocated_for: (u32, u32),
         layout: Layout,
@@ -773,6 +827,8 @@ mod linux {
         pub frames: u64,
         /// Set when the player closes: waits for the device stop early.
         interrupt: Option<Arc<AtomicBool>>,
+        /// Copies pictures out on the GPU (see [`crate::gpu`]).
+        gpu: Option<Arc<dyn crate::GpuCopier>>,
     }
 
     // SAFETY: one thread drives a decoder at a time; the raw pointers are
@@ -947,6 +1003,7 @@ mod linux {
                 color: (p.color_range, p.color_space, p.color_trc, p.color_primaries),
                 frames: 0,
                 interrupt: None,
+                gpu: None,
             };
             crate::decode::HW_SESSIONS.fetch_add(1, Ordering::Relaxed); // until Drop
             dec.init_bsf(par, time_base)?;
@@ -1327,8 +1384,11 @@ mod linux {
                     .map_err(|e| err("mmap capture", e))?,
                 );
             }
+            let gpu = self.import_capture(&bufs.iter().map(|m| m.len).collect::<Vec<_>>());
             self.cap = Some(Capture {
                 bufs,
+                gpu,
+                copying: Vec::new(),
                 allocated_for: (f.width(), f.height()),
                 layout,
                 held: None,
@@ -1392,7 +1452,30 @@ mod linux {
                 ..Default::default()
             };
             ioctl(&self.fd, VIDIOC_DECODER_CMD, &mut c).map_err(|e| err("START", e))?;
-            if let Some(i) = self.cap.as_mut().and_then(|c| c.held.take()) {
+            if let Some(c) = self.cap.as_mut()
+                && let Some(i) = c.held.take()
+            {
+                if let Some(g) = c.gpu.get(i as usize) {
+                    g.copied(true);
+                }
+                self.queue_capture(i)?;
+            }
+            Ok(())
+        }
+
+        /// Hands back to the decoder the buffers whose pictures the GPU has
+        /// copied out.
+        fn requeue_copied(&mut self) -> Result<()> {
+            let Some(c) = self.cap.as_mut() else {
+                return Ok(());
+            };
+            let gpu = &c.gpu;
+            let (done, busy) = c
+                .copying
+                .iter()
+                .partition(|&&i| gpu.get(i as usize).is_none_or(|g| g.copied(false)));
+            c.copying = busy;
+            for i in done {
                 self.queue_capture(i)?;
             }
             Ok(())
@@ -1451,19 +1534,38 @@ mod linux {
             self.setup_capture()
         }
 
-        /// Copies a decoded picture into a pooled `AVFrame`: NV12 with its
-        /// two planes stacked, or the whole Q10C buffer.
+        /// Copies a decoded picture out of its CAPTURE buffer into `frame`:
+        /// NV12 with its two planes stacked, or the whole Q10C buffer. The
+        /// GPU copies it when it imported the buffer (true: the buffer goes
+        /// back once that is done), else the CPU into a pooled `AVFrame`.
         fn export(
             &mut self,
             index: u32,
             frame: *mut ff::AVFrame,
             pts: i64,
             duration: i64,
-        ) -> Result<()> {
-            let Some(cap) = &self.cap else {
+        ) -> Result<bool> {
+            let Some(cap) = &mut self.cap else {
                 return Err(Error::Unsupported("V4L2: no capture buffers".into()));
             };
             let layout = cap.layout;
+            if let Some(src) = cap.gpu.get(index as usize) {
+                match copy_on_gpu(src.as_ref(), layout) {
+                    Ok(picture) => {
+                        // SAFETY: frame is a valid AVFrame we refill.
+                        unsafe {
+                            ff::av_frame_unref(frame);
+                            crate::frame::set_gpu(&mut *frame, picture, layout.visible())?;
+                        }
+                        self.stamp(frame, pts, duration);
+                        return Ok(true);
+                    }
+                    Err(e) => {
+                        log::warn!("V4L2 pictures are copied out by the CPU from now on: {e}");
+                        cap.gpu.clear();
+                    }
+                }
+            }
             let src = &cap.bufs[index as usize];
             if layout.end() > src.len {
                 return Err(Error::Unsupported(
@@ -1522,12 +1624,19 @@ mod linux {
                         );
                     }
                 }
-                f.pts = pts;
-                f.best_effort_timestamp = pts;
-                f.duration = duration;
-                (f.color_range, f.colorspace, f.color_trc, f.color_primaries) = self.color;
             }
-            Ok(())
+            self.stamp(frame, pts, duration);
+            Ok(false)
+        }
+
+        /// Sets an exported picture's timing and colour.
+        fn stamp(&self, frame: *mut ff::AVFrame, pts: i64, duration: i64) {
+            // SAFETY: frame is a valid AVFrame `export` just filled.
+            let f = unsafe { &mut *frame };
+            f.pts = pts;
+            f.best_effort_timestamp = pts;
+            f.duration = duration;
+            (f.color_range, f.colorspace, f.color_trc, f.color_primaries) = self.color;
         }
 
         /// Receives a frame. `Ok(None)`: send more input. `Ok(Some(false))`:
@@ -1550,6 +1659,7 @@ mod linux {
                     self.change_resolution()?;
                     continue;
                 }
+                self.requeue_copied()?;
                 self.pump_output()?;
                 self.dequeue_events()?;
                 if let Some(d) = self.dequeue_capture()? {
@@ -1563,12 +1673,17 @@ mod linux {
                                 .is_none_or(|floor| pts == ff::AV_NOPTS_VALUE || pts >= floor)
                     });
                     let result = timing.map(|(pts, dur)| self.export(d.index, frame, pts, dur));
+                    let copying = matches!(result, Some(Ok(true)));
                     if last {
                         // Held until decoding resumes.
                         if let Some(c) = self.cap.as_mut() {
                             c.held = Some(d.index);
                         }
                         self.last_seen = true;
+                    } else if copying {
+                        if let Some(c) = self.cap.as_mut() {
+                            c.copying.push(d.index);
+                        }
                     } else {
                         self.queue_capture(d.index)?;
                     }
@@ -1605,6 +1720,44 @@ mod linux {
 
         pub(crate) fn set_interrupt(&mut self, flag: Arc<AtomicBool>) {
             self.interrupt = Some(flag);
+        }
+
+        /// Copies pictures out on the GPU from the next CAPTURE allocation.
+        pub(crate) fn set_gpu(&mut self, copier: Arc<dyn crate::GpuCopier>) {
+            self.gpu = Some(copier);
+        }
+
+        /// The CAPTURE buffers (of `lens` bytes) imported by the GPU copier,
+        /// or none: pictures are then copied out by the CPU.
+        fn import_capture(&self, lens: &[usize]) -> Vec<Box<dyn crate::DecoderBuffer>> {
+            let Some(copier) = &self.gpu else {
+                return Vec::new();
+            };
+            let imported: std::result::Result<Vec<_>, String> = lens
+                .iter()
+                .enumerate()
+                .map(|(i, &len)| {
+                    let mut e = ExportBuffer {
+                        type_: BUF_TYPE_CAPTURE_MPLANE,
+                        index: i as u32,
+                        flags: (libc::O_RDWR | libc::O_CLOEXEC) as u32,
+                        ..Default::default()
+                    };
+                    ioctl(&self.fd, VIDIOC_EXPBUF, &mut e).map_err(|e| format!("EXPBUF: {e}"))?;
+                    // SAFETY: EXPBUF made this descriptor for us.
+                    copier.import(unsafe { OwnedFd::from_raw_fd(e.fd) }, len)
+                })
+                .collect();
+            match imported {
+                Ok(bufs) => {
+                    log::info!("V4L2 pictures are copied out on the GPU");
+                    bufs
+                }
+                Err(e) => {
+                    log::warn!("V4L2 pictures are copied out by the CPU: {e}");
+                    Vec::new()
+                }
+            }
         }
 
         fn interrupted(&self) -> bool {

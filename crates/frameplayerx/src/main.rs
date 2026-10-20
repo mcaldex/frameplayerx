@@ -47,6 +47,8 @@ struct Args {
     info: Option<String>,
     bench: Option<String>,
     bench_opts: fp_media::bench::BenchOptions,
+    /// The benchmark copies pictures out on the GPU, as the player does.
+    bench_gpu: bool,
     seek_test: Option<String>,
     seek_opts: seektest::SeekTestOptions,
     verbose: bool,
@@ -56,8 +58,9 @@ struct Args {
 const USAGE: &str = "usage: frameplayerx [--verbose] [--exit-after SECONDS] [FILE|URL]
        frameplayerx --preview OUT_DIR [--script FILE] [--size PIXELS] [FILE|URL]
        frameplayerx --info FILE      (print what FramePlayerX detects about a video)
-       frameplayerx --decode-bench FILE [--frames N] [--sw] [--seek SECONDS]
-                   [--checksum N,N,...]  (decode only; print decoder and fps)
+       frameplayerx --decode-bench FILE [--frames N] [--sw] [--gpu] [--seek SECONDS]
+                   [--checksum N,N,...]  (decode only; print decoder and fps;
+                   --gpu copies pictures out on the GPU, as playback does)
        frameplayerx --seek-test FILE|URL [--seeks N] [--step SECONDS] [--rounds N] [--sw]
                    (skip through a video headless; checks buffering and that
                    hardware decoders are given back)
@@ -96,6 +99,7 @@ fn parse_args() -> Result<Args, String> {
                 a.bench_opts.hw = fp_media::HwDecode::Off;
                 a.seek_opts.hw = fp_media::HwDecode::Off;
             }
+            "--gpu" => a.bench_gpu = true,
             "--seek-test" => {
                 a.seek_test = Some(it.next().ok_or("--seek-test needs a file or URL")?);
             }
@@ -179,7 +183,11 @@ fn main() {
         allow_hevc_10bit_headless();
     }
     if let Some(f) = &args.bench {
-        std::process::exit(match bench(f, &args.bench_opts) {
+        let mut opts = args.bench_opts.clone();
+        if args.bench_gpu {
+            opts.gpu = bench_copier();
+        }
+        std::process::exit(match bench(f, &opts) {
             Ok(()) => 0,
             Err(e) => {
                 eprintln!("{e}");
@@ -213,6 +221,32 @@ fn main() {
         log::error!("{e}");
         eprintln!("FramePlayerX: {e}");
         std::process::exit(1);
+    }
+}
+
+/// The renderer's copier for hardware-decoded pictures, unless
+/// `FRAMEPLAYERX_GPU_FRAMES=0` asks for the CPU to copy them.
+fn gpu_frames(renderer: &Renderer) -> Option<Arc<dyn fp_media::GpuCopier>> {
+    if std::env::var("FRAMEPLAYERX_GPU_FRAMES").as_deref() == Ok("0") {
+        log::info!("decoded pictures are copied out by the CPU (FRAMEPLAYERX_GPU_FRAMES=0)");
+        return None;
+    }
+    renderer.gpu_frames()
+}
+
+/// The copier for `--decode-bench --gpu`, on a GPU of its own.
+fn bench_copier() -> Option<Arc<dyn fp_media::GpuCopier>> {
+    let made = Gpu::headless().and_then(|gpu| fp_render::GpuFrames::new(&Arc::new(gpu)));
+    match made {
+        Ok(Some(frames)) => Some(Arc::new(frames)),
+        Ok(None) => {
+            eprintln!("this GPU can't import the decoder's buffers");
+            None
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            None
+        }
     }
 }
 
@@ -296,12 +330,13 @@ fn bench(file: &str, opts: &fp_media::bench::BenchOptions) -> Result<(), Error> 
     let src: Arc<dyn fp_core::ByteSource> = Arc::new(fp_core::source::FileSource::open(path)?);
     let r = fp_media::bench::decode_bench(src, &name, opts)?;
     println!(
-        "{name}: {}x{} {:?} via {} ({})",
+        "{name}: {}x{} {:?} via {} ({}{})",
         r.width,
         r.height,
         r.layout,
         r.decoder,
-        if r.hardware { "hardware" } else { "software" }
+        if r.hardware { "hardware" } else { "software" },
+        if r.gpu { ", copied out on the GPU" } else { "" }
     );
     let line = |label: &str, run: &fp_media::bench::BenchRun| {
         println!(
@@ -399,6 +434,7 @@ fn run_xr(args: &Args) -> Result<(), Error> {
     let mut renderer = Renderer::new(gpu.clone(), session.format)?;
     fp_media::set_hevc_10bit_hardware(renderer.shows_q10c());
     let mut app = make_app()?;
+    app.set_gpu_frames(gpu_frames(&renderer));
     app.set_about(vec![
         ("OpenXR runtime".into(), ctx.runtime.clone()),
         ("Headset".into(), ctx.system_name.clone()),
@@ -564,7 +600,11 @@ fn run_xr(args: &Args) -> Result<(), Error> {
                 log::info!(
                     "video {} ({}): {} shown, {} dropped, {} stalls, {} queued",
                     st.video_decoder,
-                    if st.hardware { "hardware" } else { "software" },
+                    match (st.hardware, st.gpu_frames) {
+                        (true, true) => "hardware, GPU copy",
+                        (true, false) => "hardware, CPU copy",
+                        (false, _) => "software",
+                    },
                     st.frames_shown,
                     st.frames_dropped,
                     st.stalls,

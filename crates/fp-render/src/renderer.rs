@@ -172,6 +172,8 @@ pub struct Renderer {
     video_gen: [u64; 2],
     /// Shows hardware-decoded 10-bit frames, on GPUs that can.
     q10c: Option<Converter>,
+    /// Copies hardware-decoded pictures out on the GPU, on GPUs that can.
+    frames: Option<crate::GpuFrames>,
     current: usize,
     recording: bool,
 }
@@ -354,6 +356,10 @@ impl Renderer {
                 video_cur: 0,
                 video_gen: [0, 0],
                 q10c: Converter::new(&gpu),
+                frames: crate::GpuFrames::new(&gpu).unwrap_or_else(|e| {
+                    log::warn!("decoded pictures are copied out by the CPU: {e}");
+                    None
+                }),
                 current: 0,
                 recording: false,
             };
@@ -529,12 +535,8 @@ impl Renderer {
                 .create_fence(&vk::FenceCreateInfo::default(), None)
                 .ctx("fence")?;
             let cmds = [cmd];
-            d.queue_submit(
-                self.gpu.queue,
-                &[vk::SubmitInfo::default().command_buffers(&cmds)],
-                fence,
-            )
-            .ctx("submit")?;
+            self.gpu
+                .submit(&[vk::SubmitInfo::default().command_buffers(&cmds)], fence)?;
             let r = d.wait_for_fences(&[fence], true, u64::MAX).ctx("wait");
             d.destroy_fence(fence, None);
             d.free_command_buffers(self.pool, &cmds);
@@ -723,6 +725,14 @@ impl Renderer {
     /// frames) can be shown; see [`fp_media::set_hevc_10bit_hardware`].
     pub fn shows_q10c(&self) -> bool {
         self.q10c.is_some()
+    }
+
+    /// The copier to give players ([`fp_media::PlayerConfig::gpu`]), so that
+    /// hardware-decoded pictures reach this renderer without the CPU.
+    pub fn gpu_frames(&self) -> Option<Arc<dyn fp_media::GpuCopier>> {
+        self.frames
+            .clone()
+            .map(|f| Arc::new(f) as Arc<dyn fp_media::GpuCopier>)
     }
 
     /// The video image set this slot shows, if any.
@@ -1276,12 +1286,10 @@ impl Renderer {
             d.end_command_buffer(slot.cmd).ctx("end frame")?;
             d.reset_fences(&[slot.fence]).ctx("reset fence")?;
             let cmds = [slot.cmd];
-            d.queue_submit(
-                self.gpu.queue,
+            self.gpu.submit(
                 &[vk::SubmitInfo::default().command_buffers(&cmds)],
                 slot.fence,
-            )
-            .ctx("submit frame")?;
+            )?;
         }
         self.recording = false;
         Ok(())
