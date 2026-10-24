@@ -18,7 +18,7 @@
 //! Fixed: the trigger clicks (on empty space it shows or hides the
 //! controls), grip + trigger drags the picture, both grips recenter, and a
 //! thumbstick pointed at a list pages it left / right (at a slider, steps
-//! it).
+//! it, then slides it while held).
 
 use crate::bindings::{Axis, AxisAction, Bindings, Button, ButtonAction};
 use fp_xr::Hand;
@@ -61,6 +61,8 @@ pub enum Cmd {
     TogglePassthrough,
     /// Page the pointed-at list, or step the slider: -1 back, +1 forward.
     Page(i32),
+    /// Move the pointed-at slider by this fraction of its range (this frame).
+    Slide(f32),
 }
 
 /// What the app knows that changes how input is read.
@@ -68,6 +70,8 @@ pub enum Cmd {
 pub struct Context {
     /// The active hand points at a panel.
     pub over_ui: bool,
+    /// The active hand points at a slider on that panel.
+    pub over_slider: bool,
     /// The active hand pulled the trigger while pointing at nothing.
     pub click_outside: bool,
     /// A video is open.
@@ -90,6 +94,9 @@ const STICK_RELEASE: f32 = 0.35;
 const STICK_HOLD: f32 = 0.5;
 const REPEAT_DELAY: f32 = 0.5;
 const REPEAT_EVERY: f32 = 0.35;
+/// Seconds a slider takes to cross its whole range with the thumbstick held
+/// all the way over.
+const SLIDE_SECS: f32 = 3.0;
 
 #[derive(Clone, Copy, Debug)]
 struct Drag {
@@ -184,11 +191,16 @@ impl Controls {
             let s = hand.stick;
             let grip = gripping(hand);
             if !grip && (!playing || ctx.over_ui) {
-                // Menus: left / right pages the list pointed at, or steps the
-                // slider, repeating while held (up / down scrolls, through
-                // the pointer).
-                if let Some(dir) = self.step(i, Axis::StickX, s.x, ctx.dt, true) {
+                // Menus: left / right pages the list pointed at, repeating
+                // while held, or steps the slider, then slides it while held
+                // (up / down scrolls, through the pointer).
+                let slider = ctx.over_slider;
+                if let Some(dir) = self.step(i, Axis::StickX, s.x, ctx.dt, !slider) {
                     out.push(Cmd::Page(dir));
+                }
+                let (dir, held) = self.held[i][Axis::StickX.index()];
+                if slider && dir != 0 && held >= REPEAT_DELAY {
+                    out.push(Cmd::Slide(dir as f32 * slide_speed(s.x) * ctx.dt));
                 }
                 continue;
             }
@@ -270,6 +282,14 @@ impl Controls {
         };
         (repeat && fires(t2) > fires(t)).then_some(dir)
     }
+}
+
+/// How fast a held thumbstick at `x` slides a slider, in its range a
+/// second: from nothing where the push lets go to the whole range in
+/// [`SLIDE_SECS`] all the way over, rising slowly at first for fine moves.
+fn slide_speed(x: f32) -> f32 {
+    let f = ((x.abs() - STICK_RELEASE) / (1.0 - STICK_RELEASE)).clamp(0.0, 1.0);
+    f * f / SLIDE_SECS
 }
 
 /// The command for a pressed button, if it does anything now.
@@ -394,6 +414,34 @@ mod tests {
             };
             assert_eq!(run(&mut c, &h, over), vec![Cmd::Page(-1)]);
         }
+    }
+
+    #[test]
+    fn a_held_stick_slides_a_slider_faster_the_further_it_is_pushed() {
+        let over = Context {
+            over_ui: true,
+            over_slider: true,
+            dt: 0.3,
+            ..ctx(true)
+        };
+        let mut c = Controls::default();
+        let mut h = hands();
+        h[RIGHT].stick = Vec2::new(1.0, 0.0);
+        assert_eq!(run(&mut c, &h, over), vec![Cmd::Page(1)], "a push steps it");
+        assert_eq!(run(&mut c, &h, over), vec![], "then a pause");
+        let slide = |c: &mut Controls, h: &[Hand; 2]| match run(c, h, over)[..] {
+            [Cmd::Slide(f)] => f,
+            ref o => panic!("{o:?}"),
+        };
+        let full = slide(&mut c, &h);
+        assert!((full - 0.3 / SLIDE_SECS).abs() < 1e-6, "{full}");
+        h[RIGHT].stick = Vec2::new(0.6, 0.0);
+        let part = slide(&mut c, &h);
+        assert!(part > 0.0 && part < full / 5.0, "{part}");
+        h[RIGHT].stick = Vec2::new(-1.0, 0.0);
+        assert_eq!(run(&mut c, &h, over), vec![Cmd::Page(-1)]);
+        run(&mut c, &h, over);
+        assert!(slide(&mut c, &h) < 0.0);
     }
 
     #[test]

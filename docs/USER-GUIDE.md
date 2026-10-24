@@ -379,8 +379,8 @@ lining up towards the edges, open **⚙ › Format** and use the sliders under
   a camera. In 3D, each image has its own.
 
 To fine-tune a slider, point at it and push the thumbstick left or right.
-Each push is one step, and holding repeats. **Save for this video** keeps
-the settings for that file.
+Each push is one step; hold it to slide, faster the further you push.
+**Save for this video** keeps the settings for that file.
 
 ### Subtitles
 
@@ -474,7 +474,7 @@ picture. Play/pause and seeking are under either thumb.
 
 | Control | Right hand | Left hand |
 |---|---|---|
-| Thumbstick left / right | Seek back / forward 10 s (adjustable; hold to repeat). Pointing at a list: previous / next page. Pointing at a slider: one fine step | The same |
+| Thumbstick left / right | Seek back / forward 10 s (adjustable; hold to repeat). Pointing at a list: previous / next page. Pointing at a slider: one fine step, or hold to slide it | The same |
 | Thumbstick up / down | Volume (or scroll a menu you point at) | Tilt the picture (or scroll a menu you point at) |
 | Thumbstick press | Mute | Reset the picture |
 | A / D-pad down | Play / pause | Play / pause |

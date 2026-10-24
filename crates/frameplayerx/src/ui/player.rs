@@ -255,7 +255,7 @@ fn browse_and_sound(
         }
     }
     let mut vol_edit = vol;
-    if widgets::slider(ui, &mut vol_edit, 0.0..=1.5, 130.0).changed() {
+    if widgets::slider(ui, &mut vol_edit, 0.0..=1.5, 130.0, 0.01).changed() {
         actions.push(Action::SetVolume(vol_edit));
     }
     ui.add_space(6.0);

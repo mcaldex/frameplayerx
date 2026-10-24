@@ -396,7 +396,9 @@ pub struct Aim {
 /// panel (about 7 points per cm) that moves a laser pointer tens of points,
 /// while egui only reports a click when press and release are within 6
 /// points. Until the ray leaves this radius the pointer stays at the press
-/// point, so a trigger pull is a click; beyond it, a drag (scrolling).
+/// point, so a trigger pull is a click; beyond it, a drag (scrolling). A
+/// press on a slider drags from the start: 60 points is much of its rail,
+/// and the slider allows for the tip itself (`ui::widgets::slider`).
 const CLICK_SLOP: f32 = 60.0;
 
 #[derive(Default)]
@@ -535,7 +537,7 @@ impl Pointer {
                     });
                     self.pressed_panel = Some(pi);
                     self.press_pos = Some(pos);
-                    self.dragging = false;
+                    self.dragging = crate::ui::widgets::over_slider(&panels[pi].ctx);
                 } else {
                     routed.click_outside = true;
                 }
@@ -705,6 +707,42 @@ mod tests {
         let b = button_positions(&p);
         assert_eq!(b.len(), 2);
         assert!(b[0].distance(b[1]) > CLICK_SLOP, "{b:?}");
+    }
+
+    #[test]
+    fn a_press_on_a_slider_follows_the_ray_at_once() {
+        let mut p = panel_in_front();
+        let mut ptr = Pointer::default();
+        let mut hands = [Hand::default(), Hand::default()];
+        hands[1].active = true;
+        hands[1].aim = Some((Vec3::ZERO, Quat::IDENTITY));
+        // A slider across the middle of the panel, under the ray (laid out
+        // once before egui can tell the pointer is on it).
+        for _ in 0..2 {
+            ptr.route(&mut [&mut p], &hands, 0.016);
+            let input = p.input(0.0);
+            let _ = p.ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.add_space(182.0);
+                    crate::ui::widgets::slider(ui, &mut 0.5, 0.0..=1.0, 700.0, 0.01);
+                });
+            });
+        }
+        assert!(crate::ui::widgets::over_slider(&p.ctx));
+        hands[1].trigger = 0.9;
+        ptr.route(&mut [&mut p], &hands, 0.016);
+        // Tipped by the pull, the ray moves less than the click slop.
+        hands[1].aim = Some((Vec3::ZERO, Quat::from_rotation_x(-0.0175)));
+        ptr.route(&mut [&mut p], &hands, 0.016);
+        let press = button_positions(&p)[0];
+        let to = p.events.iter().rev().find_map(|e| match e {
+            Event::PointerMoved(pos) => Some(*pos),
+            _ => None,
+        });
+        assert!(
+            to.is_some_and(|to| to.distance(press) > 10.0),
+            "{press:?} {to:?}"
+        );
     }
 
     #[test]
