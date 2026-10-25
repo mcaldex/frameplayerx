@@ -169,7 +169,7 @@ fn controller(ui: &mut egui::Ui, v: &mut View) {
             ),
             (
                 "Pointing at a slider",
-                "Thumbstick left / right moves it a step; hold to slide it",
+                "Thumbstick left / right moves it a step; hold to step on, then slide",
             ),
         ] {
             r.row(k, None, |ui| {

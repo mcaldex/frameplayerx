@@ -840,8 +840,9 @@ pub fn over_slider(ctx: &egui::Context) -> bool {
 }
 
 /// Moves the slider the pointer is on by `fraction` of its range, in the
-/// panel's next pass (the thumbstick held over it). Dropped if the pointer
-/// is not on one then.
+/// panel's next pass (the thumbstick held over it), in whole steps: what is
+/// short of one counts towards the next pass's. Dropped if the pointer is
+/// not on one then.
 pub fn slide(ctx: &egui::Context, fraction: f32) {
     let next = ctx.cumulative_pass_nr();
     ctx.data_mut(|d| {
@@ -894,8 +895,8 @@ fn fraction(v: f32, lo: f32, hi: f32) -> f32 {
 }
 
 /// A slider: a slim rail filled in the accent up to a white knob. The
-/// trigger takes hold of the knob, and pointed at, a push of the thumbstick
-/// moves it by `step`.
+/// trigger takes hold of the knob, and pointed at, the thumbstick moves it
+/// in whole steps of `step`.
 pub fn slider(
     ui: &mut Ui,
     value: &mut f32,
@@ -923,12 +924,21 @@ pub fn slider(
             let mut n = |key| i.count_and_consume_key(egui::Modifiers::NONE, key) as f32;
             n(egui::Key::ArrowRight) - n(egui::Key::ArrowLeft)
         });
-        if dir != 0.0 {
-            // A step, landing on a multiple of it.
-            *value = (((*value / step).round() + dir) * step).clamp(lo, hi);
+        let mut steps = dir;
+        if slid != 0.0 {
+            // A slide moves whole steps, the rest kept for its next pass.
+            let id = resp.id.with(SLIDE);
+            let rest = ctx
+                .data_mut(|d| d.remove_temp::<(u64, f32)>(id))
+                .filter(|(kept, _)| kept + 1 == pass)
+                .map_or(0.0, |(_, r)| r);
+            let s = rest + slid * (hi - lo) / step;
+            steps += s.trunc();
+            ctx.data_mut(|d| d.insert_temp(id, (pass, s.fract())));
         }
-        *value = (*value + slid * (hi - lo)).clamp(lo, hi);
         if dir != 0.0 || slid != 0.0 {
+            // Landing on a multiple of the step.
+            *value = (((*value / step).round() + steps) * step).clamp(lo, hi);
             ctx.request_repaint();
         }
     }
@@ -1466,6 +1476,31 @@ mod tests {
         pass(vec![], &mut v);
         pass(vec![egui::Event::PointerMoved(on_rail)], &mut v);
         assert!((v - 5.0).abs() < 1e-4, "{v}");
+    }
+
+    #[test]
+    fn a_slide_moves_the_slider_in_whole_steps() {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let pass = |events, value: &mut f32| slider_pass(&ctx, events, value);
+        // Between steps (as the trigger can leave it), pointed at.
+        let mut v = 0.37;
+        let rect = pass(vec![], &mut v);
+        let on_rail = Pos2::new(rect.right() - 120.0, rect.center().y);
+        pass(vec![egui::Event::PointerMoved(on_rail)], &mut v);
+        // 0.6 of a step (0.1 of 20) lands it on a step, and counts towards
+        // the next pass's.
+        slide(&ctx, 0.003);
+        pass(vec![], &mut v);
+        assert!((v - 0.4).abs() < 1e-5, "{v}");
+        slide(&ctx, 0.003);
+        pass(vec![], &mut v);
+        assert!((v - 0.5).abs() < 1e-5, "{v}");
+        // A pass without one ends the slide, and what was short of a step.
+        pass(vec![], &mut v);
+        slide(&ctx, 0.003);
+        pass(vec![], &mut v);
+        assert!((v - 0.5).abs() < 1e-5, "{v}");
     }
 
     #[test]
