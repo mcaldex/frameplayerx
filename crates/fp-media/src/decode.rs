@@ -32,6 +32,21 @@ pub fn hevc_10bit_hardware() -> bool {
     HEVC_10BIT_HARDWARE.load(Ordering::Relaxed)
 }
 
+static AV1_FILM_GRAIN: AtomicBool = AtomicBool::new(true);
+
+/// Whether AV1 decoders opened from now on add the film grain a video asks
+/// for (the default). dav1d adds it on the CPU, a pass over every picture
+/// into a picture of its own; without it, pictures come out as encoded,
+/// smoother than the video's author meant.
+pub fn set_av1_film_grain(on: bool) {
+    AV1_FILM_GRAIN.store(on, Ordering::Relaxed);
+}
+
+/// Whether AV1 film grain is added (see [`set_av1_film_grain`]).
+pub fn av1_film_grain() -> bool {
+    AV1_FILM_GRAIN.load(Ordering::Relaxed)
+}
+
 /// An owned `AVPacket`.
 pub struct Packet(pub(crate) *mut ff::AVPacket);
 // SAFETY: packets are reference counted buffers; ownership moves between threads.
@@ -196,33 +211,60 @@ fn candidates(
     c
 }
 
-/// Runs `f` with the calling thread allowed on every CPU, so the threads it
-/// starts inherit that: a software decoder sizes its pool from the CPUs it
-/// may use and starts its workers when opened. Steam launches games on the
-/// Frame's five big cores only (`STEAM_LAUNCH_WRAPPER_AFFINITY_LIST=0xf8`),
-/// where 8K60 AV1 decodes at 61 fps with nothing else running and falls
-/// behind once the compositor and renderer share them; the other three add
-/// ~7%. SteamVR's tracking there runs at nice -10, so it still comes first.
-fn on_all_cpus<T>(f: impl FnOnce() -> T) -> T {
-    #[cfg(target_os = "linux")]
-    // SAFETY: plain affinity calls on the calling thread with owned sets.
-    unsafe {
-        let size = size_of::<libc::cpu_set_t>();
-        let mut old: libc::cpu_set_t = std::mem::zeroed();
-        if libc::sched_getaffinity(0, size, &mut old) == 0 {
-            let mut all: libc::cpu_set_t = std::mem::zeroed();
-            let cpus = libc::sysconf(libc::_SC_NPROCESSORS_CONF).clamp(1, 1024) as usize;
-            for cpu in 0..cpus {
-                libc::CPU_SET(cpu, &mut all);
+/// Nice value of a software video decoder's threads: behind the render loop
+/// and the audio (0), so a busy decoder never makes the view or the sound
+/// wait, and ahead of thumbnails (10).
+const DECODER_NICE: i32 = 5;
+
+/// Runs `f` on a thread of its own allowed on every CPU and at
+/// [`DECODER_NICE`], so the threads it starts inherit both: a software
+/// decoder sizes its pool from the CPUs it may use and starts its workers
+/// when opened. A thread can't take its priority back once lowered, hence
+/// one just for this. Steam launches games on the Frame's five big cores
+/// only (`STEAM_LAUNCH_WRAPPER_AFFINITY_LIST=0xf8`), where 8K60 AV1 decodes
+/// at 61 fps with nothing else running and falls behind once the compositor
+/// and renderer share them; the other three add ~7%. SteamVR's tracking
+/// there runs at nice -10, so it still comes first.
+fn on_decoder_threads<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|s| {
+        let opener = s.spawn(|| {
+            #[cfg(target_os = "linux")]
+            // SAFETY: plain affinity and priority calls on this thread with an
+            // owned set; Linux keeps a nice value per thread, and 0 is the
+            // calling one.
+            unsafe {
+                let mut all: libc::cpu_set_t = std::mem::zeroed();
+                let cpus = libc::sysconf(libc::_SC_NPROCESSORS_CONF).clamp(1, 1024) as usize;
+                for cpu in 0..cpus {
+                    libc::CPU_SET(cpu, &mut all);
+                }
+                libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &all);
+                libc::setpriority(libc::PRIO_PROCESS, 0, DECODER_NICE);
             }
-            if libc::sched_setaffinity(0, size, &all) == 0 {
-                let r = f();
-                libc::sched_setaffinity(0, size, &old);
-                return r;
-            }
-        }
+            f()
+        });
+        opener
+            .join()
+            .unwrap_or_else(|e| std::panic::resume_unwind(e))
+    })
+}
+
+/// `avcodec_open2`'s arguments, to open a decoder on [`on_decoder_threads`].
+struct Open {
+    ctx: *mut ff::AVCodecContext,
+    codec: *const ff::AVCodec,
+    opts: *mut *mut ff::AVDictionary,
+}
+
+// SAFETY: the opening thread uses them alone, while the thread that owns
+// them waits for it.
+unsafe impl Send for Open {}
+
+impl Open {
+    fn run(self) -> i32 {
+        // SAFETY: valid arguments, as `try_open` gives them.
+        unsafe { ff::avcodec_open2(self.ctx, self.codec, self.opts) }
     }
-    f()
 }
 
 /// Replaces a frame that references a hardware decoder's buffer with a copy
@@ -308,6 +350,10 @@ pub struct Decoder {
     mvc: Option<Box<crate::mvc::MvcDecoder>>,
     /// Packets precise seeks left out.
     pub(crate) left_out: u64,
+    /// Leaving out pictures to catch up ([`Decoder::catch_up`]).
+    catching_up: bool,
+    /// Packets left out to catch up.
+    pub(crate) skipped: u64,
 }
 
 /// What a precise seek leaves out: frames shown mostly before its target.
@@ -421,6 +467,8 @@ impl Decoder {
             skip: None,
             mvc: Some(Box::new(mvc)),
             left_out: 0,
+            catching_up: false,
+            skipped: 0,
         };
         dec.follow_mvc();
         Ok(dec)
@@ -531,6 +579,8 @@ impl Decoder {
             skip: None,
             mvc: None,
             left_out: 0,
+            catching_up: false,
+            skipped: 0,
         })
     }
 
@@ -571,6 +621,8 @@ impl Decoder {
                 skip: None,
                 mvc: None,
                 left_out: 0,
+                catching_up: false,
+                skipped: 0,
             };
             if hardware {
                 HW_SESSIONS.fetch_add(1, Ordering::Relaxed); // until Drop
@@ -580,6 +632,10 @@ impl Decoder {
                 "decoder parameters",
             )?;
             (*ctx).pkt_timebase = time_base;
+            if (*par).codec_id == ff::AV_CODEC_ID_AV1 && !av1_film_grain() {
+                // dav1d hands the grain's parameters on instead of adding it.
+                (*ctx).export_side_data |= ff::AV_CODEC_EXPORT_DATA_FILM_GRAIN as i32;
+            }
             if stills {
                 // Only keyframes (the first picture after a seek is one),
                 // skipping the rest unparsed past their headers, and no
@@ -605,7 +661,12 @@ impl Decoder {
             }
             let video = (*par).codec_type == ff::AVMEDIA_TYPE_VIDEO;
             let r = if video && !hardware && !stills {
-                on_all_cpus(|| ff::avcodec_open2(ctx, codec, &mut opts))
+                let open = Open {
+                    ctx,
+                    codec,
+                    opts: &raw mut opts,
+                };
+                on_decoder_threads(move || open.run())
             } else {
                 ff::avcodec_open2(ctx, codec, &mut opts)
             };
@@ -680,7 +741,6 @@ impl Decoder {
             return r;
         }
         if self.leaves_out(pkt) {
-            self.left_out += 1;
             return Ok(true);
         }
         #[cfg(target_os = "linux")]
@@ -808,23 +868,44 @@ impl Decoder {
         }
     }
 
-    /// Whether `pkt` holds only pictures a precise seek skips that no other
-    /// picture needs.
+    /// Leaves out (`on`) or decodes again the pictures no other picture is
+    /// decoded from, for a software decoder that can't keep up: they are
+    /// never shown, and the pictures shown decode exactly as before. Returns
+    /// whether this decoder can: only H.264 and HEVC mark those pictures.
+    pub(crate) fn catch_up(&mut self, on: bool) -> bool {
+        let can = self.nal.is_some() && !self.hardware;
+        self.catching_up = on && can;
+        can
+    }
+
+    /// Whether `pkt` holds only pictures no other picture needs that a
+    /// precise seek skips or catching up leaves out; counts it.
     fn leaves_out(&mut self, pkt: *const ff::AVPacket) -> bool {
-        let (Some(skip), Some(nal)) = (self.skip, self.nal.as_mut()) else {
+        let Some(nal) = self.nal.as_mut() else {
             return false;
         };
         if pkt.is_null() {
             return false;
         }
         // SAFETY: a valid packet holding `size` bytes at `data`.
-        unsafe {
+        let seeking = unsafe {
             let p = &*pkt;
-            if p.pts == ff::AV_NOPTS_VALUE || p.data.is_null() || !skip.drops(p.pts, p.duration) {
+            let seeking = p.pts != ff::AV_NOPTS_VALUE
+                && self.skip.is_some_and(|s| s.drops(p.pts, p.duration));
+            if p.data.is_null()
+                || !(seeking || self.catching_up)
+                || !nal.disposable(std::slice::from_raw_parts(p.data, p.size.max(0) as usize))
+            {
                 return false;
             }
-            nal.disposable(std::slice::from_raw_parts(p.data, p.size.max(0) as usize))
+            seeking
+        };
+        if seeking {
+            self.left_out += 1;
+        } else {
+            self.skipped += 1;
         }
+        true
     }
 
     /// A flag that, once set, cuts the native decoder's waits for the
@@ -945,9 +1026,14 @@ mod tests {
     }
 
     /// Every frame `src` decodes to in software, after skipping to `target`
-    /// as a precise seek does when given, how many packets before the target
-    /// hold pictures nothing else needs, and how many the decoder left out.
-    fn decode_skipping(src: Arc<dyn ByteSource>, target: Option<f64>) -> (Vec<Decoded>, u64, u64) {
+    /// as a precise seek does when given, or catching up all along when
+    /// `catch_up`; how many packets those hold pictures nothing else needs,
+    /// and how many the decoder left out.
+    fn decode_skipping(
+        src: Arc<dyn ByteSource>,
+        target: Option<f64>,
+        catch_up: bool,
+    ) -> (Vec<Decoded>, u64, u64) {
         use std::hash::{DefaultHasher, Hasher};
         let mut input = Input::open(src, "clip", Arc::new(AtomicBool::new(false))).unwrap();
         let vi = input.best_stream(ff::AVMEDIA_TYPE_VIDEO).unwrap();
@@ -956,6 +1042,7 @@ mod tests {
         if let Some(t) = target {
             dec.skip_before(t, 1.0 / 30.0);
         }
+        assert!(dec.catch_up(catch_up), "{} can't catch up", dec.name);
         let (mut pkt, mut frame) = (Packet::new(), Frame::new());
         let (mut out, mut needless, mut eof) = (Vec::new(), 0, false);
         loop {
@@ -971,7 +1058,7 @@ mod tests {
                         (p.pts, std::slice::from_raw_parts(p.data, p.size as usize))
                     };
                     let time = pts as f64 * crate::q2d(dec.time_base) - dec.origin;
-                    if target.is_some_and(|t| time < t) && nal.disposable(data) {
+                    if (catch_up || target.is_some_and(|t| time < t)) && nal.disposable(data) {
                         needless += 1;
                     }
                     dec.send(pkt.as_ptr()).unwrap();
@@ -983,7 +1070,7 @@ mod tests {
             }
             while let Some(more) = dec.receive(&mut frame).unwrap() {
                 if !more {
-                    return (out, needless, dec.left_out);
+                    return (out, needless, dec.left_out + dec.skipped);
                 }
                 let mut h = DefaultHasher::new();
                 // SAFETY: a decoded 8- or 10-bit planar picture.
@@ -1022,9 +1109,9 @@ mod tests {
                     Arc::new(FileSource::open(&data.join(name)).unwrap())
                 }
             };
-            let (all, _, _) = decode_skipping(src(), None);
+            let (all, _, _) = decode_skipping(src(), None, false);
             let target = all[all.len() / 2].time - 0.001;
-            let (kept, needless, left_out) = decode_skipping(src(), Some(target));
+            let (kept, needless, left_out) = decode_skipping(src(), Some(target), false);
             assert!(needless > 0, "{name}: nothing to leave out");
             assert_eq!(left_out, needless, "{name}");
             let shown: Vec<_> = all
@@ -1042,6 +1129,117 @@ mod tests {
             for (k, s) in kept.iter().zip(shown) {
                 assert_eq!((k.time, k.luma), (s.time, s.luma), "{name}");
             }
+        }
+    }
+
+    #[test]
+    fn catching_up_leaves_out_only_pictures_nothing_else_needs() {
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+        for name in ["h264_aac_180_LR.mp4", "x.ts", "hevc10_tb.mkv"] {
+            let src = || -> Arc<dyn ByteSource> {
+                if name == "x.ts" {
+                    crate::ts_fixture::h264_aac_ts(10.0)
+                } else {
+                    Arc::new(FileSource::open(&data.join(name)).unwrap())
+                }
+            };
+            let (all, _, _) = decode_skipping(src(), None, false);
+            let (kept, needless, skipped) = decode_skipping(src(), None, true);
+            assert!(needless > 0, "{name}: nothing to leave out");
+            assert_eq!(skipped, needless, "{name}");
+            assert_eq!(kept.len() + needless as usize, all.len(), "{name}");
+            // The rest decode exactly as without catching up.
+            let mut rest = all.iter();
+            for k in &kept {
+                assert!(
+                    rest.any(|a| (a.time, a.luma) == (k.time, k.luma)),
+                    "{name}: {:.3}s decodes differently",
+                    k.time
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn software_video_decoders_work_behind_the_view_and_the_sound() {
+        /// This process's threads and their nice values.
+        fn nices() -> std::collections::HashMap<String, i32> {
+            let tasks = std::fs::read_dir("/proc/self/task").unwrap();
+            tasks
+                .filter_map(|t| {
+                    let id = t.ok()?.file_name().into_string().ok()?;
+                    let stat =
+                        std::fs::read_to_string(format!("/proc/self/task/{id}/stat")).ok()?;
+                    // Fields count from the name's last ')': state is the
+                    // third field of the line, nice the nineteenth.
+                    let nice = stat.rsplit_once(')')?.1.split_whitespace().nth(16)?;
+                    Some((id, nice.parse().ok()?))
+                })
+                .collect()
+        }
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/h264_aac_180_LR.mp4");
+        let input = Input::open(
+            Arc::new(FileSource::open(&path).unwrap()),
+            "x.mp4",
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        let vi = input.best_stream(ff::AVMEDIA_TYPE_VIDEO).unwrap();
+        // SAFETY: plain calls about the calling thread.
+        let own = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
+        let before = nices();
+        let dec = Decoder::open(&input, vi, HwDecode::Off).unwrap();
+        let started: Vec<i32> = nices()
+            .into_iter()
+            .filter(|(id, _)| !before.contains_key(id))
+            .map(|(_, nice)| nice)
+            .collect();
+        // A process already below DECODER_NICE can't raise its threads.
+        let want = DECODER_NICE.max(own);
+        assert!(started.contains(&want), "{} started {started:?}", dec.name);
+        // SAFETY: as above.
+        assert_eq!(unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) }, own);
+    }
+
+    #[test]
+    fn av1_film_grain_is_handed_on_when_turned_off() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/av1_opus.webm");
+        let input = Input::open(
+            Arc::new(FileSource::open(&path).unwrap()),
+            "x.webm",
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        let vi = input.best_stream(ff::AVMEDIA_TYPE_VIDEO).unwrap();
+        // Other tests decode AV1 meanwhile; its fixture has no grain, so
+        // they decode the same either way.
+        for on in [false, true] {
+            set_av1_film_grain(on);
+            let dec = Decoder::open(&input, vi, HwDecode::Off).unwrap();
+            // SAFETY: an open decoder's context.
+            let exported = unsafe { (*dec.as_ptr()).export_side_data };
+            let handed_on = exported & ff::AV_CODEC_EXPORT_DATA_FILM_GRAIN as i32 != 0;
+            assert_eq!(handed_on, !on, "{}", dec.name);
+        }
+    }
+
+    #[test]
+    fn only_software_h264_and_hevc_catch_up() {
+        let data = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data");
+        for (name, can) in [("hevc10_tb.mkv", true), ("av1_opus.webm", false)] {
+            let input = Input::open(
+                Arc::new(FileSource::open(&data.join(name)).unwrap()),
+                name,
+                Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap();
+            let vi = input.best_stream(ff::AVMEDIA_TYPE_VIDEO).unwrap();
+            let mut dec = Decoder::open(&input, vi, HwDecode::Off).unwrap();
+            assert_eq!(dec.catch_up(true), can, "{name}");
+            assert_eq!(dec.catching_up, can, "{name}");
         }
     }
 

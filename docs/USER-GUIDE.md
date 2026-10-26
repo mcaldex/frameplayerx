@@ -416,9 +416,15 @@ the characters it had no font for.
 The Frame's hardware decoder plays 4:2:0 HEVC (H.265, 8- and 10-bit) and
 H.264 (8-bit), up to 8K. AV1, 4:2:2 or 4:4:4 colour and 10-bit H.264 have
 no hardware path on the Frame, so they decode on the CPU, which can't keep
-up with VR resolutions: they stutter or stop to buffer, and the control bar
-says why ("No hardware decoding for AV1", "… for 4:2:2 HEVC"). Convert them
-to 4:2:0 HEVC once on a PC and they play smoothly.
+up with VR resolutions, and the control bar says why ("No hardware decoding
+for AV1", "… for 4:2:2 HEVC"). HEVC and H.264 then leave out the pictures
+no other picture needs and play at a lower frame rate; AV1 stutters or
+stops to buffer. Convert them to 4:2:0 HEVC once on a PC and they play
+smoothly.
+
+Some AV1 videos ask for film grain to be added as they play, which costs
+the CPU a pass over every picture. Turning off Settings › Playback ›
+**AV1 film grain** saves that, for a slightly smoother picture.
 
 "Hardware decoder busy" means the file is fine but the decoder had no room
 for it: Steam's own streaming holds a session too, and beside it the

@@ -222,6 +222,7 @@ fn floating_panel(px: [u32; 2], width_m: f32, ppp: f32) -> Panel {
 
 impl App {
     pub fn new(settings: Settings, library: Library) -> App {
+        fp_media::set_av1_film_grain(settings.av1_film_grain);
         let services = Services::new(&settings, library);
         let thumbs = ui::thumbs::Thumbs::new(services.opener.clone());
         let mut panels = [
@@ -411,6 +412,9 @@ impl App {
         }
         if self.settings.ui_scale != self.saved.ui_scale {
             self.apply_ui_scale();
+        }
+        if self.settings.av1_film_grain != self.saved.av1_film_grain {
+            fp_media::set_av1_film_grain(self.settings.av1_film_grain);
         }
         self.saved = self.settings.clone();
         self.save_settings();

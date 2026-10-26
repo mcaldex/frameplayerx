@@ -270,6 +270,14 @@ fn playback(ui: &mut egui::Ui, v: &mut View) {
             " s",
             0,
         );
+        r.switch(
+            "AV1 film grain",
+            Some(
+                "The grain an AV1 video adds as it plays. Off frees the processor \
+                 for heavy 8K AV1 videos; the picture is a little smoother.",
+            ),
+            &mut s.av1_film_grain,
+        );
     });
     heading(ui, "Default format");
     note(

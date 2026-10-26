@@ -24,8 +24,12 @@ pub(crate) struct VideoPlanes {
 
 fn plane_formats(layout: PixelLayout) -> Option<Vec<vk::Format>> {
     Some(match layout {
-        PixelLayout::I420 { bits: 8 } => vec![vk::Format::R8_UNORM; 3],
-        PixelLayout::I420 { .. } => vec![vk::Format::R16_UNORM; 3],
+        PixelLayout::I420 { bits: 8 }
+        | PixelLayout::I422 { bits: 8 }
+        | PixelLayout::I444 { bits: 8 } => vec![vk::Format::R8_UNORM; 3],
+        PixelLayout::I420 { .. } | PixelLayout::I422 { .. } | PixelLayout::I444 { .. } => {
+            vec![vk::Format::R16_UNORM; 3]
+        }
         PixelLayout::Nv12 => vec![vk::Format::R8_UNORM, vk::Format::R8G8_UNORM],
         PixelLayout::P010 => vec![vk::Format::R16_UNORM, vk::Format::R16G16_UNORM],
         PixelLayout::DrmPrime | PixelLayout::Q10c => return None,

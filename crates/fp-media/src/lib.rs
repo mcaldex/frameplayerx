@@ -30,7 +30,10 @@ pub mod thumb;
 pub(crate) mod ts_fixture;
 pub(crate) mod v4l2;
 
-pub use decode::{HwDecode, hardware_sessions, hevc_10bit_hardware, set_hevc_10bit_hardware};
+pub use decode::{
+    HwDecode, av1_film_grain, hardware_sessions, hevc_10bit_hardware, set_av1_film_grain,
+    set_hevc_10bit_hardware,
+};
 pub use frame::{ColorInfo, PixelLayout, Q10cPicture, VideoFrame};
 pub use info::{MediaInfo, StreamInfo, StreamKind};
 pub use player::{Player, PlayerConfig, PlayerState, Stats};

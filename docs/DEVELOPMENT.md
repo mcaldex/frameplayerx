@@ -228,7 +228,7 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
 | Command | What it does |
 |---|---|
 | `frameplayerx --info FILE` | Prints what FramePlayerX detects about a video: format, streams, HDR |
-| `frameplayerx --decode-bench FILE [--sw]` | Decodes without displaying and prints the decoder and frame rate |
+| `frameplayerx --decode-bench FILE [--sw] [--no-grain]` | Decodes without displaying and prints the decoder and frame rate; `--no-grain` leaves AV1 film grain out |
 | `frameplayerx --seek-test FILE\|URL` | Skips through a video headless, checking buffering and that hardware decoders are given back |
 
 ## On the headset

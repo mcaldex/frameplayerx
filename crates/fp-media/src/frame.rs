@@ -10,6 +10,10 @@ pub enum PixelLayout {
     /// Three planes Y, U, V at 4:2:0. `bits` is 8 (one byte per sample) or 10
     /// (two bytes, value in the low bits).
     I420 { bits: u32 },
+    /// As `I420`, with chroma planes of full height (4:2:2).
+    I422 { bits: u32 },
+    /// As `I420`, with chroma planes of full size (4:4:4).
+    I444 { bits: u32 },
     /// Y plane plus interleaved UV plane, 8 bits.
     Nv12,
     /// Y plane plus interleaved UV plane, 16 bits with 10 significant high bits.
@@ -26,8 +30,21 @@ pub enum PixelLayout {
 impl PixelLayout {
     pub fn bytes_per_sample(&self) -> u32 {
         match self {
-            PixelLayout::I420 { bits: 8 } | PixelLayout::Nv12 => 1,
+            PixelLayout::I420 { bits: 8 }
+            | PixelLayout::I422 { bits: 8 }
+            | PixelLayout::I444 { bits: 8 }
+            | PixelLayout::Nv12 => 1,
             _ => 2,
+        }
+    }
+
+    /// The size of a chroma plane of a `width`×`height` frame, in samples
+    /// (a UV pair counts once).
+    pub fn chroma_size(&self, width: u32, height: u32) -> (u32, u32) {
+        match self {
+            PixelLayout::I444 { .. } => (width, height),
+            PixelLayout::I422 { .. } => (width.div_ceil(2), height),
+            _ => (width.div_ceil(2), height.div_ceil(2)),
         }
     }
 }
@@ -126,13 +143,16 @@ impl std::fmt::Debug for VideoFrame {
 impl VideoFrame {
     pub fn planes(&self) -> Vec<Plane<'_>> {
         let (n, chroma_components) = match self.layout {
-            PixelLayout::I420 { .. } => (3, 1),
+            PixelLayout::I420 { .. } | PixelLayout::I422 { .. } | PixelLayout::I444 { .. } => {
+                (3, 1)
+            }
             PixelLayout::Nv12 | PixelLayout::P010 => (2, 2),
             PixelLayout::DrmPrime | PixelLayout::Q10c => return Vec::new(),
         };
         let bps = self.layout.bytes_per_sample();
+        let (chroma_w, chroma_h) = self.layout.chroma_size(self.width, self.height);
         // SAFETY: frame is a valid decoded frame of this layout; plane sizes
-        // follow from the 4:2:0 subsampling.
+        // follow from its chroma subsampling.
         unsafe {
             if self.frame.is_null() || self.width == 0 || self.height == 0 {
                 return Vec::new();
@@ -148,11 +168,7 @@ impl VideoFrame {
                     let (w, h, comps) = if i == 0 {
                         (self.width, self.height, 1)
                     } else {
-                        (
-                            self.width.div_ceil(2),
-                            self.height.div_ceil(2),
-                            chroma_components,
-                        )
+                        (chroma_w, chroma_h, chroma_components)
                     };
                     let stride = f.linesize[i].unsigned_abs() as usize;
                     let row_bytes = (w * comps * bps) as usize;
@@ -185,8 +201,8 @@ impl VideoFrame {
     }
 
     /// Like [`VideoFrame::from_rgba`], converted to BT.709 in `layout` (any
-    /// but `DrmPrime`), full or limited range: frames shaped like the hardware
-    /// decoders' (NV12, P010) for tests.
+    /// but `DrmPrime` and `Q10c`), full or limited range: frames shaped like
+    /// the hardware decoders' (NV12, P010) or 4:2:2 and 4:4:4 ones for tests.
     pub fn from_rgba_as(
         width: u32,
         height: u32,
@@ -202,6 +218,10 @@ impl VideoFrame {
         let format = match layout {
             PixelLayout::I420 { bits: 8 } => ff::AV_PIX_FMT_YUV420P,
             PixelLayout::I420 { bits: 10 } => ff::AV_PIX_FMT_YUV420P10LE,
+            PixelLayout::I422 { bits: 8 } => ff::AV_PIX_FMT_YUV422P,
+            PixelLayout::I422 { bits: 10 } => ff::AV_PIX_FMT_YUV422P10LE,
+            PixelLayout::I444 { bits: 8 } => ff::AV_PIX_FMT_YUV444P,
+            PixelLayout::I444 { bits: 10 } => ff::AV_PIX_FMT_YUV444P10LE,
             PixelLayout::Nv12 => ff::AV_PIX_FMT_NV12,
             PixelLayout::P010 => ff::AV_PIX_FMT_P010LE,
             _ => {
@@ -389,7 +409,11 @@ fn color_info(f: &ff::AVFrame) -> ColorInfo {
     };
     ColorInfo {
         matrix,
-        full_range: f.color_range == ff::AVCOL_RANGE_JPEG || f.format == ff::AV_PIX_FMT_YUVJ420P,
+        full_range: f.color_range == ff::AVCOL_RANGE_JPEG
+            || matches!(
+                f.format,
+                ff::AV_PIX_FMT_YUVJ420P | ff::AV_PIX_FMT_YUVJ422P | ff::AV_PIX_FMT_YUVJ444P
+            ),
         transfer,
         wide_gamut: f.color_primaries == ff::AVCOL_PRI_BT2020,
     }
@@ -467,6 +491,12 @@ impl FrameConverter {
         let layout = match f.format {
             ff::AV_PIX_FMT_YUV420P | ff::AV_PIX_FMT_YUVJ420P => Some(PixelLayout::I420 { bits: 8 }),
             ff::AV_PIX_FMT_YUV420P10LE => Some(PixelLayout::I420 { bits: 10 }),
+            // 4:2:2 and 4:4:4 are shown as they are: converting them to 4:2:0
+            // was a swscale pass over every picture, on the decoding thread.
+            ff::AV_PIX_FMT_YUV422P | ff::AV_PIX_FMT_YUVJ422P => Some(PixelLayout::I422 { bits: 8 }),
+            ff::AV_PIX_FMT_YUV422P10LE => Some(PixelLayout::I422 { bits: 10 }),
+            ff::AV_PIX_FMT_YUV444P | ff::AV_PIX_FMT_YUVJ444P => Some(PixelLayout::I444 { bits: 8 }),
+            ff::AV_PIX_FMT_YUV444P10LE => Some(PixelLayout::I444 { bits: 10 }),
             ff::AV_PIX_FMT_NV12 => Some(PixelLayout::Nv12),
             ff::AV_PIX_FMT_P010LE => Some(PixelLayout::P010),
             PIX_FMT_Q10C => Some(PixelLayout::Q10c),
@@ -651,6 +681,52 @@ mod tests {
         let firsts: Vec<u8> = (0..h as usize).map(|y| p[0][y * w as usize]).collect();
         let want: Vec<u8> = (0..h as u8).rev().collect();
         assert_eq!(firsts, want);
+    }
+
+    #[test]
+    fn four_two_two_and_four_four_four_keep_their_planes() {
+        use PixelLayout::{I422, I444};
+        let (w, h) = (16, 8);
+        for (format, layout) in [
+            (ff::AV_PIX_FMT_YUV422P, I422 { bits: 8 }),
+            (ff::AV_PIX_FMT_YUVJ422P, I422 { bits: 8 }),
+            (ff::AV_PIX_FMT_YUV422P10LE, I422 { bits: 10 }),
+            (ff::AV_PIX_FMT_YUV444P, I444 { bits: 8 }),
+            (ff::AV_PIX_FMT_YUVJ444P, I444 { bits: 8 }),
+            (ff::AV_PIX_FMT_YUV444P10LE, I444 { bits: 10 }),
+        ] {
+            let chroma = if matches!(layout, I444 { .. }) {
+                (16, 8)
+            } else {
+                (8, 8)
+            };
+            let full_range = matches!(format, ff::AV_PIX_FMT_YUVJ422P | ff::AV_PIX_FMT_YUVJ444P);
+            let f = numbered_rows(w, h, format);
+            let bps = layout.bytes_per_sample() as usize;
+            // SAFETY: each chroma plane has `chroma.1` rows of `chroma.0`
+            // samples; the luma pointer is only compared.
+            let luma = unsafe {
+                for i in 1..3 {
+                    for y in 0..chroma.1 {
+                        let row = (*f).data[i].add(y * (*f).linesize[i] as usize);
+                        std::ptr::write_bytes(row, (y + 10 * i) as u8, chroma.0 * bps);
+                    }
+                }
+                (*f).data[0]
+            };
+            let frame = FrameConverter::default().convert(f, 0.0, 0.0, 0).unwrap();
+            assert_eq!(frame.layout, layout);
+            assert_eq!(frame.color.full_range, full_range, "{layout:?}");
+            let planes = frame.planes();
+            assert_eq!(planes[0].data.as_ptr(), luma, "{layout:?} was converted");
+            for (i, p) in planes.iter().enumerate().skip(1) {
+                assert_eq!((p.width as usize, p.height as usize), chroma, "{layout:?}");
+                for y in 0..chroma.1 {
+                    let row = &p.data[y * p.stride..][..chroma.0 * bps];
+                    assert!(row.iter().all(|&b| b == (y + 10 * i) as u8), "{layout:?}");
+                }
+            }
+        }
     }
 
     #[test]
