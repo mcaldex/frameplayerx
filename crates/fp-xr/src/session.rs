@@ -1,6 +1,7 @@
 //! Session lifecycle, swapchains and the frame loop.
 
 use crate::context::XrContext;
+use crate::gaze::EyeTracker;
 use crate::input::{Actions, InputState};
 use crate::{Error, Result, XrContextExt};
 use ash::vk::{self, Handle};
@@ -67,6 +68,8 @@ pub struct XrSession {
     pub extent: vk::Extent2D,
     pub format: vk::Format,
     actions: Actions,
+    /// The headset's eye tracker, when it has one.
+    eye_tracker: Option<EyeTracker>,
     state: xr::SessionState,
     running: bool,
     pub blend_mode: xr::EnvironmentBlendMode,
@@ -100,6 +103,7 @@ impl XrSession {
     /// `ctx.creator()`).
     pub fn new(ctx: Arc<XrContext>, gpu: Arc<Gpu>) -> Result<XrSession> {
         let mut actions = Actions::new(&ctx.instance)?;
+        let mut eye_tracker = EyeTracker::new(&ctx);
         let info = xr::vulkan::SessionCreateInfo {
             instance: gpu.instance.handle().as_raw() as _,
             physical_device: gpu.pdev.as_raw() as _,
@@ -112,7 +116,14 @@ impl XrSession {
         let (session, waiter, stream) =
             unsafe { ctx.instance.create_session::<xr::Vulkan>(ctx.system, &info) }
                 .ctx("xrCreateSession")?;
-        actions.attach(&session)?;
+        let eyes: Vec<&xr::ActionSet> = eye_tracker.iter().map(|t| &t.set).collect();
+        actions.attach(&session, &eyes)?;
+        if let Some(t) = &mut eye_tracker
+            && let Err(e) = t.attach(&session)
+        {
+            log::warn!("eye tracking: {e}");
+            eye_tracker = None;
+        }
         // STAGE, as games use. With LOCAL SteamVR switches to seated
         // tracking, and the dashboard opened at Quit came up far too high.
         let base = if session
@@ -193,6 +204,7 @@ impl XrSession {
             },
             format,
             actions,
+            eye_tracker,
             state: xr::SessionState::UNKNOWN,
             running: false,
             blend_mode,
@@ -573,9 +585,27 @@ impl XrSession {
             .ctx("xrEndFrame")
     }
 
-    /// Controller state at `time`.
+    /// The controllers and the gaze at `time`, synced together.
     pub fn input(&self, time: xr::Time) -> InputState {
-        self.actions.read(&self.session, &self.space, time)
+        let sets: Vec<xr::ActiveActionSet> = std::iter::once(&self.actions.set)
+            .chain(self.eye_tracker.iter().map(|t| &t.set))
+            .map(xr::ActiveActionSet::new)
+            .collect();
+        if self.session.sync_actions(&sets).is_err() {
+            return InputState::default();
+        }
+        let mut input = self.actions.read(&self.session, &self.space, time);
+        input.gaze = self
+            .eye_tracker
+            .as_ref()
+            .and_then(|t| t.locate(&self.session, &self.space, time));
+        input
+    }
+
+    /// Whether the headset has eye tracking. It reports a gaze only once
+    /// eye data is allowed (in SteamVR's or Steam Link's settings).
+    pub fn has_eye_tracker(&self) -> bool {
+        self.eye_tracker.is_some()
     }
 
     pub fn buzz(&self, hand: usize, amplitude: f32, millis: i64) {

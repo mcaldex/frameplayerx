@@ -39,6 +39,8 @@ pub struct Hand {
 pub struct InputState {
     /// Left, right.
     pub hands: [Hand; 2],
+    /// Where the eyes look, while a headset that tracks them does.
+    pub gaze: Option<crate::Gaze>,
 }
 
 /// An interaction profile the runtime accepted bindings for.
@@ -295,9 +297,14 @@ impl Actions {
         instance.suggest_interaction_profile_bindings(profile, &bindings)
     }
 
-    pub fn attach<G>(&mut self, session: &xr::Session<G>) -> Result<()> {
+    /// Attaches the controllers' set, and `also` with it: a session's sets
+    /// are attached once, all together.
+    pub fn attach<G>(&mut self, session: &xr::Session<G>, also: &[&xr::ActionSet]) -> Result<()> {
+        let sets: Vec<&xr::ActionSet> = std::iter::once(&self.set)
+            .chain(also.iter().copied())
+            .collect();
         session
-            .attach_action_sets(&[&self.set])
+            .attach_action_sets(&sets)
             .ctx("xrAttachSessionActionSets")?;
         let mk = |h| {
             self.aim
@@ -308,6 +315,7 @@ impl Actions {
         Ok(())
     }
 
+    /// The controllers' state, after the session synced [`Self::set`].
     pub fn read<G>(
         &self,
         session: &xr::Session<G>,
@@ -315,12 +323,6 @@ impl Actions {
         time: xr::Time,
     ) -> InputState {
         let mut out = InputState::default();
-        if session
-            .sync_actions(&[xr::ActiveActionSet::new(&self.set)])
-            .is_err()
-        {
-            return out;
-        }
         for (i, h) in self.hands.iter().enumerate() {
             let hand = &mut out.hands[i];
             let mut trigger_note = String::new();

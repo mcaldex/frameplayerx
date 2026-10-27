@@ -61,7 +61,7 @@ Comments say what the code can't:
 | `fp-ffmpeg-sys` | Bindings to the bundled FFmpeg 7.1, per architecture (`tools/gen-ffmpeg-bindings.sh`) |
 | `fp-media` | Demuxing, decoding (V4L2 hardware, 10-bit HEVC as Q10C; software), the A/V clock, ALSA audio, subtitles, thumbnails |
 | `fp-render` | The Vulkan renderer: the projection shader for every format, the Q10C to P010 conversion, egui panels, quads |
-| `fp-xr` | OpenXR: the session and swapchains, controller input, passthrough |
+| `fp-xr` | OpenXR: the session and swapchains, controller input, eye tracking, passthrough |
 | `fp-xr-loader` | Finds the active OpenXR runtime and loads it directly, with no Khronos loader to ship (shared with `frame-probe`) |
 | `fp-library` | The SQLite database: folder scanning, the metadata and thumbnail worker, search, watch history |
 | `fp-sources` | Sources: local folders, HTTP, WebDAV, DLNA, SMB, DeoVR and HereSphere feeds, Jellyfin and Emby |
@@ -95,7 +95,14 @@ a frame doesn't wait on the network.
 **Video.** FFmpeg demuxes through fp-core's `ByteSource`, so every network
 protocol is implemented in Rust and looks like a file to FFmpeg. H.264 and
 HEVC go to the Frame's V4L2 stateful decoder; anything it can't take is
-decoded in software. Frames are uploaded to Vulkan as YUV and converted in
+decoded in software. Decoders write their pictures into memory the
+renderer offers (`fp_media::set_frame_memory`, `fp-render/src/decode_memory.rs`):
+the V4L2 decoder copies its 8-bit pictures out into it, FFmpeg's software
+decoders allocate theirs there (`get_buffer2`), and the GPU copies the
+planes into its images from where they are. Pictures elsewhere (AV1, which
+FFmpeg's dav1d wrapper allocates itself; Q10C; anything converted) are
+copied into a staging buffer first, an 8K picture's 50 MB on the render
+thread. Frames reach Vulkan as YUV and are converted in
 the shader, which maps each pixel of each eye onto the video for the chosen
 projection and stereo layout. HDR is tone mapped there too. 10-bit HEVC
 comes out of the decoder as Q10C (Qualcomm's compressed TP10), which only
@@ -134,6 +141,19 @@ with, from the Subtitles setting and the tracks' languages
 embedded tracks itself; files are loaded whole. Text cues are set by
 cosmic-text (`ui/subtitle_text.rs`) with the system's fonts, loaded on a
 thread at startup, so every script is shaped; egui sets them until then.
+
+**Eye tracking.** `fp-xr/src/gaze.rs` reads the headset's gaze
+(`XR_EXT_eye_gaze_interaction`) as an action set of its own, synced with
+the controllers' in one `xrSyncActions`; it reaches the app as
+`FrameInput::gaze`, a ray in the play space, only while the eyes are
+tracked. `frameplayerx/src/gaze.rs` is what everything that follows the
+eyes reads, and it falls back to the head's forward without them:
+`GazeTracker::now` is the gaze as tracked, for what must keep up with
+the eyes (the overlay's Eyes line; foveated rendering would read it),
+and `GazeTracker::fixation` holds through saccades and blinks and smooths
+tremor, for what wants the thing looked at (autofocus, which hands it to
+the renderer as `VideoParams::focus`). The preview's `gaze YAW PITCH`
+simulates a tracker.
 
 **The database.** SQLite, with the schema version in `PRAGMA user_version`
 and forward-only migrations in `fp-library/src/schema.rs`. The scanner
@@ -228,7 +248,7 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
 | Command | What it does |
 |---|---|
 | `frameplayerx --info FILE` | Prints what FramePlayerX detects about a video: format, streams, HDR |
-| `frameplayerx --decode-bench FILE [--sw]` | Decodes without displaying and prints the decoder and frame rate |
+| `frameplayerx --decode-bench FILE [--sw] [--no-grain]` | Decodes without displaying and prints the decoder and frame rate; `--no-grain` leaves AV1 film grain out |
 | `frameplayerx --seek-test FILE\|URL` | Skips through a video headless, checking buffering and that hardware decoders are given back |
 
 ## On the headset
@@ -272,6 +292,11 @@ What the code relies on about the platform:
   `/interaction_profiles/valve/frame_controller_valve`, from the
   `XR_VALVE_frame_controller_interaction` extension. Without it SteamVR
   presents them as Touch controllers.
+- Eye tracking is `XR_EXT_eye_gaze_interaction`: one combined gaze ray, no
+  per-eye directions, openness or pupils. SteamVR passes it to apps only
+  when the user allows it, so an offered tracker may never report;
+  `frame-probe` says whether the system supports it, and the app's log
+  says "eye tracking: tracking" the first time it does.
 - SteamVR's per-app video settings override what an app asks for through
   OpenXR, which is why the launcher sets the refresh rate and resolution
   there.

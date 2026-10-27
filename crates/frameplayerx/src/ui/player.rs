@@ -255,7 +255,7 @@ fn browse_and_sound(
         }
     }
     let mut vol_edit = vol;
-    if widgets::slider(ui, &mut vol_edit, 0.0..=1.5, 130.0).changed() {
+    if widgets::slider(ui, &mut vol_edit, 0.0..=1.5, 130.0, 0.01).changed() {
         actions.push(Action::SetVolume(vol_edit));
     }
     ui.add_space(6.0);
@@ -713,7 +713,16 @@ pub fn adjust_panel(ctx: &egui::Context, v: &mut View) {
                             || (flat && (pb.settings.yaw, pb.settings.pitch) != (0.0, 0.0));
                         position_tab(ui, &mut pb.settings, moved, v.actions);
                     }
-                    2 => stereo_tab(ui, &mut pb.settings),
+                    2 => {
+                        let reads = fp_render::focus::applies(&pb.format);
+                        stereo_tab(
+                            ui,
+                            &mut pb.settings,
+                            &mut v.settings.autofocus,
+                            reads.then_some(&pb.autofocus),
+                            v.eyes == crate::gaze::Status::Tracking,
+                        );
+                    }
                     3 => picture_tab(ui, &mut pb.settings),
                     4 => {
                         widgets::section_label(ui, "Passthrough videos");
@@ -963,7 +972,16 @@ fn position_tab(ui: &mut egui::Ui, s: &mut ViewSettings, moved: bool, actions: &
     );
 }
 
-fn stereo_tab(ui: &mut egui::Ui, s: &mut ViewSettings) {
+/// The Stereo tab. `focus` is autofocus for the open video, when it is one
+/// autofocus reads; its switch is the setting for every video. `eyes`: it
+/// follows them, rather than the head.
+fn stereo_tab(
+    ui: &mut egui::Ui,
+    s: &mut ViewSettings,
+    af: &mut crate::autofocus::AutofocusSettings,
+    focus: Option<&crate::autofocus::Autofocus>,
+    eyes: bool,
+) {
     let d = ViewSettings::default();
     widgets::rows(ui, |r| {
         r.slider(
@@ -975,6 +993,20 @@ fn stereo_tab(ui: &mut egui::Ui, s: &mut ViewSettings) {
             "°",
             1,
         );
+        if let Some(focus) = focus {
+            r.switch(
+                "Autofocus",
+                Some(
+                    "Experimental, for every 3D video: close-ups are shown \
+                     further away (Settings › Video position).",
+                ),
+                &mut af.enabled,
+            );
+            if af.enabled {
+                let title = if eyes { "Looking at" } else { "Straight ahead" };
+                r.info(title, &looking_at(focus, s.ipd_offset));
+            }
+        }
         r.slider(
             "Vertical align",
             None,
@@ -1008,6 +1040,30 @@ fn stereo_tab(ui: &mut egui::Ui, s: &mut ViewSettings) {
             1,
         );
     });
+    // The distance read changes as you look about.
+    if focus.is_some() && af.enabled {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(250));
+    }
+}
+
+/// How far away what is ahead looks with the video's own `depth`, and where
+/// autofocus shows it.
+fn looking_at(focus: &crate::autofocus::Autofocus, depth: f32) -> String {
+    use crate::autofocus::distance;
+    let Some(d) = focus.disparity() else {
+        return "Nothing to focus on".into();
+    };
+    let Some(seen) = distance(d - depth) else {
+        return "Far away".into();
+    };
+    if focus.shown() < 0.05 {
+        return format!("{seen:.2} m");
+    }
+    match distance(d - depth - focus.shown()) {
+        Some(shown) => format!("{seen:.2} m, shown at {shown:.2} m"),
+        None => format!("{seen:.2} m, shown far away"),
+    }
 }
 
 fn picture_tab(ui: &mut egui::Ui, s: &mut ViewSettings) {

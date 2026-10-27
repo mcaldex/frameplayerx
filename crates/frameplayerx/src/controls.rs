@@ -18,7 +18,7 @@
 //! Fixed: the trigger clicks (on empty space it shows or hides the
 //! controls), grip + trigger drags the picture, both grips recenter, and a
 //! thumbstick pointed at a list pages it left / right (at a slider, steps
-//! it).
+//! it, then slides it while held).
 
 use crate::bindings::{Axis, AxisAction, Bindings, Button, ButtonAction};
 use fp_xr::Hand;
@@ -61,6 +61,8 @@ pub enum Cmd {
     TogglePassthrough,
     /// Page the pointed-at list, or step the slider: -1 back, +1 forward.
     Page(i32),
+    /// Move the pointed-at slider by this fraction of its range (this frame).
+    Slide(f32),
 }
 
 /// What the app knows that changes how input is read.
@@ -68,6 +70,8 @@ pub enum Cmd {
 pub struct Context {
     /// The active hand points at a panel.
     pub over_ui: bool,
+    /// The active hand points at a slider on that panel.
+    pub over_slider: bool,
     /// The active hand pulled the trigger while pointing at nothing.
     pub click_outside: bool,
     /// A video is open.
@@ -90,6 +94,15 @@ const STICK_RELEASE: f32 = 0.35;
 const STICK_HOLD: f32 = 0.5;
 const REPEAT_DELAY: f32 = 0.5;
 const REPEAT_EVERY: f32 = 0.35;
+/// Seconds a slider takes to cross its whole range with the thumbstick held
+/// all the way over.
+const SLIDE_SECS: f32 = 3.0;
+/// Seconds the thumbstick is held on a slider before it slides instead of
+/// stepping: by then it has stepped three times, as a held push always did.
+const SLIDE_AFTER: f32 = 1.0;
+/// Seconds a slide takes to come up to speed, so a push held a little long
+/// moves the slider little.
+const SLIDE_RAMP: f32 = 1.0;
 
 #[derive(Clone, Copy, Debug)]
 struct Drag {
@@ -184,11 +197,18 @@ impl Controls {
             let s = hand.stick;
             let grip = gripping(hand);
             if !grip && (!playing || ctx.over_ui) {
-                // Menus: left / right pages the list pointed at, or steps the
-                // slider, repeating while held (up / down scrolls, through
-                // the pointer).
-                if let Some(dir) = self.step(i, Axis::StickX, s.x, ctx.dt, true) {
+                // Menus: left / right pages the list pointed at, or steps
+                // the slider, repeating while held; held on, the slider then
+                // slides (up / down scrolls, through the pointer).
+                let step = self.step(i, Axis::StickX, s.x, ctx.dt, true);
+                let (dir, held) = self.held[i][Axis::StickX.index()];
+                let sliding = ctx.over_slider && dir != 0 && held >= SLIDE_AFTER;
+                if let Some(dir) = step.filter(|_| !sliding) {
                     out.push(Cmd::Page(dir));
+                }
+                if sliding {
+                    let speed = slide_speed(s.x, held - SLIDE_AFTER);
+                    out.push(Cmd::Slide(dir as f32 * speed * ctx.dt));
                 }
                 continue;
             }
@@ -270,6 +290,15 @@ impl Controls {
         };
         (repeat && fires(t2) > fires(t)).then_some(dir)
     }
+}
+
+/// How fast a held thumbstick at `x` slides a slider, in its range a
+/// second, `t` seconds into the slide: from nothing where the push lets go
+/// to the whole range in [`SLIDE_SECS`] all the way over, rising slowly at
+/// first for fine moves, and up to speed after [`SLIDE_RAMP`].
+fn slide_speed(x: f32, t: f32) -> f32 {
+    let f = ((x.abs() - STICK_RELEASE) / (1.0 - STICK_RELEASE)).clamp(0.0, 1.0);
+    f * f / SLIDE_SECS * (t / SLIDE_RAMP).clamp(0.0, 1.0)
 }
 
 /// The command for a pressed button, if it does anything now.
@@ -394,6 +423,43 @@ mod tests {
             };
             assert_eq!(run(&mut c, &h, over), vec![Cmd::Page(-1)]);
         }
+    }
+
+    #[test]
+    fn a_held_stick_steps_a_slider_then_slides_it_faster_the_further_it_is_pushed() {
+        let over = Context {
+            over_ui: true,
+            over_slider: true,
+            dt: 0.3,
+            ..ctx(true)
+        };
+        let mut c = Controls::default();
+        let mut h = hands();
+        h[RIGHT].stick = Vec2::new(1.0, 0.0);
+        // A push steps it, and held, steps it again at 0.5 and 0.85 s.
+        let steps: Vec<_> = (0..4).flat_map(|_| run(&mut c, &h, over)).collect();
+        assert_eq!(steps, vec![Cmd::Page(1); 3]);
+        // Then it slides (no step at 1.2 s), coming up to speed.
+        let slide = |c: &mut Controls, h: &[Hand; 2]| match run(c, h, over)[..] {
+            [Cmd::Slide(f)] => f,
+            ref o => panic!("{o:?}"),
+        };
+        let full = 0.3 / SLIDE_SECS;
+        let first = slide(&mut c, &h);
+        assert!((first - full * 0.2).abs() < 1e-6, "{first}");
+        slide(&mut c, &h);
+        slide(&mut c, &h);
+        let at_speed = slide(&mut c, &h);
+        assert!((at_speed - full).abs() < 1e-6, "{at_speed}");
+        h[RIGHT].stick = Vec2::new(0.6, 0.0);
+        let part = slide(&mut c, &h);
+        assert!(part > 0.0 && part < full / 5.0, "{part}");
+        h[RIGHT].stick = Vec2::new(-1.0, 0.0);
+        assert_eq!(run(&mut c, &h, over), vec![Cmd::Page(-1)]);
+        for _ in 0..3 {
+            run(&mut c, &h, over);
+        }
+        assert!(slide(&mut c, &h) < 0.0);
     }
 
     #[test]

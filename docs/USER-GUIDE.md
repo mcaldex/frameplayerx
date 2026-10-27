@@ -7,7 +7,8 @@ or your network.
 - [Install](#install), [updating](#updating) and [uninstall](#uninstall)
 - [Where your videos can be](#where-your-videos-can-be): browsing,
   PIN locks, microSD cards and USB drives
-- [Video formats](#video-formats), [fisheye lenses](#fisheye-lenses) and
+- [Video formats](#video-formats), [autofocus](#autofocus-experimental),
+  [fisheye lenses](#fisheye-lenses) and
   [videos that stutter](#videos-that-stutter-av1-and-422)
 - [Controls](#controls), and [watching lying down](#watching-lying-down)
 - [Passthrough videos](#passthrough-videos)
@@ -345,6 +346,11 @@ real shape. A portrait video's screen is as tall as **Screen width**.
 When a 3D file's metadata says the right eye comes first, the eyes are
 swapped to match.
 
+Around a flat screen, and behind the menus, is a near-black grey.
+Settings › Video position › **Background** picks another colour (black,
+grey, navy, or any colour with the red/green/blue sliders) for every
+video. Your room replaces it while it shows.
+
 3D Blu-ray rips (MKV from MakeMKV, the disc's H.264 MVC video) play as full
 3D, each eye at full 1080p, on the Frame's hardware decoder. The few
 streams it can't take that way (none of the discs tried) play their left
@@ -361,6 +367,27 @@ VC-1, MPEG-4, MPEG-2, ProRes. Audio: AAC, AC-3/E-AC-3, Opus, Vorbis, FLAC,
 MP3, DTS, TrueHD, PCM (Blu-ray and DVD LPCM too), and spatial (ambisonic)
 audio that follows your head.
 Subtitles: SRT, ASS/SSA, WebVTT, and embedded text or picture subtitles.
+
+### Autofocus (experimental)
+
+Something filmed very close in a 3D video can split in two: your eyes
+can't cross far enough to see it as one. Settings › Video position ›
+**Autofocus** works on every 3D 180°, 360°, fisheye and EAC video, as
+DeoVR's does. It watches what is in the middle of your view, and when that
+is nearer than **Nearest distance** (0.7 m to start with), it moves the two
+eyes' pictures apart until it looks that far away. Look at something
+further off and the picture settles back over the **Refocus time**. The
+depth within the picture stays as filmed; only how near it all looks
+changes. Flat 3D films are left as they are.
+
+On a headset that tracks your eyes, such as the Steam Frame, it follows
+where they look; elsewhere, or with Settings › General › **Eye tracking**
+off, it follows where your head points. It needs something with detail to
+look at: on a blank wall or the sky it keeps what it last saw for a
+moment, then lets go. If it follows your head on a Frame, allow eye
+tracking for apps in the headset's settings. **Depth** in the player's ⚙ › Stereo still
+works on top, and the same tab has an Autofocus switch, with how far away
+what you look at is and where it's shown.
 
 ### Fisheye lenses
 
@@ -379,8 +406,9 @@ lining up towards the edges, open **⚙ › Format** and use the sliders under
   a camera. In 3D, each image has its own.
 
 To fine-tune a slider, point at it and push the thumbstick left or right.
-Each push is one step, and holding repeats. **Save for this video** keeps
-the settings for that file.
+Each push is one step. Hold it and it steps twice more, then slides,
+faster the further you push.
+**Save for this video** keeps the settings for that file.
 
 ### Subtitles
 
@@ -416,9 +444,15 @@ the characters it had no font for.
 The Frame's hardware decoder plays 4:2:0 HEVC (H.265, 8- and 10-bit) and
 H.264 (8-bit), up to 8K. AV1, 4:2:2 or 4:4:4 colour and 10-bit H.264 have
 no hardware path on the Frame, so they decode on the CPU, which can't keep
-up with VR resolutions: they stutter or stop to buffer, and the control bar
-says why ("No hardware decoding for AV1", "… for 4:2:2 HEVC"). Convert them
-to 4:2:0 HEVC once on a PC and they play smoothly.
+up with VR resolutions, and the control bar says why ("No hardware decoding
+for AV1", "… for 4:2:2 HEVC"). HEVC and H.264 then leave out the pictures
+no other picture needs and play at a lower frame rate; AV1 stutters or
+stops to buffer. Convert them to 4:2:0 HEVC once on a PC and they play
+smoothly.
+
+Some AV1 videos ask for film grain to be added as they play, which costs
+the CPU a pass over every picture. Turning off Settings › Playback ›
+**AV1 film grain** saves that, for a slightly smoother picture.
 
 "Hardware decoder busy" means the file is fine but the decoder had no room
 for it: Steam's own streaming holds a session too, and beside it the
@@ -474,7 +508,7 @@ picture. Play/pause and seeking are under either thumb.
 
 | Control | Right hand | Left hand |
 |---|---|---|
-| Thumbstick left / right | Seek back / forward 10 s (adjustable; hold to repeat). Pointing at a list: previous / next page. Pointing at a slider: one fine step | The same |
+| Thumbstick left / right | Seek back / forward 10 s (adjustable; hold to repeat). Pointing at a list: previous / next page. Pointing at a slider: one fine step; hold to step on, then slide it | The same |
 | Thumbstick up / down | Volume (or scroll a menu you point at) | Tilt the picture (or scroll a menu you point at) |
 | Thumbstick press | Mute | Reset the picture |
 | A / D-pad down | Play / pause | Play / pause |
@@ -590,6 +624,8 @@ protocol. Both only answer devices on your local network.
   overlay**. Low in your view, it shows how long each frame takes to draw
   (amber when longer than the display allows), the video's frame rate and
   dropped frames, its decoder, how busy the CPU and GPU are, and memory.
+  On a headset with eye tracking, its Eyes line says where your eyes look
+  from where your head faces, or "not tracked".
 - After a crash, the next start asks whether to send a crash report to
   FramePlayerX's developers, as a private issue on GitHub. It contains the
   versions of FramePlayerX and the headset's system, what went wrong, and

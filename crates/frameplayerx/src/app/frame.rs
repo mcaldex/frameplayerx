@@ -144,6 +144,9 @@ impl App {
         }
         let anchor = self.anchor(&input);
         let eye = input.head.map(|h| h.0).unwrap_or(anchor.w_axis.truncate());
+        self.gaze
+            .update(input.gaze, input.head, self.settings.eye_tracking, input.dt);
+        self.eyes = self.gaze.status(input.eye_tracker);
         self.update_visibility();
         let kb_target = self.keyboard_target();
         self.panels[KEYBOARD].visible = kb_target.is_some();
@@ -319,10 +322,15 @@ impl App {
         if self.playback.is_none() {
             self.perf_video = None;
         }
+        let eyes = input.eye_tracker.then(|| {
+            let head = input.head?.1;
+            Some(crate::gaze::from_head(self.gaze.now()?.direction, head))
+        });
         let overlay = ui::perf::Overlay {
             frame_ms,
             display_hz: input.display_hz,
             video,
+            eyes,
             sample,
         };
         if let Err(e) = self
@@ -431,6 +439,7 @@ impl App {
         }
         let devices = self.services.haptic_statuses();
         let passthrough_available = input.passthrough_available;
+        let eyes = self.eyes;
         for idx in [MAIN, BAR, ADJUST] {
             if !self.panels[idx].needs_paint() {
                 continue;
@@ -455,6 +464,7 @@ impl App {
                 actions: &mut actions,
                 passthrough_available,
                 devices: &devices,
+                eyes,
             };
             let r = panels[idx].paint(renderer, input.time, |ctx| match idx {
                 MAIN => ui::library::browser(ctx, &mut view),
@@ -500,7 +510,15 @@ impl App {
         input: &FrameInput,
         anchor: Mat4,
     ) -> (Option<Arc<VideoFrame>>, VideoParams, bool) {
-        let mut video = VideoParams::default();
+        // The chosen colour is sRGB; the eyes are cleared in linear light.
+        let [r, g, b] = self
+            .settings
+            .background
+            .map(egui::ecolor::linear_from_gamma);
+        let mut video = VideoParams {
+            background: [r, g, b, 1.0],
+            ..VideoParams::default()
+        };
         let mut frame = None;
         let flat_or_none = self
             .playback
@@ -520,6 +538,7 @@ impl App {
         }
         let anchor_rot = anchor.to_scale_rotation_translation().1;
         let player = self.picture_anchor(anchor);
+        let autofocus = self.autofocus(renderer.focus(), input.dt);
         if let Some(p) = &self.playback {
             frame = p.player.current_frame();
             let s = p.shown_settings(&self.settings.default_view);
@@ -527,6 +546,12 @@ impl App {
             video.screen_pose = place(player, 0.0, s.screen_distance, 0.0, 0.0);
             video.anchor = anchor_rot;
             video.settings = s;
+            video.settings.ipd_offset += autofocus;
+            video.focus = self
+                .gaze
+                .fixation()
+                .filter(|_| self.settings.autofocus.enabled)
+                .map(|l| l.direction);
             if let Some(v) = p.player.info().video_stream() {
                 video.rotation = v.rotation;
                 video.pixel_aspect = v.pixel_aspect as f32;
@@ -540,6 +565,22 @@ impl App {
             self.subs.visible = false;
         }
         (frame, video, passthrough)
+    }
+
+    /// The Depth autofocus adds to the open video this frame, from what the
+    /// renderer read at the centre of view; 0 while it is off or the video
+    /// isn't one it reads.
+    fn autofocus(&mut self, reading: Option<fp_render::Focus>, dt: f32) -> f32 {
+        let s = &self.settings.autofocus;
+        let Some(p) = &mut self.playback else {
+            return 0.0;
+        };
+        if !s.enabled || !fp_render::focus::applies(&p.format) {
+            p.autofocus = Default::default();
+            return 0.0;
+        }
+        let depth = p.shown_settings(&self.settings.default_view).ipd_offset;
+        p.autofocus.update(reading, depth, s, dt)
     }
 
     /// What the compositor draws: panels back to front, then pointers,

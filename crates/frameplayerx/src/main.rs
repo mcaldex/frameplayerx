@@ -8,10 +8,12 @@
 //! the decoder and its frame rate.
 
 mod app;
+mod autofocus;
 mod bindings;
 mod controls;
 mod crash;
 mod drives;
+mod gaze;
 mod jobs;
 mod libraries;
 mod logger;
@@ -51,6 +53,8 @@ struct Args {
     bench_opts: fp_media::bench::BenchOptions,
     seek_test: Option<String>,
     seek_opts: seektest::SeekTestOptions,
+    /// Decode AV1 without its film grain (`--no-grain`).
+    no_grain: bool,
     verbose: bool,
     open: Option<String>,
 }
@@ -58,7 +62,7 @@ struct Args {
 const USAGE: &str = "usage: frameplayerx [--verbose] [--exit-after SECONDS] [FILE|URL]
        frameplayerx --preview OUT_DIR [--script FILE] [--size PIXELS] [FILE|URL]
        frameplayerx --info FILE      (print what FramePlayerX detects about a video)
-       frameplayerx --decode-bench FILE [--frames N] [--sw] [--seek SECONDS]
+       frameplayerx --decode-bench FILE [--frames N] [--sw] [--no-grain] [--seek SECONDS]
                    [--checksum N,N,...]  (decode only; print decoder and fps)
        frameplayerx --seek-test FILE|URL [--seeks N] [--step SECONDS] [--rounds N] [--sw]
                    (skip through a video headless; checks buffering and that
@@ -98,6 +102,7 @@ fn parse_args() -> Result<Args, String> {
                 a.bench_opts.hw = fp_media::HwDecode::Off;
                 a.seek_opts.hw = fp_media::HwDecode::Off;
             }
+            "--no-grain" => a.no_grain = true,
             "--seek-test" => {
                 a.seek_test = Some(it.next().ok_or("--seek-test needs a file or URL")?);
             }
@@ -179,6 +184,7 @@ fn main() {
     log::info!("FramePlayerX {} starting", env!("CARGO_PKG_VERSION"));
     if args.bench.is_some() || args.seek_test.is_some() {
         allow_hevc_10bit_headless();
+        fp_media::set_av1_film_grain(!args.no_grain);
     }
     if let Some(f) = &args.bench {
         std::process::exit(match bench(f, &args.bench_opts) {
@@ -400,6 +406,7 @@ fn run_xr(args: &Args) -> Result<(), Error> {
     );
     let mut renderer = Renderer::new(gpu.clone(), session.format)?;
     fp_media::set_hevc_10bit_hardware(renderer.shows_q10c());
+    fp_media::set_frame_memory(renderer.frame_memory());
     let mut app = make_app()?;
     app.set_about(vec![
         ("OpenXR runtime".into(), ctx.runtime.clone()),
@@ -482,6 +489,8 @@ fn run_xr(args: &Args) -> Result<(), Error> {
                 dt,
                 head: frame.head,
                 hands: input.hands,
+                gaze: input.gaze,
+                eye_tracker: session.has_eye_tracker(),
                 passthrough_available: session.supports_passthrough_blend(),
                 layers,
                 frame_ms: last_frame_ms,
@@ -594,6 +603,8 @@ fn run_xr(args: &Args) -> Result<(), Error> {
     }
     renderer.wait_idle();
     app.shutdown();
+    // Pictures still in decode memory keep the device until they are freed.
+    fp_media::set_frame_memory(None);
     drop(renderer);
     drop(session);
     drop(gpu);

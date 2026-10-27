@@ -16,11 +16,17 @@ impl App {
         let h = input.hands;
         let playing = self.playback.is_some();
         let anchor_rot = anchor.to_scale_rotation_translation().1;
+        let over_slider = over_ui
+            && self
+                .pointer
+                .hovered()
+                .is_some_and(|i| ui::widgets::over_slider(&self.panels[i].ctx));
         let cmds = self.controls.update(
             &h,
             anchor_rot,
             Context {
                 over_ui,
+                over_slider,
                 click_outside,
                 playing,
                 dt: input.dt,
@@ -230,6 +236,13 @@ impl App {
                             modifiers: egui::Modifiers::NONE,
                         });
                     }
+                }
+            }
+            Cmd::Slide(f) => {
+                if let Some(i) = self.pointer.hovered() {
+                    let p = &mut self.panels[i];
+                    ui::widgets::slide(&p.ctx, f);
+                    p.request_repaint();
                 }
             }
         }

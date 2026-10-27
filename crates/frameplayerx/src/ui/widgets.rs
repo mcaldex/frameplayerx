@@ -822,64 +822,132 @@ pub fn slider_control(
     // What the row leaves it, so at a large interface size it doesn't run
     // over the text beside it.
     let width = ui.available_width().clamp(120.0, 240.0);
-    let resp = slider(ui, value, range.clone(), width);
-    changed |= resp.changed();
-    if resp.hovered() {
-        let ctx = ui.ctx().clone();
-        let pass = ctx.cumulative_pass_nr();
-        ctx.data_mut(|d| d.insert_temp(egui::Id::new(OVER_SLIDER), pass));
-        let dir = ui.input_mut(|i| {
-            let mut n = |key| i.count_and_consume_key(egui::Modifiers::NONE, key) as f32;
-            n(egui::Key::ArrowRight) - n(egui::Key::ArrowLeft)
-        });
-        if dir != 0.0 {
-            // A step of the shown precision, landing on it.
-            let step = 10f32.powi(-(decimals as i32));
-            *value = (((*value / step).round() + dir) * step).clamp(*range.start(), *range.end());
-            changed = true;
-            ctx.request_repaint();
-        }
-    }
+    // The thumbstick steps it by the shown precision.
+    let step = 10f32.powi(-(decimals as i32));
+    changed |= slider(ui, value, range, width, step).changed();
     changed
 }
 
 const OVER_SLIDER: &str = "over-slider";
+const SLIDE: &str = "slide";
 
-/// Whether the pointer was on a [`slider_control`] in the panel's last pass:
-/// the thumbstick then steps it (arrow keys) instead of paging.
+/// Whether the pointer was on a [`slider`] in the panel's last pass: the
+/// thumbstick then steps it (arrow keys) and slides it ([`slide`]) instead
+/// of paging, and a trigger press on it drags it at once.
 pub fn over_slider(ctx: &egui::Context) -> bool {
     ctx.data(|d| d.get_temp::<u64>(egui::Id::new(OVER_SLIDER)))
         .is_some_and(|pass| pass + 1 == ctx.cumulative_pass_nr())
 }
 
-/// A slider: a slim rail filled in the accent up to a white knob.
+/// Moves the slider the pointer is on by `fraction` of its range, in the
+/// panel's next pass (the thumbstick held over it), in whole steps: what is
+/// short of one counts towards the next pass's. Dropped if the pointer is
+/// not on one then.
+pub fn slide(ctx: &egui::Context, fraction: f32) {
+    let next = ctx.cumulative_pass_nr();
+    ctx.data_mut(|d| {
+        let id = egui::Id::new(SLIDE);
+        let queued = d
+            .get_temp::<(u64, f32)>(id)
+            .filter(|(pass, _)| *pass == next)
+            .map_or(0.0, |(_, f)| f);
+        d.insert_temp(id, (next, queued + fraction));
+    });
+}
+
+/// How long pulling or letting go of the trigger tips the controller, in
+/// seconds (see `world::CLICK_SLOP`): a slider holds still this long after
+/// the press, and when let go goes back to where it was this long before.
+const TRIGGER_TIP_S: f64 = 0.1;
+
+/// A press this close to the knob, in points, takes hold of it where it is;
+/// further along the rail the knob jumps to the press first.
+const GRAB_REACH: f32 = 30.0;
+
+/// A slider the trigger holds: its value and the ray's x when the hold
+/// began, the values since that a release could go back to, and the pass
+/// it was last kept up in.
+#[derive(Clone, Default)]
+struct Grab {
+    value: f32,
+    x: f32,
+    since: f64,
+    trail: Vec<(f64, f32)>,
+    pass: u64,
+}
+
+impl Grab {
+    /// Drops the values older than the one [`TRIGGER_TIP_S`] before `now`.
+    fn prune(&mut self, now: f64) {
+        while self.trail.len() > 1 && now - self.trail[1].0 >= TRIGGER_TIP_S {
+            self.trail.remove(0);
+        }
+    }
+}
+
+/// Where `v` is along `lo..=hi`, from 0 to 1.
+fn fraction(v: f32, lo: f32, hi: f32) -> f32 {
+    if hi > lo {
+        ((v - lo) / (hi - lo)).clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+/// A slider: a slim rail filled in the accent up to a white knob. The
+/// trigger takes hold of the knob, and pointed at, the thumbstick moves it
+/// in whole steps of `step`.
 pub fn slider(
     ui: &mut Ui,
     value: &mut f32,
     range: std::ops::RangeInclusive<f32>,
     width: f32,
+    step: f32,
 ) -> Response {
     let (rect, mut resp) = ui.allocate_exact_size(Vec2::new(width, 36.0), Sense::click_and_drag());
     let (lo, hi) = (*range.start(), *range.end());
     let inset = 11.0;
     let rail_x = (rect.left() + inset)..=(rect.right() - inset);
-    if resp.is_pointer_button_down_on()
-        && let Some(p) = resp.interact_pointer_pos()
-    {
-        let f = ((p.x - rail_x.start()) / (rail_x.end() - rail_x.start())).clamp(0.0, 1.0);
-        let v = lo + f * (hi - lo);
-        if (v - *value).abs() > f32::EPSILON {
-            *value = v;
-            resp.mark_changed();
+    let before = *value;
+    hold(ui, &resp, value, lo..=hi, rail_x.clone());
+    if resp.hovered() {
+        let ctx = ui.ctx().clone();
+        let pass = ctx.cumulative_pass_nr();
+        let slid = ctx
+            .data_mut(|d| {
+                d.insert_temp(egui::Id::new(OVER_SLIDER), pass);
+                d.remove_temp::<(u64, f32)>(egui::Id::new(SLIDE))
+            })
+            .filter(|(queued, _)| *queued == pass)
+            .map_or(0.0, |(_, f)| f);
+        let dir = ui.input_mut(|i| {
+            let mut n = |key| i.count_and_consume_key(egui::Modifiers::NONE, key) as f32;
+            n(egui::Key::ArrowRight) - n(egui::Key::ArrowLeft)
+        });
+        let mut steps = dir;
+        if slid != 0.0 {
+            // A slide moves whole steps, the rest kept for its next pass.
+            let id = resp.id.with(SLIDE);
+            let rest = ctx
+                .data_mut(|d| d.remove_temp::<(u64, f32)>(id))
+                .filter(|(kept, _)| kept + 1 == pass)
+                .map_or(0.0, |(_, r)| r);
+            let s = rest + slid * (hi - lo) / step;
+            steps += s.trunc();
+            ctx.data_mut(|d| d.insert_temp(id, (pass, s.fract())));
         }
+        if dir != 0.0 || slid != 0.0 {
+            // Landing on a multiple of the step.
+            *value = (((*value / step).round() + steps) * step).clamp(lo, hi);
+            ctx.request_repaint();
+        }
+    }
+    if (*value - before).abs() > f32::EPSILON {
+        resp.mark_changed();
     }
     if ui.is_rect_visible(rect) {
         let t = anim(ui, resp.id, resp.hovered() || resp.dragged());
-        let f = if hi > lo {
-            ((*value - lo) / (hi - lo)).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
+        let f = fraction(*value, lo, hi);
         let x = egui::lerp(rail_x.clone(), f);
         let h = 7.0 + t * 2.0;
         let y = rect.center().y;
@@ -890,6 +958,61 @@ pub fn slider(
         knob(ui.painter(), Pos2::new(x, y), 9.0 + t * 2.0);
     }
     resp
+}
+
+/// The trigger held on a slider. The knob moves as far along the rail as
+/// the ray does, from where it was taken, so taking it doesn't move it; the
+/// ray's moves while the trigger is pulled and let go are left out.
+fn hold(
+    ui: &Ui,
+    resp: &Response,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    rail_x: std::ops::RangeInclusive<f32>,
+) {
+    let id = resp.id.with("hold");
+    let now = ui.input(|i| i.time);
+    let pass = ui.ctx().cumulative_pass_nr();
+    // A hold not kept up in the last pass (the slider went out of view) is
+    // over.
+    let grab = ui
+        .data_mut(|d| d.remove_temp::<Grab>(id))
+        .filter(|g| g.pass + 1 == pass);
+    if !resp.is_pointer_button_down_on() {
+        // Let go (or the ray left the panel): back to before letting go
+        // tipped the ray.
+        if let Some(mut g) = grab {
+            g.prune(now);
+            *value = g.trail.first().map_or(g.value, |&(_, v)| v);
+        }
+        return;
+    }
+    let Some(p) = resp.interact_pointer_pos() else {
+        return;
+    };
+    let (lo, hi) = (*range.start(), *range.end());
+    let len = rail_x.end() - rail_x.start();
+    let mut g = grab.unwrap_or_else(|| {
+        let knob = egui::lerp(rail_x.clone(), fraction(*value, lo, hi));
+        if (p.x - knob).abs() > GRAB_REACH {
+            *value = lo + ((p.x - rail_x.start()) / len).clamp(0.0, 1.0) * (hi - lo);
+        }
+        Grab {
+            value: *value,
+            x: p.x,
+            since: now,
+            ..Default::default()
+        }
+    });
+    if now - g.since < TRIGGER_TIP_S {
+        // The pull is still tipping the controller: hold from where it ends.
+        g.x = p.x;
+    }
+    *value = (g.value + (p.x - g.x) / len * (hi - lo)).clamp(lo, hi);
+    g.trail.push((now, *value));
+    g.prune(now);
+    g.pass = pass;
+    ui.data_mut(|d| d.insert_temp(id, g));
 }
 
 /// The accent fill over the `done` part of a sunken rail (seek bar,
@@ -1273,26 +1396,35 @@ mod tests {
         assert_eq!(display_title("Top 360 Moments_LR"), "Top 360 Moments");
     }
 
+    /// One pass of a slider row for -10..=10; returns its rect. The slider
+    /// is the row's last 240 points: its rail runs from 229 to 11 points
+    /// before the end, the middle (0) 120 before.
+    fn slider_row(ctx: &egui::Context, input: egui::RawInput, value: &mut f32) -> Rect {
+        let mut rect = Rect::NOTHING;
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                rect = ui
+                    .horizontal(|ui| slider_control(ui, value, -10.0..=10.0, 0.0, "%", 1))
+                    .response
+                    .rect;
+            });
+        });
+        rect
+    }
+
+    fn slider_pass(ctx: &egui::Context, events: Vec<egui::Event>, value: &mut f32) -> Rect {
+        let input = egui::RawInput {
+            events,
+            ..Default::default()
+        };
+        slider_row(ctx, input, value)
+    }
+
     #[test]
     fn the_thumbstick_steps_the_slider_it_points_at() {
         let ctx = egui::Context::default();
         theme::apply(&ctx);
-        let pass = |events: Vec<egui::Event>, value: &mut f32| {
-            let mut rect = Rect::NOTHING;
-            let input = egui::RawInput {
-                events,
-                ..Default::default()
-            };
-            let _ = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    rect = ui
-                        .horizontal(|ui| slider_control(ui, value, -10.0..=10.0, 0.0, "%", 1))
-                        .response
-                        .rect;
-                });
-            });
-            rect
-        };
+        let pass = |events, value: &mut f32| slider_pass(&ctx, events, value);
         let key = |key| egui::Event::Key {
             key,
             physical_key: None,
@@ -1321,5 +1453,103 @@ mod tests {
         assert!(!over_slider(&ctx));
         pass(vec![key(egui::Key::ArrowRight)], &mut v);
         assert!((v - 1.1).abs() < 1e-5, "not pointed at: {v}");
+    }
+
+    #[test]
+    fn a_held_thumbstick_slides_the_slider_it_points_at() {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let pass = |events, value: &mut f32| slider_pass(&ctx, events, value);
+        let mut v = 0.0;
+        let rect = pass(vec![], &mut v);
+        let on_rail = Pos2::new(rect.right() - 120.0, rect.center().y);
+        pass(vec![egui::Event::PointerMoved(on_rail)], &mut v);
+        slide(&ctx, 0.1);
+        slide(&ctx, 0.15);
+        pass(vec![], &mut v);
+        assert!((v - 5.0).abs() < 1e-4, "a quarter of the range: {v}");
+
+        // Not pointed at in the next pass, it is dropped.
+        let below = Pos2::new(on_rail.x, rect.bottom() + 100.0);
+        pass(vec![egui::Event::PointerMoved(below)], &mut v);
+        slide(&ctx, 0.25);
+        pass(vec![], &mut v);
+        pass(vec![egui::Event::PointerMoved(on_rail)], &mut v);
+        assert!((v - 5.0).abs() < 1e-4, "{v}");
+    }
+
+    #[test]
+    fn a_slide_moves_the_slider_in_whole_steps() {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let pass = |events, value: &mut f32| slider_pass(&ctx, events, value);
+        // Between steps (as the trigger can leave it), pointed at.
+        let mut v = 0.37;
+        let rect = pass(vec![], &mut v);
+        let on_rail = Pos2::new(rect.right() - 120.0, rect.center().y);
+        pass(vec![egui::Event::PointerMoved(on_rail)], &mut v);
+        // 0.6 of a step (0.1 of 20) lands it on a step, and counts towards
+        // the next pass's.
+        slide(&ctx, 0.003);
+        pass(vec![], &mut v);
+        assert!((v - 0.4).abs() < 1e-5, "{v}");
+        slide(&ctx, 0.003);
+        pass(vec![], &mut v);
+        assert!((v - 0.5).abs() < 1e-5, "{v}");
+        // A pass without one ends the slide, and what was short of a step.
+        pass(vec![], &mut v);
+        slide(&ctx, 0.003);
+        pass(vec![], &mut v);
+        assert!((v - 0.5).abs() < 1e-5, "{v}");
+    }
+
+    #[test]
+    fn the_trigger_takes_hold_of_the_knob_where_it_is() {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let at = |time: f64, events: Vec<egui::Event>, value: &mut f32| {
+            let input = egui::RawInput {
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+            slider_row(&ctx, input, value)
+        };
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut v = 0.0;
+        let rect = at(0.0, vec![], &mut v);
+        let knob = Pos2::new(rect.right() - 120.0, rect.center().y);
+        let x = |dx: f32| knob + Vec2::new(dx, 0.0);
+        let moved = |dx| vec![egui::Event::PointerMoved(x(dx))];
+
+        // Pressed beside the knob, it stays, while the pull tips the ray.
+        at(0.1, moved(8.0), &mut v);
+        at(0.2, vec![button(x(8.0), true)], &mut v);
+        assert_eq!(v, 0.0);
+        at(0.25, moved(20.0), &mut v);
+        assert_eq!(v, 0.0, "the pull tipped the ray");
+        // Then it goes as far as the ray: a quarter of the rail.
+        at(0.4, moved(20.0 + 54.5), &mut v);
+        assert!((v - 5.0).abs() < 1e-4, "{v}");
+        at(0.5, moved(20.0 + 54.5), &mut v);
+        // Letting go tips the ray back, and the release undoes that.
+        at(0.55, moved(0.0), &mut v);
+        assert!(v < 4.0, "{v}");
+        at(0.6, vec![button(x(0.0), false)], &mut v);
+        assert!((v - 5.0).abs() < 1e-4, "{v}");
+
+        // Pressed further along the rail, it jumps there: a quarter of the
+        // way along is -5.
+        let quarter = Pos2::new(rect.right() - 11.0 - 218.0 * 0.75, knob.y);
+        at(1.0, vec![egui::Event::PointerMoved(quarter)], &mut v);
+        at(1.1, vec![button(quarter, true)], &mut v);
+        assert!((v + 5.0).abs() < 1e-4, "{v}");
+        at(1.15, vec![button(quarter, false)], &mut v);
+        assert!((v + 5.0).abs() < 1e-4, "a click leaves it there: {v}");
     }
 }

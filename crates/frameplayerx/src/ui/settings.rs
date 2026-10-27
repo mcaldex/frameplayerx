@@ -169,7 +169,7 @@ fn controller(ui: &mut egui::Ui, v: &mut View) {
             ),
             (
                 "Pointing at a slider",
-                "Thumbstick left / right moves it one step",
+                "Thumbstick left / right moves it a step; hold to step on, then slide",
             ),
         ] {
             r.row(k, None, |ui| {
@@ -217,6 +217,11 @@ fn general(ui: &mut egui::Ui, v: &mut View) {
             &mut s.follow,
         );
         r.switch(
+            "Eye tracking",
+            Some(eye_tracking_note(v.eyes, s.eye_tracking)),
+            &mut s.eye_tracking,
+        );
+        r.switch(
             "Haptic devices",
             Some("Sync connected haptic devices with videos that have scripts."),
             &mut s.haptics_enabled,
@@ -232,12 +237,32 @@ fn general(ui: &mut egui::Ui, v: &mut View) {
         r.switch(
             "Performance overlay",
             Some(
-                "Frame time, the video's frame rate and decoder, CPU, GPU and memory, \
-                 low in your view.",
+                "Frame time, the video's frame rate and decoder, CPU, GPU, memory \
+                 and where your eyes look, low in your view.",
             ),
             &mut s.perf_overlay,
         );
     });
+}
+
+/// What the Eye tracking switch does, with what the headset offers.
+fn eye_tracking_note(eyes: crate::gaze::Status, on: bool) -> &'static str {
+    use crate::gaze::Status;
+    match (eyes, on) {
+        (Status::None, _) => {
+            "This headset doesn't share where your eyes look, so autofocus \
+             follows your head."
+        }
+        (_, false) => "Autofocus follows your head, not your eyes.",
+        (Status::Offered, true) => {
+            "Autofocus follows your eyes once they're tracked: allow eye \
+             tracking in the headset's settings. Nothing about them leaves it."
+        }
+        (Status::Tracking, true) => {
+            "Autofocus follows where your eyes look. Nothing about them leaves \
+             the headset."
+        }
+    }
 }
 
 fn playback(ui: &mut egui::Ui, v: &mut View) {
@@ -269,6 +294,14 @@ fn playback(ui: &mut egui::Ui, v: &mut View) {
             4.0,
             " s",
             0,
+        );
+        r.switch(
+            "AV1 film grain",
+            Some(
+                "The grain an AV1 video adds as it plays. Off frees the processor \
+                 for heavy 8K AV1 videos; the picture is a little smoother.",
+            ),
+            &mut s.av1_film_grain,
         );
     });
     heading(ui, "Default format");
@@ -336,6 +369,98 @@ fn video_position(ui: &mut egui::Ui, v: &mut View) {
             " m",
             2,
         );
+    });
+    autofocus(ui, &mut v.settings.autofocus);
+    background(ui, &mut v.settings.background);
+}
+
+/// Autofocus, for every 3D video (see [`crate::autofocus`]).
+fn autofocus(ui: &mut egui::Ui, a: &mut crate::autofocus::AutofocusSettings) {
+    let d = crate::autofocus::AutofocusSettings::default();
+    heading(ui, "Autofocus (experimental)");
+    widgets::rows(ui, |r| {
+        r.switch(
+            "Autofocus",
+            Some(
+                "In every 3D 180°, 360° and fisheye video, what you look at that's \
+                 nearer than below is shown at that distance, so close-ups don't \
+                 split in two.",
+            ),
+            &mut a.enabled,
+        );
+        r.slider(
+            "Nearest distance",
+            Some("Anything closer is pushed back to it."),
+            &mut a.nearest,
+            0.3..=2.0,
+            d.nearest,
+            " m",
+            2,
+        );
+        r.slider(
+            "Refocus time",
+            Some("How long the picture takes to settle on something new."),
+            &mut a.refocus_secs,
+            0.1..=2.0,
+            d.refocus_secs,
+            " s",
+            1,
+        );
+    });
+}
+
+/// Background colours offered as one tap.
+const BACKGROUNDS: [(&str, [f32; 3]); 4] = [
+    ("Black", [0.0, 0.0, 0.0]),
+    ("Dark grey", crate::settings::BACKGROUND),
+    ("Grey", [0.25, 0.25, 0.25]),
+    ("Navy", [0.04, 0.06, 0.16]),
+];
+
+/// The colour around flat videos and the menus while the room doesn't
+/// show. One for all videos, unlike the rest of the tab.
+fn background(ui: &mut egui::Ui, c: &mut [f32; 3]) {
+    let d = crate::settings::BACKGROUND;
+    heading(ui, "Background");
+    widgets::rows(ui, |r| {
+        r.row(
+            "Colour",
+            Some(
+                "Around flat videos and the menus, for every video. Your room \
+                 replaces it while it shows.",
+            ),
+            |ui| {
+                let [cr, cg, cb] = c.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u8);
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(64.0, 32.0), Sense::hover());
+                let p = ui.painter();
+                p.rect_filled(
+                    rect,
+                    egui::CornerRadius::same(8),
+                    Color32::from_rgb(cr, cg, cb),
+                );
+                // Black would vanish into the card without an edge.
+                p.rect_stroke(
+                    rect,
+                    egui::CornerRadius::same(8),
+                    (1.0, theme::STROKE),
+                    egui::StrokeKind::Inside,
+                );
+            },
+        );
+        r.content(|ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+                for (label, preset) in BACKGROUNDS {
+                    let on = c.iter().zip(preset).all(|(a, b)| (a - b).abs() < 0.02);
+                    if widgets::chip(ui, label, on).clicked() {
+                        *c = preset;
+                    }
+                }
+            });
+        });
+        for (i, label) in ["Red", "Green", "Blue"].into_iter().enumerate() {
+            r.slider(label, None, &mut c[i], 0.0..=1.0, d[i], "", 2);
+        }
     });
 }
 

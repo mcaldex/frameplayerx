@@ -4,6 +4,9 @@
 // maps the ray to a video coordinate for the active projection, picks the
 // eye's half of a stereo frame, converts YUV to RGB, applies HDR tone mapping
 // and picture adjustments, and writes linear colour to an sRGB target.
+//
+// focus_main, for autofocus, matches the two eyes' pictures where the
+// viewer looks through the same mapping (see src/focus.rs).
 
 struct Params {
     inv_view_proj: array<mat4x4<f32>, 2>,
@@ -52,6 +55,13 @@ struct Params {
     viewer: vec4<f32>,
     // x: clockwise quarter turns that show the frame upright
     display: vec4<u32>,
+    // Autofocus: xyz where the viewer looks, in the world; w the half-width
+    // of the patch matched round it (tangent of its angle)
+    focus_dir: vec4<f32>,
+    // xyz: the view's right; w: the first disparity tried (radians)
+    focus_right: vec4<f32>,
+    // xyz: the view's up; w: the step to each next disparity (radians)
+    focus_up: vec4<f32>,
 };
 
 struct PushConstants {
@@ -63,6 +73,9 @@ struct PushConstants {
 @group(0) @binding(2) var plane0: texture_2d<f32>;
 @group(0) @binding(3) var plane1: texture_2d<f32>;
 @group(0) @binding(4) var plane2: texture_2d<f32>;
+// Autofocus: per disparity tried, x how well the eyes match (correlation,
+// -1..1), y how much of the patch both eyes' pictures cover (0..1).
+@group(0) @binding(5) var<storage, read_write> focus: array<vec2<f32>>;
 var<immediate> pc: PushConstants;
 
 struct VsOut {
@@ -225,6 +238,34 @@ fn flat_uv(origin: vec3<f32>, d: vec3<f32>) -> vec2<f32> {
     return vec2<f32>(u, v);
 }
 
+// Where a ray in the world meets a 180°/360°, fisheye or EAC video in
+// `eye` (0 left, 1 right), with the eyes' pictures turned `ipd` radians
+// apart: normalised coordinates in the eye's image, or INVALID.
+fn sphere_uv(world_dir: vec3<f32>, eye: u32, ipd: f32) -> vec2<f32> {
+    // In the room frame the video was centred in, so per-eye stereo
+    // corrections stay the eyes' own; then the picture's rotation.
+    let s = select(-0.5, 0.5, eye == 1u);
+    var d = (params.anchor_inv * vec4<f32>(world_dir, 0.0)).xyz;
+    d = rot_y(ipd * s) * d;
+    d = rot_x(params.lens.z * s) * d;
+    d = rot_z(params.lens.w * s) * d;
+    d = normalize((params.correction * vec4<f32>(d, 0.0)).xyz);
+    d = off_centre(d, (params.correction * vec4<f32>(params.viewer.xyz, 0.0)).xyz,
+                   params.viewer.w);
+    d = zoom_dir(d, params.proj.z);
+    let kind = params.mode.x;
+    if (kind == 1u) {
+        return equirect_uv(d, params.proj.x, params.proj.y);
+    }
+    if (kind == 2u) {
+        // The centres belong to the images, so they follow a swap.
+        let slot = select(0u, eye ^ params.mode.z, params.mode.y != 0u);
+        let centre = 0.5 + select(params.centres.xy, params.centres.zw, slot == 1u);
+        return fisheye_uv(d, params.proj.x, params.lens.x, params.lens.y, params.circle.xy, centre);
+    }
+    return eac_uv(d, params.proj.x);
+}
+
 fn to_eye_rect(uv: vec2<f32>, eye: u32) -> vec2<f32> {
     let slot = f32(eye ^ params.mode.z);
     switch params.mode.y {
@@ -309,31 +350,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
 
     var uv: vec2<f32>;
-    let kind = params.mode.x;
-    if (kind == 0u) {
+    if (params.mode.x == 0u) {
         uv = flat_uv(origin, world_dir);
     } else {
-        // In the room frame the video was centred in, so per-eye stereo
-        // corrections stay the eyes' own; then the picture's rotation.
-        let s = select(-0.5, 0.5, eye == 1u);
-        var d = (params.anchor_inv * vec4<f32>(world_dir, 0.0)).xyz;
-        d = rot_y(params.proj.w * s) * d;
-        d = rot_x(params.lens.z * s) * d;
-        d = rot_z(params.lens.w * s) * d;
-        d = normalize((params.correction * vec4<f32>(d, 0.0)).xyz);
-        d = off_centre(d, (params.correction * vec4<f32>(params.viewer.xyz, 0.0)).xyz,
-                       params.viewer.w);
-        d = zoom_dir(d, params.proj.z);
-        if (kind == 1u) {
-            uv = equirect_uv(d, params.proj.x, params.proj.y);
-        } else if (kind == 2u) {
-            // The centres belong to the images, so they follow a swap.
-            let slot = select(0u, eye ^ params.mode.z, params.mode.y != 0u);
-            let centre = 0.5 + select(params.centres.xy, params.centres.zw, slot == 1u);
-            uv = fisheye_uv(d, params.proj.x, params.lens.x, params.lens.y, params.circle.xy, centre);
-        } else {
-            uv = eac_uv(d, params.proj.x);
-        }
+        uv = sphere_uv(world_dir, eye, params.proj.w);
     }
     if (uv.x < 0.0) {
         return params.bg_color;
@@ -399,4 +419,61 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let col = srgb_to_linear(clamp(g, vec3<f32>(0.0), vec3<f32>(1.0)));
     // Over the (premultiplied) background: keyed-out pixels show it.
     return vec4<f32>(col * alpha + params.bg_color.rgb * (1.0 - alpha), alpha + params.bg_color.a * (1.0 - alpha));
+}
+
+// Autofocus: one workgroup per disparity tried. It turns the eyes' pictures
+// that far apart (as the Depth setting does) and correlates their luma over
+// a patch where the viewer looks, weighted towards its middle. Where they
+// match best is how far apart the eyes see what is there.
+const FOCUS_GRID: u32 = 32u;
+const FOCUS_THREADS: u32 = 256u;
+// A flat patch (a wall, the sky) correlates with anything: a variance of
+// luma this small counts for next to nothing.
+const FOCUS_FLAT: f32 = 1e-4;
+
+// Per invocation, then summed: x the weight of the samples both eyes have,
+// y and z the weighted left and right luma, w the weight of every sample;
+// then the weighted squares (x left, y right) and products (z).
+var<workgroup> focus_a: array<vec4<f32>, 256>;
+var<workgroup> focus_b: array<vec4<f32>, 256>;
+
+@compute @workgroup_size(256)
+fn focus_main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_index) li: u32) {
+    let ipd = params.focus_right.w + f32(wg.x) * params.focus_up.w;
+    var a = vec4<f32>(0.0);
+    var b = vec4<f32>(0.0);
+    for (var i = li; i < FOCUS_GRID * FOCUS_GRID; i += FOCUS_THREADS) {
+        let g = (vec2<f32>(f32(i % FOCUS_GRID), f32(i / FOCUS_GRID)) + 0.5) * (2.0 / f32(FOCUS_GRID)) - 1.0;
+        let w = exp(-2.0 * dot(g, g));
+        a.w += w;
+        let d = normalize(params.focus_dir.xyz
+            + (g.x * params.focus_right.xyz - g.y * params.focus_up.xyz) * params.focus_dir.w);
+        let ul = sphere_uv(d, 0u, ipd);
+        let ur = sphere_uv(d, 1u, ipd);
+        if (ul.x < 0.0 || ur.x < 0.0) { continue; }
+        let l = luma_at(stored_uv(to_eye_rect(ul, 0u)));
+        let r = luma_at(stored_uv(to_eye_rect(ur, 1u)));
+        a += vec4<f32>(w, w * l, w * r, 0.0);
+        b += vec4<f32>(w * l * l, w * r * r, w * l * r, 0.0);
+    }
+    focus_a[li] = a;
+    focus_b[li] = b;
+    for (var n = FOCUS_THREADS / 2u; n > 0u; n = n >> 1u) {
+        workgroupBarrier();
+        if (li < n) {
+            focus_a[li] += focus_a[li + n];
+            focus_b[li] += focus_b[li + n];
+        }
+    }
+    if (li == 0u) {
+        let s = focus_a[0];
+        let q = focus_b[0];
+        let w = max(s.x, 1e-6);
+        let ml = s.y / w;
+        let mr = s.z / w;
+        let vl = max(q.x / w - ml * ml, 0.0);
+        let vr = max(q.y / w - mr * mr, 0.0);
+        let cov = q.z / w - ml * mr;
+        focus[wg.x] = vec2<f32>(cov / sqrt((vl + FOCUS_FLAT) * (vr + FOCUS_FLAT)), s.x / max(s.w, 1e-6));
+    }
 }

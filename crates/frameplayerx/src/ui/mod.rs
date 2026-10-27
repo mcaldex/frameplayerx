@@ -758,6 +758,7 @@ pub struct View<'a> {
     pub actions: &'a mut Vec<Action>,
     pub passthrough_available: bool,
     pub devices: &'a [fp_haptics::DeviceStatus],
+    pub eyes: crate::gaze::Status,
 }
 
 #[cfg(test)]

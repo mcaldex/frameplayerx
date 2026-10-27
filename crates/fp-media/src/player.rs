@@ -8,6 +8,10 @@
 //! Every seek bumps a generation counter ("serial"); packets and frames of an
 //! older generation are discarded wherever they are found.
 //!
+//! A software decoder that can't keep up leaves out the pictures nothing
+//! else is decoded from for a while (`CatchUp`), so the video plays at a
+//! lower frame rate rather than stopping to buffer.
+//!
 //! The renderer drives presentation by calling [`Player::current_frame`] once
 //! per display frame; that call also resolves buffering and end of stream.
 
@@ -26,7 +30,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug)]
 pub struct PlayerConfig {
@@ -644,6 +648,68 @@ fn pick_due(pts: impl Iterator<Item = f64>, t: f64, late: f64) -> Option<usize> 
     newest_due
 }
 
+/// Decides when a software decoder that can't keep up leaves out the pictures
+/// no other picture is decoded from ([`Decoder::catch_up`]), so the video
+/// plays at a lower frame rate instead of stopping to buffer. It starts once a few
+/// frames in a row come out of the decoder too late to be shown on time, and
+/// stops after [`CatchUp::HOLD`] to try every picture again; falling behind
+/// again soon after doubles how long the next time lasts.
+#[derive(Debug)]
+struct CatchUp {
+    /// Since when pictures are left out.
+    since: Option<Instant>,
+    /// When leaving them out last stopped.
+    stopped: Option<Instant>,
+    /// How long pictures are left out each time.
+    hold: Duration,
+    /// Frames in a row that came out too late.
+    late: u32,
+}
+
+impl Default for CatchUp {
+    fn default() -> Self {
+        CatchUp {
+            since: None,
+            stopped: None,
+            hold: Self::HOLD,
+            late: 0,
+        }
+    }
+}
+
+impl CatchUp {
+    const LATE_FRAMES: u32 = 3;
+    const HOLD: Duration = Duration::from_secs(10);
+    const MAX_HOLD: Duration = Duration::from_secs(120);
+
+    /// Takes how late a frame lasting `duration` came out of the decoder at
+    /// `now` (seconds of media, negative when early), and returns whether to
+    /// leave pictures out.
+    fn update(&mut self, late: f64, duration: f64, now: Instant) -> bool {
+        if let Some(since) = self.since {
+            if now.duration_since(since) >= self.hold {
+                self.since = None;
+                self.stopped = Some(now);
+            }
+            return self.since.is_some();
+        }
+        self.late = if late > duration { self.late + 1 } else { 0 };
+        if self.late >= Self::LATE_FRAMES {
+            self.late = 0;
+            let soon = self
+                .stopped
+                .is_some_and(|t| now.duration_since(t) < self.hold);
+            self.hold = if soon {
+                (self.hold * 2).min(Self::MAX_HOLD)
+            } else {
+                Self::HOLD
+            };
+            self.since = Some(now);
+        }
+        self.since.is_some()
+    }
+}
+
 fn spawn(name: &str, f: impl FnOnce() + Send + 'static) -> JoinHandle<()> {
     match std::thread::Builder::new().name(name.into()).spawn(f) {
         Ok(h) => h,
@@ -796,6 +862,8 @@ fn video_thread(sh: Arc<Shared>, mut dec: Decoder, cap: usize) {
     let mut conv = FrameConverter::default();
     let default_duration = 1.0 / sh.video_fps.max(1.0);
     let mut hardware = dec.hardware;
+    let mut catch_up = CatchUp::default();
+    let (mut catching_up, mut skipped) = (false, 0);
     while !sh.quit.load(Ordering::Acquire) {
         let Some((pkt_serial, pkt)) = sh.vpkts.pop(Duration::from_millis(20)) else {
             continue;
@@ -848,6 +916,23 @@ fn video_thread(sh: Arc<Shared>, mut dec: Decoder, cap: usize) {
                                 continue;
                             }
                         };
+                        if sh.clock.running() {
+                            let late = sh.clock.now() - pts;
+                            let on = catch_up.update(late, dur, Instant::now());
+                            if dec.catch_up(on) && on != catching_up {
+                                if on {
+                                    log::info!(
+                                        "{}: decoding falls behind, leaving out pictures \
+                                         nothing else needs for {} s",
+                                        dec.name,
+                                        catch_up.hold.as_secs()
+                                    );
+                                } else {
+                                    log::info!("{}: decoding every picture again", dec.name);
+                                }
+                            }
+                            catching_up = on;
+                        }
                         // Wait for room in the frame queue.
                         let mut q = sh.frames();
                         while q.len() >= cap
@@ -883,6 +968,12 @@ fn video_thread(sh: Arc<Shared>, mut dec: Decoder, cap: usize) {
             if accepted || sh.quit.load(Ordering::Acquire) || sh.serial() != serial {
                 break;
             }
+        }
+        if dec.skipped != skipped {
+            // Never shown, so dropped as far as the overlay and the
+            // falling-behind notice are concerned.
+            sh.stats().frames_dropped += dec.skipped - skipped;
+            skipped = dec.skipped;
         }
     }
 }
@@ -1085,6 +1176,48 @@ mod tests {
             std::thread::sleep(Duration::from_millis(11));
         }
         shown
+    }
+
+    #[test]
+    fn catching_up_starts_when_behind_and_tries_again_later() {
+        let frame = 1.0 / 60.0;
+        let start = Instant::now();
+        let at = |s: f64| start + Duration::from_secs_f64(s);
+        let mut c = CatchUp::default();
+        let late_from = |c: &mut CatchUp, s: f64| {
+            (0..CatchUp::LATE_FRAMES)
+                .map(|i| c.update(0.05, frame, at(s + i as f64 * 0.1)))
+                .collect::<Vec<_>>()
+        };
+        // Early or on time, and late now and then: every picture.
+        for (i, late) in [-0.1, 0.0, 0.05, 0.05, frame, 0.05, 0.0]
+            .into_iter()
+            .enumerate()
+        {
+            assert!(!c.update(late, frame, at(i as f64 * 0.1)), "frame {i}");
+        }
+        // Late frames in a row: pictures are left out for a while.
+        assert_eq!(late_from(&mut c, 1.0), [false, false, true]);
+        assert!(c.update(-0.1, frame, at(11.1)));
+        assert!(!c.update(-0.1, frame, at(11.3)));
+        // Behind again soon: twice as long.
+        assert_eq!(late_from(&mut c, 12.0), [false, false, true]);
+        assert_eq!(c.hold, CatchUp::HOLD * 2);
+        assert!(c.update(-0.1, frame, at(32.1)));
+        assert!(!c.update(-0.1, frame, at(32.3)));
+        // Behind again much later: as long as the first time.
+        assert_eq!(late_from(&mut c, 100.0), [false, false, true]);
+        assert_eq!(c.hold, CatchUp::HOLD);
+        assert!(!c.update(-0.1, frame, at(110.3)));
+        // However often it falls behind, it tries again within two minutes.
+        let mut s = 111.0;
+        for _ in 0..6 {
+            assert_eq!(late_from(&mut c, s), [false, false, true]);
+            s += 0.2 + c.hold.as_secs_f64() + 0.1;
+            assert!(!c.update(-0.1, frame, at(s)));
+            s += 0.5;
+        }
+        assert_eq!(c.hold, CatchUp::MAX_HOLD);
     }
 
     #[test]

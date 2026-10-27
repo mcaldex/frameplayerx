@@ -48,11 +48,18 @@ pub enum SubtitleMode {
 /// Settings › Interface size: the sizes offered.
 pub const UI_SCALES: std::ops::RangeInclusive<f32> = 0.8..=1.5;
 
+/// Settings › Video position › Background: the colour it starts as, a
+/// near-black grey.
+pub const BACKGROUND: [f32; 3] = [0.086, 0.086, 0.11];
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// Use the V4L2 hardware decoder when available.
     pub hardware_decoding: bool,
+    /// Add the film grain AV1 videos ask for (see
+    /// [`fp_media::set_av1_film_grain`]).
+    pub av1_film_grain: bool,
     /// ALSA device ("default" routes to PipeWire on SteamOS).
     pub audio_device: String,
     pub volume: f32,
@@ -63,6 +70,14 @@ pub struct Settings {
     pub default_view: ViewSettings,
     /// Show the real world around flat screens and the UI.
     pub passthrough: bool,
+    /// The colour around flat screens and the UI while the room doesn't
+    /// show: sRGB, 0 to 1 per channel.
+    pub background: [f32; 3],
+    /// Experimental: close-ups in 3D videos shown further away.
+    pub autofocus: crate::autofocus::AutofocusSettings,
+    /// What follows where you look uses the eye tracker, on a headset with
+    /// one (see [`crate::gaze`]).
+    pub eye_tracking: bool,
     /// Resume videos where they were left.
     pub resume: bool,
     /// The format a video starts in when nothing identifies it (no
@@ -114,6 +129,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             hardware_decoding: true,
+            av1_film_grain: true,
             audio_device: "default".into(),
             volume: 1.0,
             subtitles: SubtitleMode::default(),
@@ -124,6 +140,9 @@ impl Default for Settings {
                 .to_string(),
             default_view: ViewSettings::default(),
             passthrough: false,
+            background: BACKGROUND,
+            autofocus: Default::default(),
+            eye_tracking: true,
             resume: true,
             default_format: fp_core::format::VideoFormat::FALLBACK,
             auto_hide_secs: 4.0,
@@ -245,6 +264,12 @@ mod tests {
         assert_eq!(p.seek_step, 10.0);
         assert!(!p.haptics_enabled, "haptics stay off until turned on");
         assert_eq!(p.default_format, fp_core::format::VideoFormat::FALLBACK);
+        assert_eq!(p.background, BACKGROUND, "older files keep today's colour");
+        assert!(!p.autofocus.enabled, "autofocus stays off until turned on");
+        assert!(
+            p.eye_tracking,
+            "the eyes are used where the headset has them"
+        );
         // Saved before the global chroma key: the old green default goes.
         std::fs::write(
             &path,

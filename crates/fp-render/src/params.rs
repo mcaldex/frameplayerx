@@ -34,6 +34,8 @@ pub(crate) struct SceneParams {
     pub key2: Vec4,
     pub viewer: Vec4,
     pub display: [u32; 4],
+    /// Autofocus's patch and disparities (see [`crate::focus::aim`]).
+    pub focus: [Vec4; 3],
 }
 
 /// Everything about the video that the projection pass needs, other than
@@ -58,6 +60,12 @@ pub struct VideoParams {
     /// Width of a video pixel relative to its height: anamorphic video is
     /// shown this much wider than it is stored.
     pub pixel_aspect: f32,
+    /// Read the disparity where this direction in the world meets the
+    /// video, for autofocus: where the viewer looks (their gaze, or
+    /// straight ahead). It comes back from
+    /// [`Renderer::focus`](crate::Renderer::focus) once the GPU is done
+    /// with the frame. Only a video [`crate::focus::applies`] to is read.
+    pub focus: Option<glam::Vec3>,
 }
 
 impl Default for VideoParams {
@@ -70,6 +78,7 @@ impl Default for VideoParams {
             anchor: Quat::IDENTITY,
             rotation: 0,
             pixel_aspect: 1.0,
+            focus: None,
         }
     }
 }
@@ -92,7 +101,9 @@ pub(crate) fn yuv_matrix(color: &ColorInfo, layout: PixelLayout) -> ([Vec4; 3], 
     };
     let kg = 1.0 - kr - kb;
     let bits = match layout {
-        PixelLayout::I420 { bits } => bits,
+        PixelLayout::I420 { bits } | PixelLayout::I422 { bits } | PixelLayout::I444 { bits } => {
+            bits
+        }
         PixelLayout::Nv12 => 8,
         PixelLayout::P010 | PixelLayout::DrmPrime | PixelLayout::Q10c => 10,
     };
@@ -100,7 +111,9 @@ pub(crate) fn yuv_matrix(color: &ColorInfo, layout: PixelLayout) -> ([Vec4; 3], 
     // Sample scale: values are normalised by the texture format's range.
     // Q10C frames are converted into P010 planes.
     let scale = match layout {
-        PixelLayout::I420 { bits: 10 } => 65535.0 / 1023.0,
+        PixelLayout::I420 { bits: 10 }
+        | PixelLayout::I422 { bits: 10 }
+        | PixelLayout::I444 { bits: 10 } => 65535.0 / 1023.0,
         PixelLayout::P010 | PixelLayout::Q10c => 65535.0 / 65472.0,
         _ => 1.0,
     };
@@ -155,8 +168,12 @@ pub(crate) fn build(
     let (rows, offset, layout_code, tex) = match frame {
         Some(f) => {
             let (rows, off) = yuv_matrix(&f.color, f.layout);
+            // Three planes, or luma and interleaved chroma. The shader samples
+            // chroma by position, whatever its subsampling.
             let lc = match f.layout {
-                PixelLayout::I420 { .. } => 0u32,
+                PixelLayout::I420 { .. } | PixelLayout::I422 { .. } | PixelLayout::I444 { .. } => {
+                    0u32
+                }
                 _ => 1,
             };
             (rows, off, lc, (f.width.max(1), f.height.max(1)))
@@ -244,6 +261,7 @@ pub(crate) fn build(
         ),
         viewer: glam::vec3(0.0, s.height, -s.forward).extend(SPHERE_RADIUS),
         display: [turns, 0, 0, 0],
+        focus: [Vec4::ZERO; 3],
     }
 }
 
