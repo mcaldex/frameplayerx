@@ -345,6 +345,11 @@ real shape. A portrait video's screen is as tall as **Screen width**.
 When a 3D file's metadata says the right eye comes first, the eyes are
 swapped to match.
 
+Around a flat screen, and behind the menus, is a near-black grey.
+Settings › Video position › **Background** picks another colour (black,
+grey, navy, or any colour with the red/green/blue sliders) for every
+video. Your room replaces it while it shows.
+
 3D Blu-ray rips (MKV from MakeMKV, the disc's H.264 MVC video) play as full
 3D, each eye at full 1080p, on the Frame's hardware decoder. The few
 streams it can't take that way (none of the discs tried) play their left
