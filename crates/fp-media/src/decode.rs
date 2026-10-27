@@ -354,6 +354,9 @@ pub struct Decoder {
     catching_up: bool,
     /// Packets left out to catch up.
     pub(crate) skipped: u64,
+    /// Where a software decoder's pictures go (its `get_buffer2`'s
+    /// `opaque`), when there is frame memory; outlives `ctx`.
+    pictures: Option<Box<crate::memory::Pictures>>,
 }
 
 /// What a precise seek leaves out: frames shown mostly before its target.
@@ -469,6 +472,7 @@ impl Decoder {
             left_out: 0,
             catching_up: false,
             skipped: 0,
+            pictures: None,
         };
         dec.follow_mvc();
         Ok(dec)
@@ -581,6 +585,7 @@ impl Decoder {
             left_out: 0,
             catching_up: false,
             skipped: 0,
+            pictures: None,
         })
     }
 
@@ -623,6 +628,7 @@ impl Decoder {
                 left_out: 0,
                 catching_up: false,
                 skipped: 0,
+                pictures: None,
             };
             if hardware {
                 HW_SESSIONS.fetch_add(1, Ordering::Relaxed); // until Drop
@@ -650,6 +656,17 @@ impl Decoder {
                 (*ctx).thread_count = 0; // auto
                 (*ctx).thread_type = (ff::FF_THREAD_FRAME | ff::FF_THREAD_SLICE) as i32;
             }
+            let video = (*par).codec_type == ff::AVMEDIA_TYPE_VIDEO;
+            let own_buffers = (*codec).capabilities & ff::AV_CODEC_CAP_DR1 as i32 != 0;
+            if let Some(memory) = crate::memory::frame_memory()
+                .filter(|_| video && !hardware && !stills && own_buffers)
+            {
+                let pictures = dec
+                    .pictures
+                    .insert(Box::new(crate::memory::Pictures::new(memory)));
+                (*ctx).opaque = (&raw mut **pictures).cast();
+                (*ctx).get_buffer2 = Some(crate::memory::get_buffer2);
+            }
             let mut opts: *mut ff::AVDictionary = std::ptr::null_mut();
             if hardware {
                 // An 8K capture buffer is 48 MiB and the player's frame queue
@@ -659,7 +676,6 @@ impl Decoder {
                 let v = CString::new("8").unwrap_or_default();
                 ff::av_dict_set(&mut opts, k.as_ptr(), v.as_ptr(), 0);
             }
-            let video = (*par).codec_type == ff::AVMEDIA_TYPE_VIDEO;
             let r = if video && !hardware && !stills {
                 let open = Open {
                     ctx,

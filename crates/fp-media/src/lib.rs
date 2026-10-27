@@ -9,6 +9,8 @@
 //!   Q10C), with the Steam Frame's admission-check workaround.
 //! - `mvc`: 3D Blu-ray video (H.264 MVC) on a plain H.264 decoder.
 //! - [`frame`]: decoded video frames in GPU-uploadable layouts.
+//! - `memory`: the memory decoders write pictures into, which the renderer
+//!   can offer so they reach the GPU without a copy.
 //! - [`player`]: the threaded player with a video-master clock.
 //! - [`audio`]: output, time-stretch and ambisonic rendering.
 //! - [`thumb`]: probing and frame grabs for the library.
@@ -21,6 +23,7 @@ pub mod frame;
 pub mod info;
 pub(crate) mod input;
 pub(crate) mod io;
+pub(crate) mod memory;
 pub(crate) mod mvc;
 pub(crate) mod nal;
 pub mod player;
@@ -36,6 +39,7 @@ pub use decode::{
 };
 pub use frame::{ColorInfo, PixelLayout, Q10cPicture, VideoFrame};
 pub use info::{MediaInfo, StreamInfo, StreamKind};
+pub use memory::{BLOCK_ALIGN, Block, FrameMemory, set_frame_memory};
 pub use player::{Player, PlayerConfig, PlayerState, Stats};
 pub use subtitle::Cue;
 

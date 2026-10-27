@@ -404,6 +404,7 @@ fn run_xr(args: &Args) -> Result<(), Error> {
     );
     let mut renderer = Renderer::new(gpu.clone(), session.format)?;
     fp_media::set_hevc_10bit_hardware(renderer.shows_q10c());
+    fp_media::set_frame_memory(renderer.frame_memory());
     let mut app = make_app()?;
     app.set_about(vec![
         ("OpenXR runtime".into(), ctx.runtime.clone()),
@@ -598,6 +599,8 @@ fn run_xr(args: &Args) -> Result<(), Error> {
     }
     renderer.wait_idle();
     app.shutdown();
+    // Pictures still in decode memory keep the device until they are freed.
+    fp_media::set_frame_memory(None);
     drop(renderer);
     drop(session);
     drop(gpu);

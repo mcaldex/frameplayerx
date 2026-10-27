@@ -6,6 +6,7 @@
 //! garbage list and are destroyed when the slot comes round again, by which
 //! time no submitted frame can still read them.
 
+use crate::decode_memory::DecodeMemory;
 use crate::gpu::Gpu;
 use crate::mem::{self, Buffer, Image};
 use crate::params::{self, SceneParams, VideoParams};
@@ -172,6 +173,8 @@ pub struct Renderer {
     video_gen: [u64; 2],
     /// Shows hardware-decoded 10-bit frames, on GPUs that can.
     q10c: Option<Converter>,
+    /// Where decoders write pictures for the GPU to copy as they are.
+    decode_memory: Option<DecodeMemory>,
     current: usize,
     recording: bool,
 }
@@ -354,6 +357,7 @@ impl Renderer {
                 video_cur: 0,
                 video_gen: [0, 0],
                 q10c: Converter::new(&gpu),
+                decode_memory: DecodeMemory::new(&gpu),
                 current: 0,
                 recording: false,
             };
@@ -694,6 +698,7 @@ impl Renderer {
                 f,
                 &mut slot.garbage,
                 self.q10c.as_ref(),
+                self.decode_memory.as_ref(),
             ) {
                 Ok(recreated) => {
                     if recreated {
@@ -717,6 +722,15 @@ impl Renderer {
         }
         slot.has_video = true;
         Ok(())
+    }
+
+    /// Memory for decoders to write pictures into, which the GPU copies them
+    /// from as they are ([`fp_media::set_frame_memory`]); `None` on GPUs
+    /// without coherent host-visible memory.
+    pub fn frame_memory(&self) -> Option<Arc<dyn fp_media::FrameMemory>> {
+        self.decode_memory
+            .clone()
+            .map(|m| Arc::new(m) as Arc<dyn fp_media::FrameMemory>)
     }
 
     /// Whether hardware-decoded 10-bit HEVC ([`fp_media::PixelLayout::Q10c`]

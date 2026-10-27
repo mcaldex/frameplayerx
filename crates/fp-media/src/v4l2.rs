@@ -30,7 +30,9 @@
 //! Seeks never restart a queue (that would re-run the check): queued
 //! bitstream from before the seek is decoded and its frames are dropped by
 //! timestamp. Decoded frames are copied out of the driver's buffers into
-//! pooled `AVFrame`s, so the CAPTURE buffers go straight back to the decoder.
+//! pooled `AVFrame`s, so the CAPTURE buffers go straight back to the decoder;
+//! 8-bit pictures go into the frame memory the renderer offers
+//! ([`crate::memory`]), which the GPU copies them from.
 //!
 //! 10-bit HEVC comes out correctly only as Q10C, Qualcomm's compressed TP10
 //! ([`Q10cLayout`]): asked for NV12, the decoder clamps the 10-bit samples
@@ -613,6 +615,7 @@ mod linux {
     use super::sys::*;
     use super::*;
     use crate::decode::Packet;
+    use crate::memory::BlockPool;
     use crate::{Error, Result};
     use fp_ffmpeg_sys as ff;
     use std::collections::VecDeque;
@@ -774,8 +777,8 @@ mod linux {
         finished: bool,
         /// A LAST buffer was dequeued; handled on the next receive.
         last_seen: bool,
-        pool: *mut ff::AVBufferPool,
-        pool_size: usize,
+        /// What pictures are copied out into.
+        pool: Option<BlockPool>,
         color: (
             ff::AVColorRange,
             ff::AVColorSpace,
@@ -798,12 +801,8 @@ mod linux {
                 let mut t = t as i32;
                 let _ = ioctl(&self.fd, VIDIOC_STREAMOFF, &mut t);
             }
-            // SAFETY: frees our own filter and pool (the pool lives on until
-            // frames still holding its buffers are freed).
-            unsafe {
-                ff::av_bsf_free(&mut self.bsf);
-                ff::av_buffer_pool_uninit(&mut self.pool);
-            }
+            // SAFETY: frees our own filter.
+            unsafe { ff::av_bsf_free(&mut self.bsf) };
         }
     }
 
@@ -954,8 +953,7 @@ mod linux {
                 stop_sent: false,
                 finished: false,
                 last_seen: false,
-                pool: std::ptr::null_mut(),
-                pool_size: 0,
+                pool: None,
                 color: (p.color_range, p.color_space, p.color_trc, p.color_primaries),
                 frames: 0,
                 interrupt: None,
@@ -1483,19 +1481,23 @@ mod linux {
                     "V4L2: picture exceeds its buffer".into(),
                 ));
             }
-            let size = match layout {
-                Layout::Nv12(l) => l.copy_size(),
-                Layout::Q10c(l) => l.size,
+            let (size, nv12) = match layout {
+                Layout::Nv12(l) => (l.copy_size(), true),
+                Layout::Q10c(l) => (l.size, false),
             };
+            if self.pool.as_ref().is_none_or(|p| p.len() != size + 64) {
+                // Only the CPU reads Q10C pictures (copying them for the GPU
+                // to convert), so they stay in ordinary memory.
+                let memory = crate::memory::frame_memory().filter(|_| nv12);
+                self.pool = Some(BlockPool::new(memory, size + 64, false));
+            }
             // SAFETY: pool buffers hold `size` bytes; the source mapping holds
             // layout.end() bytes; frame is a valid AVFrame we refill.
             unsafe {
-                if self.pool.is_null() || self.pool_size != size {
-                    ff::av_buffer_pool_uninit(&mut self.pool);
-                    self.pool = ff::av_buffer_pool_init(size + 64, None);
-                    self.pool_size = size;
-                }
-                let buf = ff::av_buffer_pool_get(self.pool);
+                let buf = self
+                    .pool
+                    .as_ref()
+                    .map_or(std::ptr::null_mut(), BlockPool::get);
                 if buf.is_null() {
                     return Err(Error::Unsupported("V4L2: out of memory for a frame".into()));
                 }
