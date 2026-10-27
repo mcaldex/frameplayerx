@@ -1,6 +1,6 @@
 //! The performance overlay (Settings › About › Diagnostics): frame time,
-//! the video's frame rate and decoder, CPU, GPU and memory, in a small
-//! panel low in your view.
+//! the video's frame rate and decoder, CPU, GPU and memory, and where the
+//! eyes look, in a small panel low in your view.
 
 use super::theme::{self, Weight};
 use crate::perf::Sample;
@@ -17,6 +17,9 @@ pub struct Overlay {
     /// The video's frames shown and dropped per second, and its decoder
     /// ("HW · HEVC 10-bit").
     pub video: Option<(f32, f32, String)>,
+    /// On a headset with an eye tracker: where the eyes look from where
+    /// the head faces, degrees right and up, or `None` while not tracked.
+    pub eyes: Option<Option<[f32; 2]>>,
     pub sample: Option<Sample>,
 }
 
@@ -82,6 +85,22 @@ pub fn rows(o: &Overlay) -> Vec<(&'static str, String, bool)> {
         },
         false,
     ));
+    if let Some(eyes) = o.eyes {
+        rows.push((
+            "Eyes",
+            match eyes {
+                Some([right, up]) => format!(
+                    "{:.0}° {} · {:.0}° {}",
+                    right.abs(),
+                    if right < 0.0 { "left" } else { "right" },
+                    up.abs(),
+                    if up < 0.0 { "down" } else { "up" }
+                ),
+                None => "not tracked".into(),
+            },
+            false,
+        ));
+    }
     rows
 }
 
@@ -125,6 +144,7 @@ mod tests {
             frame_ms: Some((6.12, 12.4)),
             display_hz: Some(90.0),
             video: Some((59.94, 0.0, "HW · HEVC 10-bit".into())),
+            eyes: None,
             sample: Some(Sample {
                 cpu: Some(34.4),
                 app_cpu: Some(21.0),
@@ -145,6 +165,20 @@ mod tests {
         assert_eq!(r[3].1, "34% · app 21%");
         assert_eq!(r[4].1, "41% · 680 MHz");
         assert_eq!(r[5].1, "5.0 of 15.0 GB · app 1.5 GB");
+        assert_eq!(r.len(), 6, "no eye line without an eye tracker");
+        let tracked = Overlay {
+            eyes: Some(Some([-12.4, 3.0])),
+            ..o.clone()
+        };
+        assert_eq!(
+            rows(&tracked)[6],
+            ("Eyes", "12° left · 3° up".into(), false)
+        );
+        let lost = Overlay {
+            eyes: Some(None),
+            ..o
+        };
+        assert_eq!(rows(&lost)[6].1, "not tracked");
 
         // Nothing known yet, no video: a dash rather than a made-up zero.
         let r = rows(&Overlay::default());

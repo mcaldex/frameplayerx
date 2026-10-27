@@ -60,11 +60,12 @@ pub struct VideoParams {
     /// Width of a video pixel relative to its height: anamorphic video is
     /// shown this much wider than it is stored.
     pub pixel_aspect: f32,
-    /// Read the disparity at the centre of view for autofocus: it comes
-    /// back from [`Renderer::focus`](crate::Renderer::focus) once the GPU
-    /// is done with the frame. Only a video [`crate::focus::applies`] to
-    /// is read.
-    pub focus: bool,
+    /// Read the disparity where this direction in the world meets the
+    /// video, for autofocus: where the viewer looks (their gaze, or
+    /// straight ahead). It comes back from
+    /// [`Renderer::focus`](crate::Renderer::focus) once the GPU is done
+    /// with the frame. Only a video [`crate::focus::applies`] to is read.
+    pub focus: Option<glam::Vec3>,
 }
 
 impl Default for VideoParams {
@@ -77,7 +78,7 @@ impl Default for VideoParams {
             anchor: Quat::IDENTITY,
             rotation: 0,
             pixel_aspect: 1.0,
-            focus: false,
+            focus: None,
         }
     }
 }

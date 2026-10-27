@@ -7,12 +7,15 @@
 //! - [`session`]: session lifecycle, per-eye swapchains, the frame loop.
 //! - [`input`]: controller actions with bindings for the Steam Frame
 //!   controller and common fallbacks.
+//! - [`gaze`]: eye tracking, where the eyes look.
 
 pub mod context;
+pub mod gaze;
 pub mod input;
 pub mod session;
 
 pub use context::XrContext;
+pub use gaze::Gaze;
 pub use input::{BoundProfile, Hand, InputState};
 pub use session::{FrameCtx, QuadSubmit, SessionEvent, XrSession};
 

@@ -217,6 +217,11 @@ fn general(ui: &mut egui::Ui, v: &mut View) {
             &mut s.follow,
         );
         r.switch(
+            "Eye tracking",
+            Some(eye_tracking_note(v.eyes, s.eye_tracking)),
+            &mut s.eye_tracking,
+        );
+        r.switch(
             "Haptic devices",
             Some("Sync connected haptic devices with videos that have scripts."),
             &mut s.haptics_enabled,
@@ -232,12 +237,32 @@ fn general(ui: &mut egui::Ui, v: &mut View) {
         r.switch(
             "Performance overlay",
             Some(
-                "Frame time, the video's frame rate and decoder, CPU, GPU and memory, \
-                 low in your view.",
+                "Frame time, the video's frame rate and decoder, CPU, GPU, memory \
+                 and where your eyes look, low in your view.",
             ),
             &mut s.perf_overlay,
         );
     });
+}
+
+/// What the Eye tracking switch does, with what the headset offers.
+fn eye_tracking_note(eyes: crate::gaze::Status, on: bool) -> &'static str {
+    use crate::gaze::Status;
+    match (eyes, on) {
+        (Status::None, _) => {
+            "This headset doesn't share where your eyes look, so autofocus \
+             follows your head."
+        }
+        (_, false) => "Autofocus follows your head, not your eyes.",
+        (Status::Offered, true) => {
+            "Autofocus follows your eyes once they're tracked: allow eye \
+             tracking in the headset's settings. Nothing about them leaves it."
+        }
+        (Status::Tracking, true) => {
+            "Autofocus follows where your eyes look. Nothing about them leaves \
+             the headset."
+        }
+    }
 }
 
 fn playback(ui: &mut egui::Ui, v: &mut View) {

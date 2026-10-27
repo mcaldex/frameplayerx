@@ -1,5 +1,6 @@
 //! Autofocus's reading, on a real (software) Vulkan device: 3D 180° videos
-//! of a textured wall the eyes see a known disparity apart.
+//! of a textured wall the eyes see a known disparity apart, read straight
+//! ahead or where the eyes look.
 
 use fp_core::format::{Projection, StereoLayout, VideoFormat};
 use fp_core::view::ViewSettings;
@@ -52,13 +53,19 @@ fn wall(lon: f32, lat: f32) -> u8 {
 /// the right of where the right eye does, as a camera pair sees something
 /// near.
 fn stereo_wall(disparity: f32) -> Arc<fp_media::VideoFrame> {
+    stereo_scene(|_| disparity)
+}
+
+/// Like [`stereo_wall`], `disparity(longitude)` degrees apart, longitude in
+/// degrees right of the front.
+fn stereo_scene(disparity: impl Fn(f32) -> f32) -> Arc<fp_media::VideoFrame> {
     let (w, h) = (EYE * 2, EYE / 2);
     let mut rgba = Vec::with_capacity((w * h * 4) as usize);
     for y in 0..h {
         let lat = (0.5 - (y as f32 + 0.5) / h as f32) * 180.0;
         for x in 0..w {
             let lon = ((x % EYE) as f32 + 0.5) / EYE as f32 * 180.0 - 90.0;
-            let shift = if x < EYE { -0.5 } else { 0.5 } * disparity;
+            let shift = if x < EYE { -0.5 } else { 0.5 } * disparity(lon);
             let g = wall(lon + shift, lat);
             rgba.extend_from_slice(&[g, g, g, 255]);
         }
@@ -78,7 +85,7 @@ fn video(stereo: StereoLayout, settings: ViewSettings) -> VideoParams {
     VideoParams {
         format: VideoFormat::new(Projection::EQUIRECT_180, stereo),
         settings,
-        focus: true,
+        focus: Some(Vec3::NEG_Z),
         ..Default::default()
     }
 }
@@ -131,12 +138,39 @@ fn reads_how_far_apart_the_eyes_see_what_is_ahead() {
         (9.0, Quat::from_rotation_y(0.4) * Quat::from_rotation_x(0.3)),
     ] {
         let f = stereo_wall(disparity);
-        let p = video(StereoLayout::SideBySide, ViewSettings::default());
+        let p = VideoParams {
+            focus: Some(head * Vec3::NEG_Z),
+            ..video(StereoLayout::SideBySide, ViewSettings::default())
+        };
         let (got, _) = look(&mut r, &mut e, &f, &p, head);
         let got = got.unwrap_or_else(|| panic!("{disparity}°: no reading"));
         assert!(
             (got.disparity - disparity).abs() < 0.3,
             "{disparity}°: read {got:?}"
+        );
+    }
+    e.destroy(&r);
+}
+
+#[test]
+fn reads_where_the_eyes_look_not_where_the_head_points() {
+    let Some((mut r, mut e)) = setup() else {
+        return;
+    };
+    // Something near on the left, further on the right; the head faces the
+    // front, where they meet.
+    let f = stereo_scene(|lon| if lon < 0.0 { 12.0 } else { 4.0 });
+    for (yaw, disparity) in [(25.0f32, 12.0), (-25.0, 4.0)] {
+        let gaze = Quat::from_rotation_y(yaw.to_radians()) * Vec3::NEG_Z;
+        let p = VideoParams {
+            focus: Some(gaze),
+            ..video(StereoLayout::SideBySide, ViewSettings::default())
+        };
+        let (got, _) = look(&mut r, &mut e, &f, &p, Quat::IDENTITY);
+        let got = got.unwrap_or_else(|| panic!("looking {yaw}°: no reading"));
+        assert!(
+            (got.disparity - disparity).abs() < 0.3,
+            "looking {yaw}°: read {got:?}"
         );
     }
     e.destroy(&r);
@@ -185,7 +219,7 @@ fn reads_nothing_it_cannot_trust() {
     let p = video(StereoLayout::SideBySide, ViewSettings::default());
     assert_eq!(look(&mut r, &mut e, &blank, &p, Quat::IDENTITY).0, None);
     // Not asked, nothing is read.
-    let p = VideoParams { focus: false, ..p };
+    let p = VideoParams { focus: None, ..p };
     assert_eq!(look(&mut r, &mut e, &f, &p, Quat::IDENTITY).0, None);
     e.destroy(&r);
 }

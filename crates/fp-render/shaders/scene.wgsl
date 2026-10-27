@@ -5,8 +5,8 @@
 // eye's half of a stereo frame, converts YUV to RGB, applies HDR tone mapping
 // and picture adjustments, and writes linear colour to an sRGB target.
 //
-// focus_main, for autofocus, matches the two eyes' pictures at the centre
-// of view through the same mapping (see src/focus.rs).
+// focus_main, for autofocus, matches the two eyes' pictures where the
+// viewer looks through the same mapping (see src/focus.rs).
 
 struct Params {
     inv_view_proj: array<mat4x4<f32>, 2>,
@@ -55,8 +55,8 @@ struct Params {
     viewer: vec4<f32>,
     // x: clockwise quarter turns that show the frame upright
     display: vec4<u32>,
-    // Autofocus: xyz the centre of view in the world, w the half-width of
-    // the patch matched round it (tangent of its angle)
+    // Autofocus: xyz where the viewer looks, in the world; w the half-width
+    // of the patch matched round it (tangent of its angle)
     focus_dir: vec4<f32>,
     // xyz: the view's right; w: the first disparity tried (radians)
     focus_right: vec4<f32>,
@@ -423,7 +423,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
 // Autofocus: one workgroup per disparity tried. It turns the eyes' pictures
 // that far apart (as the Depth setting does) and correlates their luma over
-// a patch at the centre of view, weighted towards its middle. Where they
+// a patch where the viewer looks, weighted towards its middle. Where they
 // match best is how far apart the eyes see what is there.
 const FOCUS_GRID: u32 = 32u;
 const FOCUS_THREADS: u32 = 256u;

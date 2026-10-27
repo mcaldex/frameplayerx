@@ -40,6 +40,10 @@ pub struct FrameInput {
     pub dt: f32,
     pub head: Option<(Vec3, Quat)>,
     pub hands: [Hand; 2],
+    /// Where the eyes look, while the headset tracks them.
+    pub gaze: Option<fp_xr::Gaze>,
+    /// The headset has an eye tracker (it may not report yet).
+    pub eye_tracker: bool,
     pub passthrough_available: bool,
     /// The compositor can draw panels and rays as quad layers (OpenXR);
     /// otherwise (the desktop preview) everything is drawn into the eyes.
@@ -128,6 +132,9 @@ pub struct App {
     perf_monitor: Option<crate::perf::Monitor>,
     frame_times: std::collections::VecDeque<f32>,
     perf_video: Option<(Instant, u64, u64)>,
+    /// Where you look (see [`crate::gaze`]), and what eye tracking there is.
+    gaze: crate::gaze::GazeTracker,
+    eyes: crate::gaze::Status,
     sub_key: String,
     sub_textures: Vec<egui::TextureHandle>,
     /// The subtitle panel holds a 3D video's pictures, an eye's on each half.
@@ -234,7 +241,8 @@ impl App {
         panels[ADJUST].refresh = Some(Duration::from_millis(1000));
         panels[MAIN].refresh = Some(Duration::from_millis(1000));
         let subs = panel([1600, 320], 1.6, 1.0);
-        let mut perf = panel([640, 300], 0.4, 1.0);
+        // Seven rows: the eyes' last.
+        let mut perf = panel([640, 340], 0.4, 1.0);
         perf.ctx
             .style_mut(|s| s.visuals.panel_fill = egui::Color32::TRANSPARENT);
         perf.refresh = Some(Duration::from_millis(500));
@@ -256,6 +264,8 @@ impl App {
             perf_monitor: None,
             frame_times: Default::default(),
             perf_video: None,
+            gaze: Default::default(),
+            eyes: Default::default(),
             sub_key: String::new(),
             sub_textures: Vec::new(),
             subs_split: false,

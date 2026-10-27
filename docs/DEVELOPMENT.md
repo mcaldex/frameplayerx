@@ -61,7 +61,7 @@ Comments say what the code can't:
 | `fp-ffmpeg-sys` | Bindings to the bundled FFmpeg 7.1, per architecture (`tools/gen-ffmpeg-bindings.sh`) |
 | `fp-media` | Demuxing, decoding (V4L2 hardware, 10-bit HEVC as Q10C; software), the A/V clock, ALSA audio, subtitles, thumbnails |
 | `fp-render` | The Vulkan renderer: the projection shader for every format, the Q10C to P010 conversion, egui panels, quads |
-| `fp-xr` | OpenXR: the session and swapchains, controller input, passthrough |
+| `fp-xr` | OpenXR: the session and swapchains, controller input, eye tracking, passthrough |
 | `fp-xr-loader` | Finds the active OpenXR runtime and loads it directly, with no Khronos loader to ship (shared with `frame-probe`) |
 | `fp-library` | The SQLite database: folder scanning, the metadata and thumbnail worker, search, watch history |
 | `fp-sources` | Sources: local folders, HTTP, WebDAV, DLNA, SMB, DeoVR and HereSphere feeds, Jellyfin and Emby |
@@ -134,6 +134,19 @@ with, from the Subtitles setting and the tracks' languages
 embedded tracks itself; files are loaded whole. Text cues are set by
 cosmic-text (`ui/subtitle_text.rs`) with the system's fonts, loaded on a
 thread at startup, so every script is shaped; egui sets them until then.
+
+**Eye tracking.** `fp-xr/src/gaze.rs` reads the headset's gaze
+(`XR_EXT_eye_gaze_interaction`) as an action set of its own, synced with
+the controllers' in one `xrSyncActions`; it reaches the app as
+`FrameInput::gaze`, a ray in the play space, only while the eyes are
+tracked. `frameplayerx/src/gaze.rs` is what everything that follows the
+eyes reads, and it falls back to the head's forward without them:
+`GazeTracker::now` is the gaze as tracked, for what must keep up with
+the eyes (the overlay's Eyes line; foveated rendering would read it),
+and `GazeTracker::fixation` holds through saccades and blinks and smooths
+tremor, for what wants the thing looked at (autofocus, which hands it to
+the renderer as `VideoParams::focus`). The preview's `gaze YAW PITCH`
+simulates a tracker.
 
 **The database.** SQLite, with the schema version in `PRAGMA user_version`
 and forward-only migrations in `fp-library/src/schema.rs`. The scanner
@@ -272,6 +285,11 @@ What the code relies on about the platform:
   `/interaction_profiles/valve/frame_controller_valve`, from the
   `XR_VALVE_frame_controller_interaction` extension. Without it SteamVR
   presents them as Touch controllers.
+- Eye tracking is `XR_EXT_eye_gaze_interaction`: one combined gaze ray, no
+  per-eye directions, openness or pupils. SteamVR passes it to apps only
+  when the user allows it, so an offered tracker may never report;
+  `frame-probe` says whether the system supports it, and the app's log
+  says "eye tracking: tracking" the first time it does.
 - SteamVR's per-app video settings override what an app asks for through
   OpenXR, which is why the launcher sets the refresh rate and resolution
   there.

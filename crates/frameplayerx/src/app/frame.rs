@@ -144,6 +144,9 @@ impl App {
         }
         let anchor = self.anchor(&input);
         let eye = input.head.map(|h| h.0).unwrap_or(anchor.w_axis.truncate());
+        self.gaze
+            .update(input.gaze, input.head, self.settings.eye_tracking, input.dt);
+        self.eyes = self.gaze.status(input.eye_tracker);
         self.update_visibility();
         let kb_target = self.keyboard_target();
         self.panels[KEYBOARD].visible = kb_target.is_some();
@@ -319,10 +322,15 @@ impl App {
         if self.playback.is_none() {
             self.perf_video = None;
         }
+        let eyes = input.eye_tracker.then(|| {
+            let head = input.head?.1;
+            Some(crate::gaze::from_head(self.gaze.now()?.direction, head))
+        });
         let overlay = ui::perf::Overlay {
             frame_ms,
             display_hz: input.display_hz,
             video,
+            eyes,
             sample,
         };
         if let Err(e) = self
@@ -431,6 +439,7 @@ impl App {
         }
         let devices = self.services.haptic_statuses();
         let passthrough_available = input.passthrough_available;
+        let eyes = self.eyes;
         for idx in [MAIN, BAR, ADJUST] {
             if !self.panels[idx].needs_paint() {
                 continue;
@@ -455,6 +464,7 @@ impl App {
                 actions: &mut actions,
                 passthrough_available,
                 devices: &devices,
+                eyes,
             };
             let r = panels[idx].paint(renderer, input.time, |ctx| match idx {
                 MAIN => ui::library::browser(ctx, &mut view),
@@ -537,7 +547,11 @@ impl App {
             video.anchor = anchor_rot;
             video.settings = s;
             video.settings.ipd_offset += autofocus;
-            video.focus = self.settings.autofocus.enabled;
+            video.focus = self
+                .gaze
+                .fixation()
+                .filter(|_| self.settings.autofocus.enabled)
+                .map(|l| l.direction);
             if let Some(v) = p.player.info().video_stream() {
                 video.rotation = v.rotation;
                 video.pixel_aspect = v.pixel_aspect as f32;

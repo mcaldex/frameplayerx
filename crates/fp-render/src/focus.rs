@@ -1,11 +1,11 @@
-//! Autofocus's reading: how far apart the two eyes' pictures are at the
-//! centre of view of a 3D 180°/360° or fisheye video, which says how near
-//! what you look at is.
+//! Autofocus's reading: how far apart the two eyes' pictures are where you
+//! look in a 3D 180°/360° or fisheye video, which says how near what you
+//! look at is.
 //!
 //! When [`VideoParams::focus`](crate::VideoParams::focus) asks, `draw` runs
 //! `focus_main` (shaders/scene.wgsl): for each of 96 disparities it turns
 //! the eyes' pictures that far apart, as the Depth setting does, and
-//! correlates them over a patch at the centre of view. Once the GPU is done
+//! correlates them over a patch where you look. Once the GPU is done
 //! with the frame, `read` finds the disparity they match best at, for
 //! [`Renderer::focus`](crate::Renderer::focus).
 
@@ -29,7 +29,7 @@ const MIN_COVER: f32 = 0.5;
 /// reading unsure.
 const RIVAL: f32 = 0.08;
 
-/// What autofocus sees at the centre of view.
+/// What autofocus sees where you look.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Focus {
     /// How far apart the eyes' pictures are there, in degrees as
@@ -48,19 +48,23 @@ pub fn applies(format: &VideoFormat) -> bool {
     format.projection != Projection::Flat && format.stereo.is_stereo()
 }
 
-/// The uniform block's autofocus vectors: the centre of view between the
-/// eyes with the patch's size, its right with the first disparity, and its
-/// up with the step.
-pub(crate) fn aim(eyes: &[EyeView; 2]) -> [Vec4; 3] {
+/// The uniform block's autofocus vectors: `towards` (a direction in the
+/// world) with the patch's size, the patch's right with the first
+/// disparity, and its up with the step. The patch stands as upright as the
+/// head between the `eyes` does.
+pub(crate) fn aim(towards: Vec3, eyes: &[EyeView; 2]) -> [Vec4; 3] {
     let axis = |v: Vec3| {
         eyes.iter()
             .map(|e| e.view.inverse().transform_vector3(v))
             .sum::<Vec3>()
             .normalize_or_zero()
     };
-    let forward = axis(Vec3::NEG_Z);
-    let up = axis(Vec3::X).cross(forward).normalize_or_zero();
-    let right = forward.cross(up);
+    let forward = towards.try_normalize().unwrap_or(axis(Vec3::NEG_Z));
+    let right = forward
+        .cross(axis(Vec3::Y))
+        .try_normalize()
+        .unwrap_or(axis(Vec3::X));
+    let up = right.cross(forward);
     [
         forward.extend(PATCH.to_radians().tan()),
         right.extend(FIRST.to_radians()),
@@ -155,7 +159,7 @@ mod tests {
     }
 
     #[test]
-    fn the_patch_faces_where_the_head_does() {
+    fn the_patch_faces_where_you_look_upright() {
         use crate::math::{Fov, projection, view};
         use glam::Quat;
         let head = Quat::from_rotation_y(0.5) * Quat::from_rotation_x(-0.2);
@@ -163,9 +167,18 @@ mod tests {
             view: view(head * Vec3::new(x, 0.0, 0.0), head),
             proj: projection(Fov::symmetric(90.0), 0.05, 100.0),
         };
-        let [f, r, u] = aim(&[ev(-0.032), ev(0.032)]);
+        let eyes = [ev(-0.032), ev(0.032)];
+        let [f, r, u] = aim(head * Vec3::NEG_Z, &eyes);
         assert!(f.truncate().distance(head * Vec3::NEG_Z) < 1e-5);
         assert!(r.truncate().distance(head * Vec3::X) < 1e-5);
         assert!(u.truncate().distance(head * Vec3::Y) < 1e-5);
+        // The eyes turned up and to the left of the head: the patch faces
+        // that way, its right still level with the head's.
+        let gaze = head * (Quat::from_rotation_y(0.3) * Quat::from_rotation_x(0.2)) * Vec3::NEG_Z;
+        let [f, r, u] = aim(gaze * 3.0, &eyes);
+        assert!(f.truncate().distance(gaze) < 1e-5);
+        assert!(r.truncate().dot(head * Vec3::Y).abs() < 1e-5);
+        assert!(u.truncate().dot(gaze).abs() < 1e-5);
+        assert!((r.truncate().length() - 1.0).abs() < 1e-5);
     }
 }

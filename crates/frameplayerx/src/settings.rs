@@ -72,6 +72,9 @@ pub struct Settings {
     pub background: [f32; 3],
     /// Experimental: close-ups in 3D videos shown further away.
     pub autofocus: crate::autofocus::AutofocusSettings,
+    /// What follows where you look uses the eye tracker, on a headset with
+    /// one (see [`crate::gaze`]).
+    pub eye_tracking: bool,
     /// Resume videos where they were left.
     pub resume: bool,
     /// The format a video starts in when nothing identifies it (no
@@ -135,6 +138,7 @@ impl Default for Settings {
             passthrough: false,
             background: BACKGROUND,
             autofocus: Default::default(),
+            eye_tracking: true,
             resume: true,
             default_format: fp_core::format::VideoFormat::FALLBACK,
             auto_hide_secs: 4.0,
@@ -258,6 +262,10 @@ mod tests {
         assert_eq!(p.default_format, fp_core::format::VideoFormat::FALLBACK);
         assert_eq!(p.background, BACKGROUND, "older files keep today's colour");
         assert!(!p.autofocus.enabled, "autofocus stays off until turned on");
+        assert!(
+            p.eye_tracking,
+            "the eyes are used where the headset has them"
+        );
         // Saved before the global chroma key: the old green default goes.
         std::fs::write(
             &path,

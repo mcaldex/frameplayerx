@@ -720,6 +720,7 @@ pub fn adjust_panel(ctx: &egui::Context, v: &mut View) {
                             &mut pb.settings,
                             &mut v.settings.autofocus,
                             reads.then_some(&pb.autofocus),
+                            v.eyes == crate::gaze::Status::Tracking,
                         );
                     }
                     3 => picture_tab(ui, &mut pb.settings),
@@ -972,12 +973,14 @@ fn position_tab(ui: &mut egui::Ui, s: &mut ViewSettings, moved: bool, actions: &
 }
 
 /// The Stereo tab. `focus` is autofocus for the open video, when it is one
-/// autofocus reads; its switch is the setting for every video.
+/// autofocus reads; its switch is the setting for every video. `eyes`: it
+/// follows them, rather than the head.
 fn stereo_tab(
     ui: &mut egui::Ui,
     s: &mut ViewSettings,
     af: &mut crate::autofocus::AutofocusSettings,
     focus: Option<&crate::autofocus::Autofocus>,
+    eyes: bool,
 ) {
     let d = ViewSettings::default();
     widgets::rows(ui, |r| {
@@ -1000,7 +1003,8 @@ fn stereo_tab(
                 &mut af.enabled,
             );
             if af.enabled {
-                r.info("Looking at", &looking_at(focus, s.ipd_offset));
+                let title = if eyes { "Looking at" } else { "Straight ahead" };
+                r.info(title, &looking_at(focus, s.ipd_offset));
             }
         }
         r.slider(

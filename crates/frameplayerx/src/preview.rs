@@ -10,6 +10,7 @@
 //! | `wait SECONDS` | run frames in real time |
 //! | `wait-playing [TIMEOUT]` | run until a video is playing |
 //! | `look YAW PITCH [ROLL]` | head direction (and roll, to lie on your side) in degrees |
+//! | `gaze YAW PITCH` / `gaze off` | an eye tracker looking that way in the world, in degrees / none |
 //! | `recenter` | recenter on where the head faces |
 //! | `aim YAW PITCH` | controller ray direction in degrees |
 //! | `point PANEL X Y` | aim at a panel (`main`, `bar`, `adjust`, `keyboard`) at fractional X, Y |
@@ -48,6 +49,8 @@ struct Sim {
     eyes: OffscreenEyes,
     size: u32,
     head: Quat,
+    /// The simulated eye tracker's gaze; `None`: the headset has none.
+    gaze: Option<Quat>,
     hand: Hand,
     start: Instant,
     last: Instant,
@@ -74,6 +77,9 @@ impl Sim {
         self.renderer.begin_frame()?;
         let hands = [Hand::default(), self.hand];
         let head = Some((self.head_pos(), self.head));
+        let gaze = self
+            .gaze
+            .map(|q| fp_xr::Gaze::from_pose(self.head_pos(), q));
         let out = self.app.frame(
             &mut self.renderer,
             FrameInput {
@@ -81,6 +87,8 @@ impl Sim {
                 dt,
                 head,
                 hands,
+                gaze,
+                eye_tracker: self.gaze.is_some(),
                 passthrough_available: true,
                 layers: false,
                 frame_ms: None,
@@ -389,6 +397,12 @@ impl Sim {
             Some("look") => {
                 let roll = num(3).unwrap_or(0.0).to_radians();
                 self.head = dir_quat(num(1)?, num(2)?) * Quat::from_rotation_z(roll);
+            }
+            Some("gaze") => {
+                self.gaze = match parts.get(1) {
+                    Some(&"off") => None,
+                    _ => Some(dir_quat(num(1)?, num(2)?)),
+                };
             }
             Some("recenter") => {
                 self.app.apply(crate::ui::Action::Recenter);
@@ -723,6 +737,7 @@ pub fn run(args: &Args, out: &Path) -> Result<(), Error> {
         eyes,
         size,
         head: Quat::IDENTITY,
+        gaze: None,
         hand: Hand {
             active: true,
             aim: None,

@@ -755,8 +755,8 @@ impl Renderer {
         self.q10c.is_some()
     }
 
-    /// What autofocus saw at the centre of view two frames ago (the frame
-    /// [`Renderer::begin_frame`] waited for), when that frame asked
+    /// What autofocus saw where it was asked to look two frames ago (the
+    /// frame [`Renderer::begin_frame`] waited for), when that frame asked
     /// ([`VideoParams::focus`]) and the reading was sure.
     pub fn focus(&self) -> Option<Focus> {
         self.focus
@@ -1152,9 +1152,11 @@ impl Renderer {
         let slot_idx = self.current;
         let frame_desc = self.slot_video(slot_idx).map(|v| v.desc);
         let mut p = params::build(video, frame_desc.as_ref(), inv);
-        let focus = video.focus && frame_desc.is_some() && focus::applies(&video.format);
-        if focus {
-            p.focus = focus::aim(eyes);
+        let focus = video
+            .focus
+            .filter(|_| frame_desc.is_some() && focus::applies(&video.format));
+        if let Some(towards) = focus {
+            p.focus = focus::aim(towards, eyes);
         }
         // Quad vertices: two triangles per quad.
         let mut verts: Vec<QuadVertex> = Vec::with_capacity(quads.len() * 6);
@@ -1201,7 +1203,7 @@ impl Renderer {
             }
             slot.quad_vb.bytes()[..bytes.len()].copy_from_slice(bytes);
         }
-        if focus {
+        if focus.is_some() {
             self.record_focus();
         }
         let slot = &self.slots[slot_idx];

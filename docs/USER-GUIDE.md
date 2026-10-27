@@ -380,9 +380,12 @@ further off and the picture settles back over the **Refocus time**. The
 depth within the picture stays as filmed; only how near it all looks
 changes. Flat 3D films are left as they are.
 
-It follows where your head points, not your eyes, and it needs something
-with detail to look at. On a blank wall or the sky it keeps what it last
-saw for a moment, then lets go. **Depth** in the player's ⚙ › Stereo still
+On a headset that tracks your eyes, such as the Steam Frame, it follows
+where they look; elsewhere, or with Settings › General › **Eye tracking**
+off, it follows where your head points. It needs something with detail to
+look at: on a blank wall or the sky it keeps what it last saw for a
+moment, then lets go. If it follows your head on a Frame, allow eye
+tracking for apps in the headset's settings. **Depth** in the player's ⚙ › Stereo still
 works on top, and the same tab has an Autofocus switch, with how far away
 what you look at is and where it's shown.
 
@@ -614,6 +617,8 @@ protocol. Both only answer devices on your local network.
   overlay**. Low in your view, it shows how long each frame takes to draw
   (amber when longer than the display allows), the video's frame rate and
   dropped frames, its decoder, how busy the CPU and GPU are, and memory.
+  On a headset with eye tracking, its Eyes line says where your eyes look
+  from where your head faces, or "not tracked".
 - After a crash, the next start asks whether to send a crash report to
   FramePlayerX's developers, as a private issue on GitHub. It contains the
   versions of FramePlayerX and the headset's system, what went wrong, and

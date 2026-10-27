@@ -13,6 +13,7 @@ mod bindings;
 mod controls;
 mod crash;
 mod drives;
+mod gaze;
 mod jobs;
 mod libraries;
 mod logger;
@@ -483,6 +484,8 @@ fn run_xr(args: &Args) -> Result<(), Error> {
                 dt,
                 head: frame.head,
                 hands: input.hands,
+                gaze: input.gaze,
+                eye_tracker: session.has_eye_tracker(),
                 passthrough_available: session.supports_passthrough_blend(),
                 layers,
                 frame_ms: last_frame_ms,
