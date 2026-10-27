@@ -1,14 +1,18 @@
-//! Uploads decoded video frames into sampled plane images.
+//! Uploads decoded video frames into sampled plane images: the GPU copies
+//! them from the decode memory the decoders wrote them into, else from a
+//! staging buffer the CPU copies them into first.
 
+use crate::decode_memory::DecodeMemory;
 use crate::gpu::Gpu;
 use crate::mem::{self, Buffer, Image};
 use crate::params::FrameDesc;
 use crate::q10c::{self, Converter, Picture};
 use crate::{Error, Result};
 use ash::vk;
+use fp_media::frame::Plane;
 use fp_media::{PixelLayout, VideoFrame};
 use gpu_allocator::MemoryLocation;
-use std::sync::{LazyLock, mpsc};
+use std::sync::{Arc, LazyLock, mpsc};
 
 /// The plane images of one frame slot.
 pub(crate) struct VideoPlanes {
@@ -16,16 +20,61 @@ pub(crate) struct VideoPlanes {
     pub desc: FrameDesc,
     /// Id of the frame currently uploaded.
     pub key: Option<u64>,
-    /// Upload buffer for frames the CPU can read.
+    /// Upload buffer for frames the CPU copies.
     staging: Option<Buffer>,
+    /// The frame last copied from decode memory as it is, kept until the
+    /// set is next uploaded: by then the frames reading the set, that copy
+    /// among them, have finished.
+    source: Option<Arc<VideoFrame>>,
     /// Q10C frames are copied here and converted into `images` on the GPU.
     q10c: Option<Picture>,
 }
 
+/// A plane's bytes in a buffer, for the GPU to copy into its image.
+struct Region {
+    buffer: vk::Buffer,
+    offset: u64,
+    /// Texels from one row's start to the next.
+    row_len: u32,
+    width: u32,
+    height: u32,
+}
+
+/// Where each plane lies in decode memory, when all of them do in a way
+/// the GPU can copy from.
+fn in_place(memory: &DecodeMemory, planes: &[Plane]) -> Option<Vec<Region>> {
+    planes
+        .iter()
+        .map(|p| {
+            let texel = (p.components * p.bytes_per_sample) as usize;
+            let row = p.width as usize * texel;
+            if p.height == 0 || p.stride < row || !p.stride.is_multiple_of(texel) {
+                return None;
+            }
+            let len = p.stride * (p.height as usize - 1) + row;
+            if p.data.len() < len {
+                return None;
+            }
+            let (buffer, offset) = memory.find(p.data.as_ptr(), len)?;
+            offset.is_multiple_of(texel as u64).then_some(Region {
+                buffer,
+                offset,
+                row_len: (p.stride / texel) as u32,
+                width: p.width,
+                height: p.height,
+            })
+        })
+        .collect()
+}
+
 fn plane_formats(layout: PixelLayout) -> Option<Vec<vk::Format>> {
     Some(match layout {
-        PixelLayout::I420 { bits: 8 } => vec![vk::Format::R8_UNORM; 3],
-        PixelLayout::I420 { .. } => vec![vk::Format::R16_UNORM; 3],
+        PixelLayout::I420 { bits: 8 }
+        | PixelLayout::I422 { bits: 8 }
+        | PixelLayout::I444 { bits: 8 } => vec![vk::Format::R8_UNORM; 3],
+        PixelLayout::I420 { .. } | PixelLayout::I422 { .. } | PixelLayout::I444 { .. } => {
+            vec![vk::Format::R16_UNORM; 3]
+        }
         PixelLayout::Nv12 => vec![vk::Format::R8_UNORM, vk::Format::R8G8_UNORM],
         PixelLayout::P010 => vec![vk::Format::R16_UNORM, vk::Format::R16G16_UNORM],
         PixelLayout::DrmPrime | PixelLayout::Q10c => return None,
@@ -128,9 +177,10 @@ impl VideoPlanes {
         slot: &mut Option<VideoPlanes>,
         gpu: &Gpu,
         cmd: vk::CommandBuffer,
-        frame: &VideoFrame,
+        frame: &Arc<VideoFrame>,
         garbage: &mut Vec<Image>,
         converter: Option<&Converter>,
+        memory: Option<&DecodeMemory>,
     ) -> Result<bool> {
         if frame.layout == PixelLayout::Q10c {
             return Self::upload_q10c(slot, gpu, cmd, frame, garbage, converter);
@@ -175,18 +225,6 @@ impl VideoPlanes {
                     "video plane",
                 )?);
             }
-            let bytes: u64 = planes
-                .iter()
-                .map(|p| (p.stride * p.height as usize) as u64 + 4096)
-                .sum::<u64>()
-                .max(65536);
-            let staging = Buffer::new(
-                gpu,
-                bytes,
-                vk::BufferUsageFlags::TRANSFER_SRC,
-                MemoryLocation::CpuToGpu,
-                "video staging",
-            )?;
             *slot = Some(VideoPlanes {
                 images,
                 desc: FrameDesc {
@@ -196,7 +234,8 @@ impl VideoPlanes {
                     color: frame.color,
                 },
                 key: None,
-                staging: Some(staging),
+                staging: None,
+                source: None,
                 q10c: None,
             });
             recreated = true;
@@ -205,74 +244,17 @@ impl VideoPlanes {
             return Ok(recreated);
         };
         s.desc.color = frame.color;
-        let Some(staging) = s.staging.as_mut() else {
-            return Ok(recreated);
-        };
-
-        // Ensure staging buffer is large enough for all planes (in case strides vary across frames)
-        let mut total_bytes: usize = 0;
-        for p in &planes {
-            let row_len = (p.width * p.components * p.bytes_per_sample) as usize;
-            let len = if p.height > 0 {
-                p.stride * (p.height as usize - 1) + row_len
-            } else {
-                0
-            };
-            total_bytes = (total_bytes + len + 63) & !63;
-        }
-        if total_bytes as u64 > staging.size {
-            let bigger = Buffer::new(
-                gpu,
-                (total_bytes as u64 + 65536).max(staging.size * 2),
-                vk::BufferUsageFlags::TRANSFER_SRC,
-                MemoryLocation::CpuToGpu,
-                "video staging",
-            )?;
-            let mut old = std::mem::replace(staging, bigger);
-            old.destroy(gpu);
-        }
-
-        // Copy every plane into staging
-        let mut offset = 0usize;
-        let mut regions = Vec::new();
-        {
-            let dst = staging.bytes();
-            for p in &planes {
-                let row_len = (p.width * p.components * p.bytes_per_sample) as usize;
-                let texel = (p.components * p.bytes_per_sample) as usize;
-                let len = if p.height > 0 {
-                    p.stride * (p.height as usize - 1) + row_len
-                } else {
-                    0
-                };
-                if p.data.len() < len || offset + len > dst.len() {
-                    continue;
-                }
-                if p.stride >= row_len && p.stride % texel == 0 {
-                    COPIER.copy(&mut dst[offset..offset + len], &p.data[..len]);
-                    regions.push((offset as u64, (p.stride / texel) as u32, p.width, p.height));
-                    offset = (offset + len + 63) & !63;
-                } else {
-                    // Stride is misaligned: pack rows tightly without padding
-                    let tight_len = row_len * p.height as usize;
-                    if offset + tight_len <= dst.len() {
-                        for y in 0..p.height as usize {
-                            let src_start = y * p.stride;
-                            let src_end = src_start + row_len;
-                            if src_end <= p.data.len() {
-                                let dst_start = offset + y * row_len;
-                                dst[dst_start..dst_start + row_len]
-                                    .copy_from_slice(&p.data[src_start..src_end]);
-                            }
-                        }
-                        regions.push((offset as u64, p.width, p.width, p.height));
-                        offset = (offset + tight_len + 63) & !63;
-                    }
-                }
+        let regions = match memory.and_then(|m| in_place(m, &planes)) {
+            Some(regions) => {
+                s.source = Some(frame.clone());
+                regions
             }
-        }
-        s.key = Some(frame_key(frame));
-        for (img, (off, row_len, w, h)) in s.images.iter().zip(regions) {
+            None => {
+                s.source = None;
+                s.stage(gpu, &planes)?
+            }
+        };
+        for (img, r) in s.images.iter().zip(regions) {
             mem::barrier(
                 gpu,
                 cmd,
@@ -284,8 +266,8 @@ impl VideoPlanes {
                 mem::TRANSFER_WRITE,
             );
             let region = vk::BufferImageCopy::default()
-                .buffer_offset(off)
-                .buffer_row_length(row_len)
+                .buffer_offset(r.offset)
+                .buffer_row_length(r.row_len)
                 .buffer_image_height(0)
                 .image_subresource(vk::ImageSubresourceLayers {
                     aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -294,15 +276,15 @@ impl VideoPlanes {
                     layer_count: 1,
                 })
                 .image_extent(vk::Extent3D {
-                    width: w,
-                    height: h,
+                    width: r.width,
+                    height: r.height,
                     depth: 1,
                 });
             // SAFETY: recording; buffer and image are valid and sized.
             unsafe {
                 gpu.device.cmd_copy_buffer_to_image(
                     cmd,
-                    staging.buffer,
+                    r.buffer,
                     img.image,
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                     &[region],
@@ -321,6 +303,81 @@ impl VideoPlanes {
         }
         s.key = Some(frame_key(frame));
         Ok(recreated)
+    }
+
+    /// Copies the planes into the staging buffer, made or grown to fit.
+    fn stage(&mut self, gpu: &Gpu, planes: &[Plane]) -> Result<Vec<Region>> {
+        let mut total_bytes: usize = 0;
+        for p in planes {
+            let row_len = (p.width * p.components * p.bytes_per_sample) as usize;
+            let len = if p.height > 0 {
+                p.stride * (p.height as usize - 1) + row_len
+            } else {
+                0
+            };
+            total_bytes = (total_bytes + len + 63) & !63;
+        }
+        let size = self.staging.as_ref().map_or(0, |b| b.size);
+        if total_bytes as u64 > size {
+            let bigger = Buffer::new(
+                gpu,
+                (total_bytes as u64 + 65536).max(size * 2),
+                vk::BufferUsageFlags::TRANSFER_SRC,
+                MemoryLocation::CpuToGpu,
+                "video staging",
+            )?;
+            if let Some(mut old) = self.staging.replace(bigger) {
+                old.destroy(gpu);
+            }
+        }
+        let Some(staging) = self.staging.as_mut() else {
+            return Ok(Vec::new());
+        };
+        let buffer = staging.buffer;
+        let dst = staging.bytes();
+        let mut offset = 0usize;
+        let mut regions = Vec::new();
+        for p in planes {
+            let row_len = (p.width * p.components * p.bytes_per_sample) as usize;
+            let texel = (p.components * p.bytes_per_sample) as usize;
+            let len = if p.height > 0 {
+                p.stride * (p.height as usize - 1) + row_len
+            } else {
+                0
+            };
+            if p.data.len() < len || offset + len > dst.len() {
+                continue;
+            }
+            let region = |offset: usize, row_len| Region {
+                buffer,
+                offset: offset as u64,
+                row_len,
+                width: p.width,
+                height: p.height,
+            };
+            if p.stride >= row_len && p.stride % texel == 0 {
+                COPIER.copy(&mut dst[offset..offset + len], &p.data[..len]);
+                regions.push(region(offset, (p.stride / texel) as u32));
+                offset = (offset + len + 63) & !63;
+            } else {
+                // Stride is misaligned: pack rows tightly without padding
+                let tight_len = row_len * p.height as usize;
+                if offset + tight_len <= dst.len() {
+                    for y in 0..p.height as usize {
+                        let src_start = y * p.stride;
+                        let src_end = src_start + row_len;
+                        if src_end <= p.data.len() {
+                            let dst_start = offset + y * row_len;
+                            dst[dst_start..dst_start + row_len]
+                                .copy_from_slice(&p.data[src_start..src_end]);
+                        }
+                    }
+                    regions.push(region(offset, p.width));
+                    offset = (offset + tight_len + 63) & !63;
+                }
+            }
+        }
+        Ok(regions)
     }
 
     /// Converts a Q10C frame into P010 planes on the GPU.
@@ -403,6 +460,7 @@ impl VideoPlanes {
                 },
                 key: None,
                 staging: None,
+                source: None,
                 q10c: Some(picture),
             });
             recreated = true;

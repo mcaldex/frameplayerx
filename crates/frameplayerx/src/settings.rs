@@ -57,6 +57,9 @@ pub const BACKGROUND: [f32; 3] = [0.086, 0.086, 0.11];
 pub struct Settings {
     /// Use the V4L2 hardware decoder when available.
     pub hardware_decoding: bool,
+    /// Add the film grain AV1 videos ask for (see
+    /// [`fp_media::set_av1_film_grain`]).
+    pub av1_film_grain: bool,
     /// ALSA device ("default" routes to PipeWire on SteamOS).
     pub audio_device: String,
     pub volume: f32,
@@ -126,6 +129,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             hardware_decoding: true,
+            av1_film_grain: true,
             audio_device: "default".into(),
             volume: 1.0,
             subtitles: SubtitleMode::default(),

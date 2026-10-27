@@ -95,7 +95,14 @@ a frame doesn't wait on the network.
 **Video.** FFmpeg demuxes through fp-core's `ByteSource`, so every network
 protocol is implemented in Rust and looks like a file to FFmpeg. H.264 and
 HEVC go to the Frame's V4L2 stateful decoder; anything it can't take is
-decoded in software. Frames are uploaded to Vulkan as YUV and converted in
+decoded in software. Decoders write their pictures into memory the
+renderer offers (`fp_media::set_frame_memory`, `fp-render/src/decode_memory.rs`):
+the V4L2 decoder copies its 8-bit pictures out into it, FFmpeg's software
+decoders allocate theirs there (`get_buffer2`), and the GPU copies the
+planes into its images from where they are. Pictures elsewhere (AV1, which
+FFmpeg's dav1d wrapper allocates itself; Q10C; anything converted) are
+copied into a staging buffer first, an 8K picture's 50 MB on the render
+thread. Frames reach Vulkan as YUV and are converted in
 the shader, which maps each pixel of each eye onto the video for the chosen
 projection and stereo layout. HDR is tone mapped there too. 10-bit HEVC
 comes out of the decoder as Q10C (Qualcomm's compressed TP10), which only
@@ -241,7 +248,7 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
 | Command | What it does |
 |---|---|
 | `frameplayerx --info FILE` | Prints what FramePlayerX detects about a video: format, streams, HDR |
-| `frameplayerx --decode-bench FILE [--sw]` | Decodes without displaying and prints the decoder and frame rate |
+| `frameplayerx --decode-bench FILE [--sw] [--no-grain]` | Decodes without displaying and prints the decoder and frame rate; `--no-grain` leaves AV1 film grain out |
 | `frameplayerx --seek-test FILE\|URL` | Skips through a video headless, checking buffering and that hardware decoders are given back |
 
 ## On the headset

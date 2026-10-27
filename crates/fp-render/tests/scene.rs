@@ -494,6 +494,10 @@ fn every_upload_layout_renders_like_i420() {
     };
     let layouts = [
         PixelLayout::I420 { bits: 10 },
+        PixelLayout::I422 { bits: 8 },
+        PixelLayout::I422 { bits: 10 },
+        PixelLayout::I444 { bits: 8 },
+        PixelLayout::I444 { bits: 10 },
         PixelLayout::Nv12,
         PixelLayout::P010,
     ];

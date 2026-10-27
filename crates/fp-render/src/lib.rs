@@ -11,8 +11,11 @@
 //!   screenshots.
 //! - [`focus`]: autofocus's reading of how near what you look at is.
 //! - `q10c`: shows the Steam Frame decoder's 10-bit (Q10C) pictures.
+//! - `decode_memory`: memory the decoders write pictures into, which the GPU
+//!   copies them from.
 
 pub mod capture;
+mod decode_memory;
 pub mod focus;
 pub mod gpu;
 pub mod math;

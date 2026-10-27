@@ -101,7 +101,9 @@ pub(crate) fn yuv_matrix(color: &ColorInfo, layout: PixelLayout) -> ([Vec4; 3], 
     };
     let kg = 1.0 - kr - kb;
     let bits = match layout {
-        PixelLayout::I420 { bits } => bits,
+        PixelLayout::I420 { bits } | PixelLayout::I422 { bits } | PixelLayout::I444 { bits } => {
+            bits
+        }
         PixelLayout::Nv12 => 8,
         PixelLayout::P010 | PixelLayout::DrmPrime | PixelLayout::Q10c => 10,
     };
@@ -109,7 +111,9 @@ pub(crate) fn yuv_matrix(color: &ColorInfo, layout: PixelLayout) -> ([Vec4; 3], 
     // Sample scale: values are normalised by the texture format's range.
     // Q10C frames are converted into P010 planes.
     let scale = match layout {
-        PixelLayout::I420 { bits: 10 } => 65535.0 / 1023.0,
+        PixelLayout::I420 { bits: 10 }
+        | PixelLayout::I422 { bits: 10 }
+        | PixelLayout::I444 { bits: 10 } => 65535.0 / 1023.0,
         PixelLayout::P010 | PixelLayout::Q10c => 65535.0 / 65472.0,
         _ => 1.0,
     };
@@ -164,8 +168,12 @@ pub(crate) fn build(
     let (rows, offset, layout_code, tex) = match frame {
         Some(f) => {
             let (rows, off) = yuv_matrix(&f.color, f.layout);
+            // Three planes, or luma and interleaved chroma. The shader samples
+            // chroma by position, whatever its subsampling.
             let lc = match f.layout {
-                PixelLayout::I420 { .. } => 0u32,
+                PixelLayout::I420 { .. } | PixelLayout::I422 { .. } | PixelLayout::I444 { .. } => {
+                    0u32
+                }
                 _ => 1,
             };
             (rows, off, lc, (f.width.max(1), f.height.max(1)))

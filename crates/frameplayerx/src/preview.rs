@@ -706,6 +706,7 @@ pub fn run(args: &Args, out: &Path) -> Result<(), Error> {
     let gpu = Arc::new(Gpu::headless()?);
     let renderer = Renderer::new(gpu.clone(), ash::vk::Format::R8G8B8A8_SRGB)?;
     fp_media::set_hevc_10bit_hardware(renderer.shows_q10c());
+    fp_media::set_frame_memory(renderer.frame_memory());
     let size = args.size.unwrap_or(1024);
     let eyes = OffscreenEyes::new(&renderer, size, size)?;
     let mut app = crate::make_app()?;
