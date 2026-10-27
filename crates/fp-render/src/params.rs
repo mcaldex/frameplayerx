@@ -34,6 +34,8 @@ pub(crate) struct SceneParams {
     pub key2: Vec4,
     pub viewer: Vec4,
     pub display: [u32; 4],
+    /// Autofocus's patch and disparities (see [`crate::focus::aim`]).
+    pub focus: [Vec4; 3],
 }
 
 /// Everything about the video that the projection pass needs, other than
@@ -58,6 +60,11 @@ pub struct VideoParams {
     /// Width of a video pixel relative to its height: anamorphic video is
     /// shown this much wider than it is stored.
     pub pixel_aspect: f32,
+    /// Read the disparity at the centre of view for autofocus: it comes
+    /// back from [`Renderer::focus`](crate::Renderer::focus) once the GPU
+    /// is done with the frame. Only a video [`crate::focus::applies`] to
+    /// is read.
+    pub focus: bool,
 }
 
 impl Default for VideoParams {
@@ -70,6 +77,7 @@ impl Default for VideoParams {
             anchor: Quat::IDENTITY,
             rotation: 0,
             pixel_aspect: 1.0,
+            focus: false,
         }
     }
 }
@@ -244,6 +252,7 @@ pub(crate) fn build(
         ),
         viewer: glam::vec3(0.0, s.height, -s.forward).extend(SPHERE_RADIUS),
         display: [turns, 0, 0, 0],
+        focus: [Vec4::ZERO; 3],
     }
 }
 

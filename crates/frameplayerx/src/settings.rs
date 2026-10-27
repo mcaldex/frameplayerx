@@ -70,6 +70,8 @@ pub struct Settings {
     /// The colour around flat screens and the UI while the room doesn't
     /// show: sRGB, 0 to 1 per channel.
     pub background: [f32; 3],
+    /// Experimental: close-ups in 3D videos shown further away.
+    pub autofocus: crate::autofocus::AutofocusSettings,
     /// Resume videos where they were left.
     pub resume: bool,
     /// The format a video starts in when nothing identifies it (no
@@ -132,6 +134,7 @@ impl Default for Settings {
             default_view: ViewSettings::default(),
             passthrough: false,
             background: BACKGROUND,
+            autofocus: Default::default(),
             resume: true,
             default_format: fp_core::format::VideoFormat::FALLBACK,
             auto_hide_secs: 4.0,
@@ -254,6 +257,7 @@ mod tests {
         assert!(!p.haptics_enabled, "haptics stay off until turned on");
         assert_eq!(p.default_format, fp_core::format::VideoFormat::FALLBACK);
         assert_eq!(p.background, BACKGROUND, "older files keep today's colour");
+        assert!(!p.autofocus.enabled, "autofocus stays off until turned on");
         // Saved before the global chroma key: the old green default goes.
         std::fs::write(
             &path,

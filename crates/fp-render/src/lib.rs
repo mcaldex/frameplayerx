@@ -9,9 +9,11 @@
 //! - [`math`]: OpenXR-style projection and view matrices.
 //! - [`capture`]: offscreen eye targets with read-back, for tests and
 //!   screenshots.
+//! - [`focus`]: autofocus's reading of how near what you look at is.
 //! - `q10c`: shows the Steam Frame decoder's 10-bit (Q10C) pictures.
 
 pub mod capture;
+pub mod focus;
 pub mod gpu;
 pub mod math;
 pub mod mem;
@@ -21,6 +23,7 @@ mod q10c;
 pub mod renderer;
 mod video;
 
+pub use focus::Focus;
 pub use gpu::{Creator, DirectCreator, Gpu};
 pub use params::VideoParams;
 pub use renderer::{EyeTarget, EyeView, PanelId, QuadDraw, QuadTexture, Renderer};

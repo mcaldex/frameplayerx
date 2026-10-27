@@ -8,6 +8,7 @@
 //! the decoder and its frame rate.
 
 mod app;
+mod autofocus;
 mod bindings;
 mod controls;
 mod crash;

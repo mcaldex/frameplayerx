@@ -337,7 +337,43 @@ fn video_position(ui: &mut egui::Ui, v: &mut View) {
             2,
         );
     });
+    autofocus(ui, &mut v.settings.autofocus);
     background(ui, &mut v.settings.background);
+}
+
+/// Autofocus, for every 3D video (see [`crate::autofocus`]).
+fn autofocus(ui: &mut egui::Ui, a: &mut crate::autofocus::AutofocusSettings) {
+    let d = crate::autofocus::AutofocusSettings::default();
+    heading(ui, "Autofocus (experimental)");
+    widgets::rows(ui, |r| {
+        r.switch(
+            "Autofocus",
+            Some(
+                "In every 3D 180°, 360° and fisheye video, what you look at that's \
+                 nearer than below is shown at that distance, so close-ups don't \
+                 split in two.",
+            ),
+            &mut a.enabled,
+        );
+        r.slider(
+            "Nearest distance",
+            Some("Anything closer is pushed back to it."),
+            &mut a.nearest,
+            0.3..=2.0,
+            d.nearest,
+            " m",
+            2,
+        );
+        r.slider(
+            "Refocus time",
+            Some("How long the picture takes to settle on something new."),
+            &mut a.refocus_secs,
+            0.1..=2.0,
+            d.refocus_secs,
+            " s",
+            1,
+        );
+    });
 }
 
 /// Background colours offered as one tap.

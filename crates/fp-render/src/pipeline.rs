@@ -1,4 +1,4 @@
-//! Graphics pipeline construction (dynamic rendering, no render passes).
+//! Pipeline construction: graphics (dynamic rendering, no render passes) and compute.
 
 use crate::gpu::Gpu;
 use crate::{Result, VkContext};
@@ -92,6 +92,37 @@ pub(crate) fn create(gpu: &Gpu, d: &PipelineDesc) -> Result<vk::Pipeline> {
         .map(|p| p[0])
 }
 
+/// A compute pipeline running `entry` of `spv`.
+pub(crate) fn compute(
+    gpu: &Gpu,
+    spv: &[u8],
+    entry: &std::ffi::CStr,
+    layout: vk::PipelineLayout,
+) -> Result<vk::Pipeline> {
+    let module = gpu.shader(spv)?;
+    let info = vk::ComputePipelineCreateInfo::default()
+        .stage(
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::COMPUTE)
+                .module(module)
+                .name(entry),
+        )
+        .layout(layout);
+    // SAFETY: all referenced state lives until the call returns.
+    let result = unsafe {
+        gpu.device
+            .create_compute_pipelines(vk::PipelineCache::null(), &[info], None)
+    };
+    // SAFETY: the module is no longer needed once the pipeline exists.
+    unsafe { gpu.device.destroy_shader_module(module, None) };
+    result
+        .map_err(|(_, e)| e)
+        .ctx("create compute pipeline")
+        .map(|p| p[0])
+}
+
+/// A set layout whose bindings every stage can read: the scene set is
+/// also autofocus's compute pass's.
 pub(crate) fn set_layout(
     gpu: &Gpu,
     bindings: &[(u32, vk::DescriptorType)],
@@ -103,7 +134,11 @@ pub(crate) fn set_layout(
                 .binding(i)
                 .descriptor_type(t)
                 .descriptor_count(1)
-                .stage_flags(vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::VERTEX)
+                .stage_flags(
+                    vk::ShaderStageFlags::FRAGMENT
+                        | vk::ShaderStageFlags::VERTEX
+                        | vk::ShaderStageFlags::COMPUTE,
+                )
         })
         .collect();
     // SAFETY: valid create info.

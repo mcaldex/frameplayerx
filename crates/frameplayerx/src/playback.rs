@@ -76,6 +76,7 @@ pub struct Playback {
     decode_check: (Instant, u64, u64, u64),
     /// Tells the server the video came from how watching it goes.
     watch: Option<Watch>,
+    pub autofocus: crate::autofocus::Autofocus,
 }
 
 /// The result of opening on a background thread.
@@ -307,6 +308,7 @@ pub fn open(
             notice: None,
             decode_check: (Instant::now(), 0, 0, 0),
             watch,
+            autofocus: Default::default(),
         },
         scripts,
     })

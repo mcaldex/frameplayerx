@@ -528,6 +528,7 @@ impl App {
         }
         let anchor_rot = anchor.to_scale_rotation_translation().1;
         let player = self.picture_anchor(anchor);
+        let autofocus = self.autofocus(renderer.focus(), input.dt);
         if let Some(p) = &self.playback {
             frame = p.player.current_frame();
             let s = p.shown_settings(&self.settings.default_view);
@@ -535,6 +536,8 @@ impl App {
             video.screen_pose = place(player, 0.0, s.screen_distance, 0.0, 0.0);
             video.anchor = anchor_rot;
             video.settings = s;
+            video.settings.ipd_offset += autofocus;
+            video.focus = self.settings.autofocus.enabled;
             if let Some(v) = p.player.info().video_stream() {
                 video.rotation = v.rotation;
                 video.pixel_aspect = v.pixel_aspect as f32;
@@ -548,6 +551,22 @@ impl App {
             self.subs.visible = false;
         }
         (frame, video, passthrough)
+    }
+
+    /// The Depth autofocus adds to the open video this frame, from what the
+    /// renderer read at the centre of view; 0 while it is off or the video
+    /// isn't one it reads.
+    fn autofocus(&mut self, reading: Option<fp_render::Focus>, dt: f32) -> f32 {
+        let s = &self.settings.autofocus;
+        let Some(p) = &mut self.playback else {
+            return 0.0;
+        };
+        if !s.enabled || !fp_render::focus::applies(&p.format) {
+            p.autofocus = Default::default();
+            return 0.0;
+        }
+        let depth = p.shown_settings(&self.settings.default_view).ipd_offset;
+        p.autofocus.update(reading, depth, s, dt)
     }
 
     /// What the compositor draws: panels back to front, then pointers,

@@ -6,6 +6,7 @@
 //! garbage list and are destroyed when the slot comes round again, by which
 //! time no submitted frame can still read them.
 
+use crate::focus::{self, Focus};
 use crate::gpu::Gpu;
 use crate::mem::{self, Buffer, Image};
 use crate::params::{self, SceneParams, VideoParams};
@@ -145,6 +146,10 @@ struct Slot {
     garbage: Vec<Image>,
     garbage_sets: Vec<vk::DescriptorSet>,
     garbage_buffers: Vec<Buffer>,
+    /// What autofocus's pass found, per disparity tried (see
+    /// [`focus::read`]), and whether this slot's frame ran it.
+    focus: Buffer,
+    focus_asked: bool,
 }
 
 pub struct Renderer {
@@ -156,6 +161,10 @@ pub struct Renderer {
     scene_layout: vk::DescriptorSetLayout,
     scene_pl: vk::PipelineLayout,
     scene_pipe: vk::Pipeline,
+    /// Autofocus's pass, with the scene's layout and set.
+    focus_pipe: vk::Pipeline,
+    /// Autofocus's reading from the frame `begin_frame` last waited for.
+    focus: Option<Focus>,
     tex_layout: vk::DescriptorSetLayout,
     quad_pl: vk::PipelineLayout,
     quad_pipe: vk::Pipeline,
@@ -203,6 +212,10 @@ impl Renderer {
                     ty: vk::DescriptorType::SAMPLED_IMAGE,
                     descriptor_count: 2048,
                 },
+                vk::DescriptorPoolSize {
+                    ty: vk::DescriptorType::STORAGE_BUFFER,
+                    descriptor_count: 16,
+                },
             ];
             let dpool = d
                 .create_descriptor_pool(
@@ -235,6 +248,7 @@ impl Renderer {
                     (2, vk::DescriptorType::SAMPLED_IMAGE),
                     (3, vk::DescriptorType::SAMPLED_IMAGE),
                     (4, vk::DescriptorType::SAMPLED_IMAGE),
+                    (5, vk::DescriptorType::STORAGE_BUFFER),
                 ],
             )?;
             let scene_pl = pipeline::layout(&gpu, scene_layout, 4)?;
@@ -249,6 +263,7 @@ impl Renderer {
                     blend: false,
                 },
             )?;
+            let focus_pipe = pipeline::compute(&gpu, crate::SCENE_SPV, c"focus_main", scene_pl)?;
             let tex_layout = pipeline::set_layout(
                 &gpu,
                 &[
@@ -330,6 +345,8 @@ impl Renderer {
                 scene_layout,
                 scene_pl,
                 scene_pipe,
+                focus_pipe,
+                focus: None,
                 tex_layout,
                 quad_pl,
                 quad_pipe,
@@ -467,6 +484,14 @@ impl Renderer {
                 garbage: Vec::new(),
                 garbage_sets: Vec::new(),
                 garbage_buffers: Vec::new(),
+                focus: Buffer::new(
+                    &self.gpu,
+                    (focus::STEPS * size_of::<[f32; 2]>()) as u64,
+                    vk::BufferUsageFlags::STORAGE_BUFFER,
+                    MemoryLocation::GpuToCpu,
+                    "autofocus",
+                )?,
+                focus_asked: false,
             })
         }
     }
@@ -649,6 +674,11 @@ impl Renderer {
             for mut b in slot.garbage_buffers.drain(..) {
                 b.destroy(&self.gpu);
             }
+            self.focus = None;
+            if std::mem::take(&mut slot.focus_asked) {
+                let bytes = &slot.focus.bytes()[..focus::STEPS * size_of::<[f32; 2]>()];
+                self.focus = focus::read(bytemuck::cast_slice(bytes));
+            }
             d.reset_command_buffer(slot.cmd, vk::CommandBufferResetFlags::empty())
                 .ctx("reset")?;
             d.begin_command_buffer(
@@ -723,6 +753,13 @@ impl Renderer {
     /// frames) can be shown; see [`fp_media::set_hevc_10bit_hardware`].
     pub fn shows_q10c(&self) -> bool {
         self.q10c.is_some()
+    }
+
+    /// What autofocus saw at the centre of view two frames ago (the frame
+    /// [`Renderer::begin_frame`] waited for), when that frame asked
+    /// ([`VideoParams::focus`]) and the reading was sure.
+    pub fn focus(&self) -> Option<Focus> {
+        self.focus
     }
 
     /// The video image set this slot shows, if any.
@@ -1056,6 +1093,9 @@ impl Renderer {
             .buffer(slot.uniform.buffer)
             .range(vk::WHOLE_SIZE)];
         let samplers = [vk::DescriptorImageInfo::default().sampler(self.sampler)];
+        let results = [vk::DescriptorBufferInfo::default()
+            .buffer(slot.focus.buffer)
+            .range(vk::WHOLE_SIZE)];
         let images: Vec<[vk::DescriptorImageInfo; 1]> = views
             .iter()
             .map(|&v| {
@@ -1075,6 +1115,11 @@ impl Renderer {
                 .dst_binding(1)
                 .descriptor_type(vk::DescriptorType::SAMPLER)
                 .image_info(&samplers),
+            vk::WriteDescriptorSet::default()
+                .dst_set(slot.scene_set)
+                .dst_binding(5)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&results),
         ];
         for (i, info) in images.iter().enumerate() {
             writes.push(
@@ -1106,7 +1151,11 @@ impl Renderer {
         ];
         let slot_idx = self.current;
         let frame_desc = self.slot_video(slot_idx).map(|v| v.desc);
-        let p = params::build(video, frame_desc.as_ref(), inv);
+        let mut p = params::build(video, frame_desc.as_ref(), inv);
+        let focus = video.focus && frame_desc.is_some() && focus::applies(&video.format);
+        if focus {
+            p.focus = focus::aim(eyes);
+        }
         // Quad vertices: two triangles per quad.
         let mut verts: Vec<QuadVertex> = Vec::with_capacity(quads.len() * 6);
         let mut sets = Vec::with_capacity(quads.len());
@@ -1151,6 +1200,9 @@ impl Renderer {
                 slot.garbage_buffers.push(old);
             }
             slot.quad_vb.bytes()[..bytes.len()].copy_from_slice(bytes);
+        }
+        if focus {
+            self.record_focus();
         }
         let slot = &self.slots[slot_idx];
         let (gpu, cmd) = (&self.gpu, slot.cmd);
@@ -1265,6 +1317,38 @@ impl Renderer {
             }
         }
         Ok(())
+    }
+
+    /// Records autofocus's pass, reading the scene set's video and
+    /// uniforms; `begin_frame` reads its results once the slot comes round.
+    fn record_focus(&mut self) {
+        let slot = &mut self.slots[self.current];
+        let d = &self.gpu.device;
+        let done = [vk::MemoryBarrier2::default()
+            .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
+            .src_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE)
+            .dst_stage_mask(vk::PipelineStageFlags2::HOST)
+            .dst_access_mask(vk::AccessFlags2::HOST_READ)];
+        // SAFETY: recording, outside rendering; the scene set is up to date
+        // and its results buffer is the slot's, untouched by the host until
+        // the slot's fence signals.
+        unsafe {
+            d.cmd_bind_pipeline(slot.cmd, vk::PipelineBindPoint::COMPUTE, self.focus_pipe);
+            d.cmd_bind_descriptor_sets(
+                slot.cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.scene_pl,
+                0,
+                &[slot.scene_set],
+                &[],
+            );
+            d.cmd_dispatch(slot.cmd, focus::STEPS as u32, 1, 1);
+            d.cmd_pipeline_barrier2(
+                slot.cmd,
+                &vk::DependencyInfo::default().memory_barriers(&done),
+            );
+        }
+        slot.focus_asked = true;
     }
 
     /// Ends recording and submits the frame.
@@ -1615,7 +1699,9 @@ impl Drop for Renderer {
                 for mut b in s.garbage_buffers.drain(..) {
                     b.destroy(&gpu);
                 }
-                for mut b in [s.uniform, s.quad_vb, s.egui_vb, s.egui_ib, s.staging] {
+                for mut b in [
+                    s.uniform, s.quad_vb, s.egui_vb, s.egui_ib, s.staging, s.focus,
+                ] {
                     b.destroy(&gpu);
                 }
                 d.destroy_fence(s.fence, None);
@@ -1629,7 +1715,12 @@ impl Drop for Renderer {
             }
             self.white.image.destroy(&gpu);
             self.dummy.destroy(&gpu);
-            for p in [self.scene_pipe, self.quad_pipe, self.egui_pipe] {
+            for p in [
+                self.scene_pipe,
+                self.focus_pipe,
+                self.quad_pipe,
+                self.egui_pipe,
+            ] {
                 d.destroy_pipeline(p, None);
             }
             for l in [self.scene_pl, self.quad_pl, self.egui_pl] {

@@ -266,8 +266,12 @@ pub const TRANSFER_READ: (vk::PipelineStageFlags2, vk::AccessFlags2) = (
     vk::PipelineStageFlags2::TRANSFER,
     vk::AccessFlags2::TRANSFER_READ,
 );
+/// Sampled by the eye passes, and by autofocus's compute pass (the video).
 pub const SHADER_READ: (vk::PipelineStageFlags2, vk::AccessFlags2) = (
-    vk::PipelineStageFlags2::FRAGMENT_SHADER,
+    vk::PipelineStageFlags2::from_raw(
+        vk::PipelineStageFlags2::FRAGMENT_SHADER.as_raw()
+            | vk::PipelineStageFlags2::COMPUTE_SHADER.as_raw(),
+    ),
     vk::AccessFlags2::SHADER_SAMPLED_READ,
 );
 pub const COLOR_WRITE: (vk::PipelineStageFlags2, vk::AccessFlags2) = (

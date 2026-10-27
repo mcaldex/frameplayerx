@@ -7,7 +7,8 @@ or your network.
 - [Install](#install), [updating](#updating) and [uninstall](#uninstall)
 - [Where your videos can be](#where-your-videos-can-be): browsing,
   PIN locks, microSD cards and USB drives
-- [Video formats](#video-formats), [fisheye lenses](#fisheye-lenses) and
+- [Video formats](#video-formats), [autofocus](#autofocus-experimental),
+  [fisheye lenses](#fisheye-lenses) and
   [videos that stutter](#videos-that-stutter-av1-and-422)
 - [Controls](#controls), and [watching lying down](#watching-lying-down)
 - [Passthrough videos](#passthrough-videos)
@@ -366,6 +367,24 @@ VC-1, MPEG-4, MPEG-2, ProRes. Audio: AAC, AC-3/E-AC-3, Opus, Vorbis, FLAC,
 MP3, DTS, TrueHD, PCM (Blu-ray and DVD LPCM too), and spatial (ambisonic)
 audio that follows your head.
 Subtitles: SRT, ASS/SSA, WebVTT, and embedded text or picture subtitles.
+
+### Autofocus (experimental)
+
+Something filmed very close in a 3D video can split in two: your eyes
+can't cross far enough to see it as one. Settings › Video position ›
+**Autofocus** works on every 3D 180°, 360°, fisheye and EAC video, as
+DeoVR's does. It watches what is in the middle of your view, and when that
+is nearer than **Nearest distance** (0.7 m to start with), it moves the two
+eyes' pictures apart until it looks that far away. Look at something
+further off and the picture settles back over the **Refocus time**. The
+depth within the picture stays as filmed; only how near it all looks
+changes. Flat 3D films are left as they are.
+
+It follows where your head points, not your eyes, and it needs something
+with detail to look at. On a blank wall or the sky it keeps what it last
+saw for a moment, then lets go. **Depth** in the player's ⚙ › Stereo still
+works on top, and the same tab has an Autofocus switch, with how far away
+what you look at is and where it's shown.
 
 ### Fisheye lenses
 
