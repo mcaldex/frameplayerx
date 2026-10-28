@@ -1,6 +1,6 @@
 //! Where you look, for whatever follows it: autofocus, the performance
-//! overlay's eye line, and anything else that wants the eyes (foveated
-//! rendering, say).
+//! overlay's eye line, the rings of Show where you look ([`Ring`]), and
+//! anything else that wants the eyes (foveated rendering, say).
 //!
 //! It takes the eye tracker's gaze ([`fp_xr::gaze`]) when the headset has
 //! one and Settings › General › Eye tracking allows it, else the head's
@@ -11,8 +11,9 @@
 //!   saccades (the eyes' jumps, when they take little in) and blinks, and
 //!   smooths a fixation's tremor, so what follows it doesn't jitter.
 
+use fp_render::QuadDraw;
 use fp_xr::Gaze;
-use glam::{Quat, Vec3};
+use glam::{Quat, Vec2, Vec3};
 
 /// Faster than this, degrees a second, the gaze is jumping (a saccade)
 /// or sweeping with the head. Fixations, and following something that
@@ -150,6 +151,97 @@ pub fn from_head(direction: Vec3, head: Quat) -> [f32; 2] {
     ]
 }
 
+/// Degrees across the ring where the eyes are this frame: about how far
+/// off a tracker can be.
+const NOW_RING: f32 = 2.0;
+/// The rings' pictures, pixels square.
+pub const RING_PX: u32 = 128;
+/// sRGB.
+const RED: [u8; 3] = [235, 38, 38];
+
+/// A red ring where you look, for Settings › General › Show where you look:
+/// to see the tracker keep up and what autofocus reads. It faces the eyes
+/// and is the same angle across at any distance.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ring {
+    /// Where the eyes are this frame, as tracked; else what they fixate,
+    /// larger, around the patch autofocus reads.
+    pub now: bool,
+    pub centre: Vec3,
+    /// Turns the picture's +Z to the eyes.
+    pub facing: Quat,
+    /// Across, metres.
+    pub size: f32,
+}
+
+impl Ring {
+    /// The ring `distance` along `direction` (a unit vector) from `origin`.
+    pub fn new(now: bool, origin: Vec3, direction: Vec3, distance: f32) -> Ring {
+        let degrees = if now {
+            NOW_RING
+        } else {
+            2.0 * fp_render::focus::PATCH
+        };
+        Ring {
+            now,
+            centre: origin + direction * distance,
+            facing: Quat::from_rotation_arc(Vec3::Z, -direction),
+            size: 2.0 * distance * (degrees / 2.0).to_radians().tan(),
+        }
+    }
+
+    /// Where the ring starts inside, of its outer radius, and how opaque
+    /// it is.
+    fn look(now: bool) -> (f32, f32) {
+        if now { (0.55, 1.0) } else { (0.9, 0.7) }
+    }
+
+    /// Drawn into the eyes, as the desktop preview does: a loop of short
+    /// lines.
+    pub fn quads(&self, eye: Vec3) -> Vec<QuadDraw> {
+        const SIDES: usize = 32;
+        let (inner, alpha) = Ring::look(self.now);
+        let outer = self.size / 2.0;
+        let mid = outer * (1.0 + inner) / 2.0;
+        let point = |i: usize| {
+            let a = i as f32 * std::f32::consts::TAU / SIDES as f32;
+            self.centre + self.facing * Vec3::new(a.cos(), a.sin(), 0.0) * mid
+        };
+        let [r, g, b] = RED.map(|c| egui::ecolor::linear_from_gamma(f32::from(c) / 255.0) * alpha);
+        (0..SIDES)
+            .map(|i| {
+                QuadDraw::line(
+                    point(i),
+                    point(i + 1),
+                    outer * (1.0 - inner),
+                    eye,
+                    [r, g, b, alpha],
+                )
+            })
+            .collect()
+    }
+
+    /// The ring's picture for the compositor: [`RING_PX`] square, soft
+    /// edged, premultiplied.
+    pub fn picture(now: bool) -> Vec<u8> {
+        let (inner, alpha) = Ring::look(now);
+        let half = RING_PX as f32 / 2.0;
+        let outer = half - 1.0;
+        // How much of a pixel `d` pixels inside an edge covers.
+        let cover = |d: f32| (d + 0.5).clamp(0.0, 1.0);
+        let mut px = Vec::with_capacity((RING_PX * RING_PX * 4) as usize);
+        for y in 0..RING_PX {
+            for x in 0..RING_PX {
+                let r = Vec2::new(x as f32 + 0.5 - half, y as f32 + 0.5 - half).length();
+                let a = cover(outer - r).min(cover(r - inner * outer)) * alpha;
+                px.extend(RED.map(|c| (f32::from(c) * a).round() as u8));
+                px.push((255.0 * a).round() as u8);
+            }
+        }
+        px
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,6 +356,32 @@ mod tests {
             t.update(None, head(), true, DT);
         }
         assert_eq!(looking(&t).source, Source::Head);
+    }
+
+    #[test]
+    fn rings_face_the_eyes_the_same_angle_across_at_any_distance() {
+        let d = dir(10.0, 5.0);
+        let near = Ring::new(true, Vec3::Y, d, 1.0);
+        let far = Ring::new(true, Vec3::Y, d, 4.0);
+        assert!(near.centre.distance(Vec3::Y + d) < 1e-6);
+        assert!((near.facing * Vec3::Z).distance(-d) < 1e-5);
+        assert!((near.size - 2.0 * 1f32.to_radians().tan()).abs() < 1e-6);
+        assert!((far.size / near.size - 4.0).abs() < 1e-4);
+        let fixation = Ring::new(false, Vec3::Y, d, 1.0);
+        assert!(fixation.size > near.size, "around autofocus's patch");
+    }
+
+    #[test]
+    fn a_ring_is_clear_inside_and_out() {
+        for now in [true, false] {
+            let px = Ring::picture(now);
+            assert_eq!(px.len(), (RING_PX * RING_PX * 4) as usize);
+            let alpha = |x: u32, y: u32| px[((y * RING_PX + x) * 4 + 3) as usize];
+            let h = RING_PX / 2;
+            assert_eq!(alpha(h, h), 0, "what you look at shows through");
+            assert_eq!(alpha(0, 0), 0, "a corner");
+            assert!(alpha(h, 1) > 150, "the ring: {}", alpha(h, 1));
+        }
     }
 
     #[test]

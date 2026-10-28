@@ -74,6 +74,12 @@ pub enum LayerDraw {
         pose: (Vec3, Quat),
         size: Vec2,
     },
+    /// A ring of Show where you look (see [`crate::gaze::Ring`]).
+    Gaze {
+        now: bool,
+        pose: (Vec3, Quat),
+        size: Vec2,
+    },
 }
 
 /// What to draw and do this frame.
@@ -99,6 +105,9 @@ const KEYBOARD: usize = 3;
 const PERF_LAYER: u64 = 8;
 /// Where the performance overlay sits from the eyes: low and to the left.
 const PERF_OFFSET: Vec3 = Vec3::new(-0.3, -0.12, -0.85);
+/// How far away Show where you look's rings are on a 180°/360° video or
+/// nothing, metres: where a flat screen starts.
+const GAZE_FAR: f32 = 4.0;
 /// How far below where you face the browse panel sits, degrees: what is in
 /// front of you is a little below eye level (the panel's top bar, Quit
 /// among it, is then about level with your eyes). It stands upright there,

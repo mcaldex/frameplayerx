@@ -722,6 +722,12 @@ pub fn adjust_panel(ctx: &egui::Context, v: &mut View) {
                             reads.then_some(&pb.autofocus),
                             v.eyes == crate::gaze::Status::Tracking,
                         );
+                        // Settings for every video, as in Settings ›
+                        // General.
+                        widgets::rows(ui, |r| {
+                            super::settings::eye_tracking(r, v.eyes, &mut v.settings.eye_tracking);
+                            super::settings::show_gaze(r, &mut v.settings.show_gaze);
+                        });
                     }
                     3 => picture_tab(ui, &mut pb.settings),
                     4 => {

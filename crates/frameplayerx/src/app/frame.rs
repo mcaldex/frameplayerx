@@ -155,7 +155,7 @@ impl App {
         self.paint_panels(renderer, &input, kb_target);
         self.perf_overlay(renderer, &input);
         let (frame, video, passthrough) = self.video(renderer, &input, anchor);
-        let (quads, layers) = self.compose(&input, eye);
+        let (quads, layers) = self.compose(&input, eye, &video);
         FrameOutput {
             frame,
             video,
@@ -585,7 +585,12 @@ impl App {
 
     /// What the compositor draws: panels back to front, then pointers,
     /// as quads in the eyes or (when it can) layers of their own.
-    fn compose(&mut self, input: &FrameInput, eye: Vec3) -> (Vec<QuadDraw>, Vec<LayerDraw>) {
+    fn compose(
+        &mut self,
+        input: &FrameInput,
+        eye: Vec3,
+        video: &VideoParams,
+    ) -> (Vec<QuadDraw>, Vec<LayerDraw>) {
         let mut quads = Vec::new();
         // Subtitles fade in like the panels (a panel that never fades in is
         // never drawn).
@@ -656,7 +661,58 @@ impl App {
         } else {
             quads.extend(self.pointer.quads(eye, any_ui));
         }
+        // Last, over everything.
+        if self.settings.show_gaze {
+            for ring in self.gaze_rings(input, video) {
+                if input.layers {
+                    layers.push(LayerDraw::Gaze {
+                        now: ring.now,
+                        pose: (ring.centre, ring.facing),
+                        size: Vec2::splat(ring.size),
+                    });
+                } else {
+                    quads.extend(ring.quads(eye));
+                }
+            }
+        }
         (quads, layers)
+    }
+
+    /// Show where you look: a ring around what the eyes fixate (or the
+    /// head faces) and one where the eyes are this frame. Each sits on the
+    /// panel or flat screen it is on, so both eyes see it where you look;
+    /// elsewhere [`GAZE_FAR`] away.
+    fn gaze_rings(&self, input: &FrameInput, video: &VideoParams) -> Vec<crate::gaze::Ring> {
+        use crate::gaze::Ring;
+        // The flat screen's plane; a curved one is a little nearer at its
+        // sides.
+        let screen = self
+            .playback
+            .as_ref()
+            .is_some_and(|p| p.format.projection == Projection::Flat)
+            .then(|| video.screen_pose.inverse());
+        let distance = |origin: Vec3, dir: Vec3| {
+            let on_screen = screen.and_then(|inv| {
+                let (o, d) = (inv.transform_point3(origin), inv.transform_vector3(dir));
+                Some(-o.z / d.z).filter(|t| t.is_finite() && *t > 0.0)
+            });
+            self.panels
+                .iter()
+                .filter(|p| p.visible)
+                .filter_map(|p| p.hit(origin, dir).map(|h| h.0))
+                .chain(on_screen)
+                .reduce(f32::min)
+                .unwrap_or(GAZE_FAR)
+        };
+        let fixation = input
+            .head
+            .zip(self.gaze.fixation())
+            .map(|((head, _), l)| Ring::new(false, head, l.direction, distance(head, l.direction)));
+        let now = self
+            .gaze
+            .now()
+            .map(|g| Ring::new(true, g.origin, g.direction, distance(g.origin, g.direction)));
+        fixation.into_iter().chain(now).collect()
     }
 
     pub(super) fn subtitles(

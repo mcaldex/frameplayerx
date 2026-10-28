@@ -216,11 +216,7 @@ fn general(ui: &mut egui::Ui, v: &mut View) {
             ),
             &mut s.follow,
         );
-        r.switch(
-            "Eye tracking",
-            Some(eye_tracking_note(v.eyes, s.eye_tracking)),
-            &mut s.eye_tracking,
-        );
+        eye_tracking(r, v.eyes, &mut s.eye_tracking);
         r.switch(
             "Haptic devices",
             Some("Sync connected haptic devices with videos that have scripts."),
@@ -242,7 +238,27 @@ fn general(ui: &mut egui::Ui, v: &mut View) {
             ),
             &mut s.perf_overlay,
         );
+        show_gaze(r, &mut s.show_gaze);
     });
+}
+
+/// The Eye tracking switch; the adjust panel's Stereo tab has it too.
+pub(super) fn eye_tracking(r: &mut widgets::Rows, eyes: crate::gaze::Status, on: &mut bool) {
+    r.switch("Eye tracking", Some(eye_tracking_note(eyes, *on)), on);
+}
+
+/// The Show where you look switch (see [`crate::gaze::Ring`]); the adjust
+/// panel's Stereo tab has it too.
+pub(super) fn show_gaze(r: &mut widgets::Rows, on: &mut bool) {
+    r.switch(
+        "Show where you look",
+        Some(
+            "Red rings over the video and the menus: a small one where your \
+             eyes are, a large one around what autofocus reads (straight \
+             ahead when your eyes aren't tracked).",
+        ),
+        on,
+    );
 }
 
 /// What the Eye tracking switch does, with what the headset offers.

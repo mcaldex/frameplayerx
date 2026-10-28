@@ -20,7 +20,7 @@ const FIRST: f32 = -2.0;
 const STEP: f32 = 0.25;
 pub(crate) const STEPS: usize = 96;
 /// Half the width of the patch matched, degrees.
-const PATCH: f32 = 3.0;
+pub const PATCH: f32 = 3.0;
 /// Below this correlation the pictures aren't taken to match.
 const MIN_MATCH: f32 = 0.5;
 /// How much of the patch both pictures must cover.

@@ -146,7 +146,9 @@ the eyes (the overlay's Eyes line; foveated rendering would read it),
 and `GazeTracker::fixation` holds through saccades and blinks and smooths
 tremor, for what wants the thing looked at (autofocus, which hands it to
 the renderer as `VideoParams::focus`). The preview's `gaze YAW PITCH`
-simulates a tracker.
+simulates a tracker. Settings › General › Show where you look draws both
+as red rings (`gaze::Ring`) on the panel or flat screen looked at: quad
+layers over everything on the headset, lines in the preview's eyes.
 
 **The database.** SQLite, with the schema version in `PRAGMA user_version`
 and forward-only migrations in `fp-library/src/schema.rs`. The scanner

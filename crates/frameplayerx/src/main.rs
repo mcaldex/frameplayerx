@@ -326,6 +326,8 @@ fn bench(file: &str, opts: &fp_media::bench::BenchOptions) -> Result<(), Error> 
 /// Quad layer keys of the two pointer rays (panels use their index).
 const RAY_LAYER: u64 = 100;
 const RAY_PX: [u32; 2] = [64, 8];
+/// Quad layer keys of Show where you look's two rings.
+const GAZE_LAYER: u64 = 102;
 
 /// The pointer ray's picture: light blue, soft across its width, fainter
 /// for the hand that isn't pointing. Premultiplied, as the compositor
@@ -538,6 +540,16 @@ fn run_xr(args: &Args) -> Result<(), Error> {
                         session.static_quad_layer(key, RAY_PX[0], RAY_PX[1], |image| {
                             renderer
                                 .upload_rgba(image, RAY_PX[0], RAY_PX[1], &ray_picture(active))
+                                .map_err(|e| e.to_string())
+                        })?;
+                        submits.push(QuadSubmit { key, pose, size });
+                    }
+                    LayerDraw::Gaze { now, pose, size } => {
+                        use gaze::{RING_PX, Ring};
+                        let key = GAZE_LAYER + now as u64;
+                        session.static_quad_layer(key, RING_PX, RING_PX, |image| {
+                            renderer
+                                .upload_rgba(image, RING_PX, RING_PX, &Ring::picture(now))
                                 .map_err(|e| e.to_string())
                         })?;
                         submits.push(QuadSubmit { key, pose, size });

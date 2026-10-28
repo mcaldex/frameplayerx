@@ -98,6 +98,9 @@ pub struct Settings {
     pub follow: bool,
     /// The performance overlay (Settings › General › Diagnostics).
     pub perf_overlay: bool,
+    /// Red rings where you look, over everything (Settings › General ›
+    /// Diagnostics): to check the eye tracker and what autofocus reads.
+    pub show_gaze: bool,
     /// What the controller buttons and thumbsticks do.
     pub controls: crate::bindings::Bindings,
     /// Where the library and adjust panels were moved to: yaw and pitch in
@@ -157,6 +160,7 @@ impl Default for Settings {
             ui_scale: 1.0,
             follow: false,
             perf_overlay: false,
+            show_gaze: false,
             controls: crate::bindings::Bindings::default(),
             panel_offsets: PanelOffsets::default(),
             browse_sort: fp_sources::EntrySort::default(),
@@ -266,6 +270,7 @@ mod tests {
             p.eye_tracking,
             "the eyes are used where the headset has them"
         );
+        assert!(!p.show_gaze, "the gaze rings stay off until turned on");
         // Saved before the global chroma key: the old green default goes.
         std::fs::write(
             &path,

@@ -389,6 +389,12 @@ tracking for apps in the headset's settings. **Depth** in the player's ⚙ › S
 works on top, and the same tab has an Autofocus switch, with how far away
 what you look at is and where it's shown.
 
+To see what it follows, turn on Settings › General › **Show where you
+look**, also in the Stereo tab with **Eye tracking**: a small red ring
+follows your eyes as the headset tracks them, and a larger one circles
+what autofocus reads. While your eyes aren't tracked, only the larger one
+shows, straight ahead.
+
 ### Fisheye lenses
 
 The fisheye presets (190° for the Canon RF 5.2 mm, 200° and 220° for
