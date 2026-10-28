@@ -15,6 +15,9 @@
 //!   and changes smaller than a fraction of a degree are left alone.
 //! - It starts and stops gently, settling over the refocus time, and never
 //!   faster than [`MAX_SPEED`].
+//! - With the eyes tracked ([`Eyes`]), each thing they land on is read
+//!   afresh, and most of the moving is done while they jump or blink,
+//!   when it is hardest to see.
 
 use fp_render::Focus;
 use serde::{Deserialize, Serialize};
@@ -43,6 +46,13 @@ const RELAX_AFTER: f32 = 0.5;
 const SETTLED: f32 = 1.0;
 /// The fastest the picture moves in depth, degrees a second.
 pub const MAX_SPEED: f32 = 12.0;
+/// While the eyes jump or blink it settles this many times faster, and
+/// moves as fast as [`UNSEEN_SPEED`].
+const UNSEEN_FASTER: f32 = 3.0;
+pub const UNSEEN_SPEED: f32 = 60.0;
+/// Readings come this many frames late ([`fp_render::Renderer::focus`]):
+/// once the eyes land, the first ones are still of where they were.
+const LATE: u8 = 2;
 /// A critically damped move is 95% of the way after this many of its time
 /// constants.
 const SETTLE: f32 = 4.74;
@@ -67,12 +77,26 @@ impl Default for AutofocusSettings {
     }
 }
 
+/// What the eyes do this frame, as autofocus uses it (see
+/// [`crate::gaze::GazeTracker`]); all false while they aren't tracked.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Eyes {
+    /// They landed on something new: what was read before is of something
+    /// else.
+    pub landed: bool,
+    /// They are mid-jump or closed: a change in depth goes unseen.
+    pub unseen: bool,
+}
+
 /// Autofocus for the open video.
 #[derive(Debug, Default)]
 pub struct Autofocus {
     /// The latest sure readings, newest last: seconds since, and disparity
     /// in degrees.
     seen: VecDeque<(f32, f32)>,
+    /// Frames whose readings are still of where the eyes were before they
+    /// landed.
+    late: u8,
     /// What is ahead, degrees, from the last readings that agreed.
     ahead: Option<f32>,
     /// Seconds since the readings last agreed.
@@ -91,12 +115,13 @@ pub struct Autofocus {
 impl Autofocus {
     /// Takes this frame's reading (`None`: nothing sure was read) and moves
     /// towards the Depth it asks for, given the video's own `depth`
-    /// (degrees). Returns the Depth to add, degrees.
+    /// (degrees) and what the `eyes` do. Returns the Depth to add, degrees.
     pub fn update(
         &mut self,
         reading: Option<Focus>,
         depth: f32,
         s: &AutofocusSettings,
+        eyes: Eyes,
         dt: f32,
     ) -> f32 {
         for r in &mut self.seen {
@@ -105,7 +130,13 @@ impl Autofocus {
         while self.seen.front().is_some_and(|r| r.0 > FRESH) {
             self.seen.pop_front();
         }
-        if let Some(f) = reading {
+        if eyes.landed {
+            self.seen.clear();
+            self.late = LATE;
+        }
+        let late = self.late > 0;
+        self.late = self.late.saturating_sub(1);
+        if let Some(f) = reading.filter(|_| !late) {
             if self.seen.len() == READINGS {
                 self.seen.pop_front();
             }
@@ -132,7 +163,7 @@ impl Autofocus {
         } else {
             self.farther = 0.0;
         }
-        self.ease(s.refocus_secs, dt);
+        self.ease(s.refocus_secs, eyes.unseen, dt);
         self.shown
     }
 
@@ -155,15 +186,21 @@ impl Autofocus {
 
     /// One frame of a critically damped move towards the target: no jolt
     /// as it starts, no overshoot, 95% of the way in `settle` seconds, and
-    /// never faster than [`MAX_SPEED`].
-    fn ease(&mut self, settle: f32, dt: f32) {
-        let w = SETTLE / settle.max(0.05);
+    /// never faster than [`MAX_SPEED`]; faster while the change goes
+    /// `unseen`.
+    fn ease(&mut self, settle: f32, unseen: bool, dt: f32) {
+        let (faster, cap) = if unseen {
+            (UNSEEN_FASTER, UNSEEN_SPEED)
+        } else {
+            (1.0, MAX_SPEED)
+        };
+        let w = SETTLE / settle.max(0.05) * faster;
         let off = self.shown - self.target;
         let j = self.speed + w * off;
         let fade = (-w * dt).exp();
         let next = self.target + (off + j * dt) * fade;
         let step = next - self.shown;
-        let capped = step.clamp(-MAX_SPEED * dt, MAX_SPEED * dt);
+        let capped = step.clamp(-cap * dt, cap * dt);
         self.speed = if capped == step {
             (self.speed - w * j * dt) * fade
         } else {
@@ -226,7 +263,7 @@ mod tests {
         let s = AutofocusSettings::default();
         let mut shown = 0.0;
         for _ in 0..(secs / DT).round() as usize {
-            shown = af.update(reading, depth, &s, DT);
+            shown = af.update(reading, depth, &s, Eyes::default(), DT);
         }
         shown
     }
@@ -266,7 +303,7 @@ mod tests {
         // The readings must agree first: nothing moves on the first ones.
         assert_eq!(run(&mut af, at(angle(0.5)), 0.0, DT * 5.0), 0.0);
         // Then a slow start, with no jump.
-        let first = af.update(at(angle(0.5)), 0.0, &s, DT);
+        let first = af.update(at(angle(0.5)), 0.0, &s, Eyes::default(), DT);
         assert!(first > 0.0 && first < target * 0.02, "{first} of {target}");
         let settled = run(&mut af, at(angle(0.5)), 0.0, s.refocus_secs);
         assert!(settled > target * 0.95, "{settled} of {target}");
@@ -284,7 +321,7 @@ mod tests {
         };
         let mut last = 0.0;
         for _ in 0..180 {
-            let shown = af.update(at(angle(0.2)), 0.0, &s, DT);
+            let shown = af.update(at(angle(0.2)), 0.0, &s, Eyes::default(), DT);
             let speed = (shown - last) / DT;
             assert!(speed <= MAX_SPEED + 1e-3, "{speed}°/s");
             last = shown;
@@ -298,7 +335,7 @@ mod tests {
         let steady = run(&mut af, at(angle(0.4)), 0.0, 2.0);
         let s = AutofocusSettings::default();
         for stray in [at(angle(0.15)), at(-2.0), at(angle(0.15))] {
-            af.update(stray, 0.0, &s, DT);
+            af.update(stray, 0.0, &s, Eyes::default(), DT);
         }
         assert!((af.shown() - steady).abs() < 1e-3);
         assert!((run(&mut af, at(angle(0.4)), 0.0, 1.0) - steady).abs() < 1e-3);
@@ -313,7 +350,7 @@ mod tests {
         let s = AutofocusSettings::default();
         for i in 0..60 {
             let d = if i % 2 == 0 { angle(0.3) } else { angle(3.0) };
-            af.update(at(d), 0.0, &s, DT);
+            af.update(at(d), 0.0, &s, Eyes::default(), DT);
         }
         assert!((af.shown() - steady).abs() < 1e-3);
     }
@@ -360,6 +397,54 @@ mod tests {
         let held = run(&mut af, at(angle(0.3)), 0.0, 2.0);
         assert!((run(&mut af, None, 0.0, 0.9) - held).abs() < 1e-3);
         assert!(run(&mut af, None, 0.0, 2.0) < held * 0.05);
+    }
+
+    #[test]
+    fn readings_from_before_the_eyes_landed_are_left_out() {
+        let s = AutofocusSettings::default();
+        let mut af = Autofocus::default();
+        run(&mut af, at(angle(0.4)), 0.0, 2.0);
+        // The eyes land on something 0.3 m away; the next two readings are
+        // still of what they left.
+        let landed = Eyes {
+            landed: true,
+            ..Eyes::default()
+        };
+        af.update(at(angle(0.4)), 0.0, &s, landed, DT);
+        af.update(at(angle(0.4)), 0.0, &s, Eyes::default(), DT);
+        // Five readings of the new thing aren't enough yet...
+        for _ in 0..5 {
+            af.update(at(angle(0.3)), 0.0, &s, Eyes::default(), DT);
+        }
+        assert_eq!(af.disparity(), Some(angle(0.4)));
+        // ...six are, with nothing from before among them.
+        af.update(at(angle(0.3)), 0.0, &s, Eyes::default(), DT);
+        assert_eq!(af.disparity(), Some(angle(0.3)));
+    }
+
+    #[test]
+    fn while_the_eyes_jump_it_moves_faster() {
+        let s = AutofocusSettings::default();
+        let jumping = Eyes {
+            unseen: true,
+            ..Eyes::default()
+        };
+        let mut moved = [0.0; 2];
+        for (i, eyes) in [Eyes::default(), jumping].into_iter().enumerate() {
+            let mut af = Autofocus::default();
+            // Sure of something near and on the move, then a saccade's
+            // five frames.
+            for _ in 0..6 {
+                af.update(at(angle(0.3)), 0.0, &s, Eyes::default(), DT);
+            }
+            let before = af.shown();
+            for _ in 0..5 {
+                af.update(at(angle(0.3)), 0.0, &s, eyes, DT);
+            }
+            moved[i] = af.shown() - before;
+        }
+        assert!(moved[1] > moved[0] * 2.0, "{moved:?}");
+        assert!(moved[1] / (5.0 * DT) <= UNSEEN_SPEED + 1e-3);
     }
 
     #[test]

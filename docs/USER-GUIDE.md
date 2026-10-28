@@ -384,8 +384,10 @@ filmed; only how near it all looks changes. Flat 3D films are left as they
 are. Each refocus, and why, is in the log (`frameplayerx.log`).
 
 On a headset that tracks your eyes, such as the Steam Frame, it follows
-where they look; elsewhere, or with Settings › General › **Eye tracking**
-off, it follows where your head points. It needs something with detail to
+where they look, reads each thing they land on afresh, and does most of
+its moving while they jump from one thing to the next or blink, when a
+change is hardest to see; elsewhere, or with Settings › General › **Eye
+tracking** off, it follows where your head points. It needs something with detail to
 look at: on a blank wall or the sky it keeps what it last saw for a
 moment, then lets go. If it follows your head on a Frame, allow eye
 tracking for apps in the headset's settings. **Depth** in the player's ⚙ › Stereo still
