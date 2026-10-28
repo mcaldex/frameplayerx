@@ -976,6 +976,7 @@ fn position_tab(ui: &mut egui::Ui, s: &mut ViewSettings, moved: bool, actions: &
         )
         .color(theme::TEXT_3),
     );
+    super::settings::background(ui, &mut s.background);
 }
 
 /// The Stereo tab. `focus` is autofocus for the open video, when it is one

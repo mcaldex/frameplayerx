@@ -379,7 +379,7 @@ fn video_position(ui: &mut egui::Ui, v: &mut View) {
         );
     });
     autofocus(ui, &mut v.settings.autofocus);
-    background(ui, &mut v.settings.background);
+    background(ui, &mut d.background);
 }
 
 /// Autofocus, for every 3D video (see [`crate::autofocus`]).
@@ -420,23 +420,21 @@ fn autofocus(ui: &mut egui::Ui, a: &mut crate::autofocus::AutofocusSettings) {
 /// Background colours offered as one tap.
 const BACKGROUNDS: [(&str, [f32; 3]); 4] = [
     ("Black", [0.0, 0.0, 0.0]),
-    ("Dark grey", crate::settings::BACKGROUND),
+    ("Dark grey", fp_core::view::BACKGROUND),
     ("Grey", [0.25, 0.25, 0.25]),
     ("Navy", [0.04, 0.06, 0.16]),
 ];
 
 /// The colour around flat videos and the menus while the room doesn't
-/// show. One for all videos, unlike the rest of the tab.
-fn background(ui: &mut egui::Ui, c: &mut [f32; 3]) {
-    let d = crate::settings::BACKGROUND;
+/// show: here the one videos start with, in the adjust panel's Position
+/// tab the open video's own.
+pub(super) fn background(ui: &mut egui::Ui, c: &mut [f32; 3]) {
+    let d = fp_core::view::BACKGROUND;
     heading(ui, "Background");
     widgets::rows(ui, |r| {
         r.row(
             "Colour",
-            Some(
-                "Around flat videos and the menus, for every video. Your room \
-                 replaces it while it shows.",
-            ),
+            Some("Around flat videos and the menus. Your room replaces it while it shows."),
             |ui| {
                 let [cr, cg, cb] = c.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u8);
                 let (rect, _) = ui.allocate_exact_size(Vec2::new(64.0, 32.0), Sense::hover());

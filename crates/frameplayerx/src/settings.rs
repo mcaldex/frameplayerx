@@ -48,10 +48,6 @@ pub enum SubtitleMode {
 /// Settings › Interface size: the sizes offered.
 pub const UI_SCALES: std::ops::RangeInclusive<f32> = 0.8..=1.5;
 
-/// Settings › Video position › Background: the colour it starts as, a
-/// near-black grey.
-pub const BACKGROUND: [f32; 3] = [0.086, 0.086, 0.11];
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -67,9 +63,6 @@ pub struct Settings {
     pub default_view: ViewSettings,
     /// Show the real world around flat screens and the UI.
     pub passthrough: bool,
-    /// The colour around flat screens and the UI while the room doesn't
-    /// show: sRGB, 0 to 1 per channel.
-    pub background: [f32; 3],
     /// Experimental: close-ups in 3D videos shown further away.
     pub autofocus: crate::autofocus::AutofocusSettings,
     /// What follows where you look uses the eye tracker, on a headset with
@@ -139,7 +132,6 @@ impl Default for Settings {
                 .to_string(),
             default_view: ViewSettings::default(),
             passthrough: false,
-            background: BACKGROUND,
             autofocus: Default::default(),
             eye_tracking: true,
             resume: true,
@@ -264,7 +256,6 @@ mod tests {
         assert_eq!(p.seek_step, 10.0);
         assert!(!p.haptics_enabled, "haptics stay off until turned on");
         assert_eq!(p.default_format, fp_core::format::VideoFormat::FALLBACK);
-        assert_eq!(p.background, BACKGROUND, "older files keep today's colour");
         assert!(!p.autofocus.enabled, "autofocus stays off until turned on");
         assert!(
             p.eye_tracking,
