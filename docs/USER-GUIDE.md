@@ -375,10 +375,13 @@ can't cross far enough to see it as one. Settings › Video position ›
 **Autofocus** works on every 3D 180°, 360°, fisheye and EAC video, as
 DeoVR's does. It watches what is in the middle of your view, and when that
 is nearer than **Nearest distance** (0.7 m to start with), it moves the two
-eyes' pictures apart until it looks that far away. Look at something
-further off and the picture settles back over the **Refocus time**. The
-depth within the picture stays as filmed; only how near it all looks
-changes. Flat 3D films are left as they are.
+eyes' pictures apart until it looks that far away, starting and stopping
+gently and settling over the **Refocus time**. Something nearer is pushed
+back at once; look at something further off and the picture comes forward
+only once you have looked there for a moment, so glancing about leaves it
+still, and so do small changes. The depth within the picture stays as
+filmed; only how near it all looks changes. Flat 3D films are left as they
+are. Each refocus, and why, is in the log (`frameplayerx.log`).
 
 It follows where your head points, not your eyes, and it needs something
 with detail to look at. On a blank wall or the sky it keeps what it last
