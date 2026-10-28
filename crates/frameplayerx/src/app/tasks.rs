@@ -66,6 +66,8 @@ pub(super) enum Job {
     /// The last run crashed: the report the user may send.
     CrashReport(Box<crate::crash::Report>),
     CrashSent(Result<(), String>),
+    /// Steam was asked to open a web page.
+    WebPageOpened(Result<(), String>),
     /// Subtitle file `index` of the video opened as `seq`, read.
     Subtitles {
         seq: u64,
@@ -99,7 +101,9 @@ impl App {
         for (source, (root, location_root)) in targets {
             let lib = self.services.library.clone();
             let tx = self.jobs.sender();
-            self.ui.scans.insert(source.clone(), "Scanning…".into());
+            self.ui
+                .scans
+                .insert(source.clone(), tr!("scan-starting").into());
             self.jobs.spawn("scan", move || {
                 let opts = fp_library::ScanOptions {
                     force,
@@ -113,7 +117,7 @@ impl App {
                             last = Instant::now();
                             let _ = tx.send(Job::ScanStatus {
                                 source: source.clone(),
-                                status: format!("Scanning: {} videos", p.videos_found),
+                                status: tr!("scan-progress", count = p.videos_found),
                             });
                         }
                     })
@@ -142,8 +146,18 @@ impl App {
         let name = self.source_name(source);
         match result {
             Ok(r) => {
-                let msg = format!("{name}: {} new, {} missing", r.added, r.missing);
-                log::info!("scanned {msg}, {} unreadable", r.errors.len());
+                log::info!(
+                    "scanned {name}: {} new, {} missing, {} unreadable",
+                    r.added,
+                    r.missing,
+                    r.errors.len()
+                );
+                let msg = tr!(
+                    "scan-done",
+                    name = name.as_str(),
+                    added = r.added,
+                    missing = r.missing
+                );
                 if told {
                     self.ui.toast(msg);
                 }
@@ -151,7 +165,8 @@ impl App {
             Err(e) => {
                 log::warn!("scanning {name}: {e}");
                 if told {
-                    self.ui.toast(format!("{name} couldn't be scanned: {e}"));
+                    self.ui
+                        .toast(tr!("scan-failed", name = name.as_str(), error = e.as_str()));
                 }
             }
         }
@@ -212,6 +227,24 @@ impl App {
             .map(ui::crash::CrashPrompt::new);
     }
 
+    /// Opens `address` in Steam's browser, which shows over the app: the
+    /// headset has no other browser to hand it to.
+    pub(super) fn open_web_page(&mut self, address: &str) {
+        let url = format!("steam://openurl/https://{address}");
+        self.jobs.spawn("open-web-page", move || {
+            let r = std::process::Command::new("steam")
+                .arg(&url)
+                .status()
+                .map_err(|e| e.to_string())
+                .and_then(|s| {
+                    s.success()
+                        .then_some(())
+                        .ok_or_else(|| format!("steam: {s}"))
+                });
+            Job::WebPageOpened(r)
+        });
+    }
+
     /// Sends the crash report the user agreed to send.
     pub(super) fn send_crash_report(&mut self) {
         let (Some(url), Some(c)) = (crate::crash::REPORT_URL, &mut self.ui.crash) else {
@@ -230,10 +263,14 @@ impl App {
                     Some(&body),
                     4096,
                 )
-                .map_err(|e| e.to_string())
+                .map_err(|e| ui::errors::source(&e))
                 .and_then(|reply| match reply.status {
                     200..=299 => Ok(()),
-                    status => Err(format!("the server answered {status}")),
+                    status => Err(tr!(
+                        "error-http-status",
+                        status = status.to_string(),
+                        url = url
+                    )),
                 });
             Job::CrashSent(r)
         });
@@ -383,7 +420,7 @@ impl App {
                 }
             }
             Job::Toast(t) => self.ui.toast(t),
-            Job::Done => {}
+            Job::Done | Job::WebPageOpened(Ok(())) => {}
             Job::Subtitles { seq, index, result } => {
                 // Only for the same video, and the file still picked.
                 let Some(p) = self.playback.as_mut().filter(|_| seq == self.open_seq) else {
@@ -396,7 +433,7 @@ impl App {
                     Ok(cues) => p.player.set_external_subtitles(cues),
                     Err(e) => {
                         p.active_subtitle_file = None;
-                        self.ui.toast(format!("Subtitles: {e}"));
+                        self.ui.toast(tr!("toast-subtitles", title = e.to_string()));
                     }
                 }
                 self.ui.invalidate();
@@ -405,7 +442,9 @@ impl App {
                 self.ui.dlna_searching = false;
                 match r {
                     Ok(d) => self.ui.dlna_found = d,
-                    Err(e) => self.ui.toast(format!("Network search failed: {e}")),
+                    Err(e) => self
+                        .ui
+                        .toast(tr!("dlna-search-failed", error = e.to_string())),
                 }
             }
             // A device connected before haptics were turned off and on
@@ -428,7 +467,8 @@ impl App {
                 Ok(p) => log::info!("mounted /dev/{device} at {}", p.display()),
                 Err(e) => {
                     log::warn!("mounting /dev/{device}: {e}");
-                    self.ui.toast(format!("Couldn't open the drive: {e}"));
+                    self.ui
+                        .toast(tr!("drive-mount-failed", error = e.to_string()));
                 }
             },
             Job::Update(status) => self.ui.update = status,
@@ -437,9 +477,7 @@ impl App {
                     if let UpdateStatus::Available { version, .. } = &status
                         && self.start_check == Some(seq)
                     {
-                        self.update_notice = Some(format!(
-                            "FramePlayerX {version} is out: install it from Settings › Updates"
-                        ));
+                        self.update_notice = Some(tr!("update-notice", version = version.as_str()));
                     }
                     self.update = update.map(|u| *u);
                     self.ui.update = status;
@@ -454,13 +492,17 @@ impl App {
             }
             Job::CrashSent(Ok(())) => {
                 self.ui.crash = None;
-                self.ui.toast("Crash report sent. Thank you!");
+                self.ui.toast(tr!("crash-sent"));
             }
             Job::CrashSent(Err(e)) => {
                 if let Some(c) = &mut self.ui.crash {
                     c.sending = false;
                     c.error = Some(e);
                 }
+            }
+            Job::WebPageOpened(Err(e)) => {
+                log::warn!("opening a web page: {e}");
+                self.ui.toast(tr!("error-open-page", error = e));
             }
         }
     }
@@ -492,6 +534,7 @@ impl App {
                 }
                 self.ui.open_error = None;
                 self.ui.adjust_open = false;
+                self.ui.tracks_open = false;
                 self.show_browser = false;
                 self.ui_visible = true;
                 self.last_activity = Instant::now();
@@ -572,7 +615,7 @@ impl App {
             token,
             user_id: Some(user_id),
         };
-        self.ui.toast("Quick Connect authorized!");
+        self.ui.toast(tr!("quick-connect-authorized-toast"));
         self.panels[MAIN].request_repaint();
     }
 
@@ -582,23 +625,52 @@ impl App {
             return;
         };
         for ev in rx.try_iter() {
-            match ev {
-                fp_library::WorkerEvent::Processed { done, total, .. }
-                | fp_library::WorkerEvent::Failed { done, total, .. } => {
-                    self.ui.worker_status = Some(format!("Preparing thumbnails {done}/{total}"));
-                    if done % 12 == 0 || done == total {
-                        self.ui.invalidate();
-                        self.thumbs.retry_failed();
+            use fp_library::WorkerEvent as E;
+            let (done, total) = match ev {
+                E::Processed {
+                    id,
+                    done,
+                    total,
+                    thumbnail,
+                    ..
+                } => {
+                    // Made again under the same name (another format, a
+                    // changed file): the old picture must not stay.
+                    if thumbnail
+                        && let Ok(Some(r)) = self.services.library.get(id)
+                        && let Some(p) = r.thumbnail
+                    {
+                        self.thumbs.forget(&p.display().to_string());
                     }
+                    (done, total)
                 }
-                fp_library::WorkerEvent::Idle { .. } => {
+                E::Failed { done, total, .. } => (done, total),
+                E::ResumeThumbnail { .. } | E::ResumeThumbnailsDeleted(_) => {
+                    self.ui.invalidate();
+                    continue;
+                }
+                E::Idle { .. } => {
                     if self.ui.worker_status.take().is_some() {
                         self.ui.invalidate();
                         self.thumbs.retry_failed();
                     }
+                    continue;
                 }
-                fp_library::WorkerEvent::Error(e) => log::warn!("metadata worker: {e}"),
-                _ => {}
+                E::Error(e) => {
+                    log::warn!("metadata worker: {e}");
+                    continue;
+                }
+                E::Started { .. } | E::Stopped => continue,
+            };
+            let doing = if self.settings.make_thumbnails {
+                tr!("worker-thumbnails")
+            } else {
+                tr!("worker-reading")
+            };
+            self.ui.worker_status = Some(format!("{doing} {done}/{total}"));
+            if done % 12 == 0 || done == total {
+                self.ui.invalidate();
+                self.thumbs.retry_failed();
             }
         }
     }
@@ -647,7 +719,7 @@ impl App {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
             log::info!("drive mounted: {}", m.display());
-            self.ui.toast(format!("Found drive \"{name}\""));
+            self.ui.toast(tr!("drive-found", name = name.as_str()));
             self.scan_libraries(|l| l.card.is_some(), false, false);
         } else {
             log::info!("a drive was removed");
@@ -670,8 +742,8 @@ impl App {
             e.location = fp_core::volume::stable(&e.location).into_owned();
         }
         if let Some(source) = self.locked_source_of(&req) {
-            self.ui
-                .toast(format!("{} is locked", self.source_name(&source)));
+            let name = self.source_name(&source);
+            self.ui.toast(tr!("source-is-locked", name = name));
             self.ask_pin(&source);
             return;
         }
@@ -711,9 +783,11 @@ impl App {
         let title = self.ui.opening.take().unwrap_or_default();
         log::warn!("gave up opening {title} after {} s", OPEN_TIMEOUT.as_secs());
         self.open_seq += 1;
-        self.ui.open_error = Some(format!(
-            "{title}: the server sent no video in {} seconds",
-            OPEN_TIMEOUT.as_secs()
+        let seconds = OPEN_TIMEOUT.as_secs();
+        self.ui.open_error = Some(tr!(
+            "open-timeout",
+            title = title.as_str(),
+            seconds = seconds
         ));
         self.ui.invalidate();
     }

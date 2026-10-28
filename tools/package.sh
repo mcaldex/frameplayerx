@@ -65,7 +65,7 @@ while todo:
     if i in seen: continue
     seen.add(i)
     todo += [d["pkg"] for d in nodes[i]["deps"] if any(k["kind"] in (None, "normal") for k in d["dep_kinds"])]
-ours = set(m["workspace_members"])  # vendored crates (vendor/) are listed too
+ours = set(m["workspace_members"])
 crates = sorted((pkgs[i] for i in seen if i not in ours), key=lambda p: (p["name"], p["version"]))
 named = re.compile(r"(licen[cs]e|copying|copyright|notice|unlicense)", re.I)
 texts, bare = {}, []

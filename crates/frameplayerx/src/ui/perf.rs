@@ -35,27 +35,37 @@ pub fn rows(o: &Overlay) -> Vec<(&'static str, String, bool)> {
             let hz = o
                 .display_hz
                 .map_or(String::new(), |hz| format!(" · {hz:.0} Hz"));
+            let (typical, longest_ms) = (format!("{typical:.1}"), format!("{longest:.1}"));
             (
-                "Frame",
-                format!("{typical:.1} ms, longest {longest:.1}{hz}"),
+                tr!("perf-frame"),
+                tr!(
+                    "perf-frame-value",
+                    typical = typical,
+                    longest = longest_ms,
+                    hz = hz
+                ),
                 budget.is_some_and(|b| longest > b),
             )
         }
-        None => ("Frame", NONE.into(), false),
+        None => (tr!("perf-frame"), NONE.into(), false),
     });
     if let Some((fps, dropped, decoder)) = &o.video {
+        let (fps_text, dropped_text) = (format!("{fps:.1}"), format!("{dropped:.0}"));
         rows.push((
-            "Video",
-            format!("{fps:.1} fps · {dropped:.0} dropped/s"),
+            tr!("perf-video"),
+            tr!("perf-video-value", fps = fps_text, dropped = dropped_text),
             *dropped > 0.0,
         ));
-        rows.push(("Decoder", decoder.clone(), false));
+        rows.push((tr!("adjust-decoder"), decoder.clone(), false));
     }
     let s = o.sample.unwrap_or_default();
     rows.push((
         "CPU",
         match (s.cpu, s.app_cpu) {
-            (Some(all), Some(app)) => format!("{all:.0}% · app {app:.0}%"),
+            (Some(all), Some(app)) => {
+                let (all, app) = (format!("{all:.0}"), format!("{app:.0}"));
+                tr!("perf-cpu-value", all = all, app = app)
+            }
             (Some(all), None) => format!("{all:.0}%"),
             _ => NONE.into(),
         },
@@ -72,15 +82,20 @@ pub fn rows(o: &Overlay) -> Vec<(&'static str, String, bool)> {
         false,
     ));
     rows.push((
-        "Memory",
+        tr!("perf-memory"),
         match (s.mem, s.app_mem) {
-            (Some((used, total)), Some(app)) => format!(
-                "{:.1} of {:.1} GB · app {:.1} GB",
-                gb(used),
-                gb(total),
-                gb(app)
-            ),
-            (Some((used, total)), None) => format!("{:.1} of {:.1} GB", gb(used), gb(total)),
+            (Some((used, total)), Some(app)) => {
+                let (used, total, app) = (
+                    format!("{:.1}", gb(used)),
+                    format!("{:.1}", gb(total)),
+                    format!("{:.1}", gb(app)),
+                );
+                tr!("perf-memory-app", used = used, total = total, app = app)
+            }
+            (Some((used, total)), None) => {
+                let (used, total) = (format!("{:.1}", gb(used)), format!("{:.1}", gb(total)));
+                tr!("perf-memory-value", used = used, total = total)
+            }
             _ => NONE.into(),
         },
         false,

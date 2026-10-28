@@ -1,22 +1,24 @@
 //! DeoVR feeds and HereSphere APIs: their scene groups as chips over a grid
 //! of scenes, searched (in the group chosen) across titles, studios,
-//! performers and tags, sorted and filtered, with a details page per scene
-//! (description, performers, tags, chapters to start from).
+//! performers and tags, sorted, shuffled and filtered (studio, people, tags,
+//! length, format, rating), with a details page per scene (description,
+//! performers, tags, chapters to start from).
 //!
-//! A HereSphere library lists scene addresses only: scenes on screen (and,
-//! while searching, every scene of the group) have their details fetched as
-//! they are needed.
+//! A HereSphere library lists scene addresses only: scenes on screen have
+//! their details fetched as they are needed. A DeoVR listing has no studio,
+//! people or tags: while searching or filtering, every scene of the group
+//! has its details fetched.
 
 use super::page::{self, Card};
 use super::theme::{self, Weight};
 use super::widgets::{self, Kind, Tip};
-use super::{Action, View, fmt_date, fmt_time, icons};
+use super::{Action, FormatFilter, View, fmt_date, fmt_time, icons};
 use crate::playback::OpenRequest;
 use egui::{RichText, Sense, Vec2};
 use fp_sources::{FeedLibrary, FeedScene, SceneInfo, SourceKind};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
-/// Scenes shown before "Show more".
+/// Scenes shown at first, and more each time the end of the grid shows.
 const PAGE: usize = 60;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -25,11 +27,241 @@ pub enum FeedSort {
     #[default]
     Feed,
     Title,
-    /// Newest release (or addition) first.
+    /// By release (or addition) date.
     Newest,
     Rating,
+    Length,
+    /// Shuffled by [`FeedView::seed`].
+    Shuffle,
+}
+
+impl FeedSort {
+    /// Whether this order reads best largest first.
+    fn default_descending(self) -> bool {
+        matches!(self, FeedSort::Newest | FeedSort::Rating | FeedSort::Length)
+    }
+}
+
+/// How long a scene runs, as the Filters drawer offers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Length {
+    Short,
+    Medium,
+    Long,
     Longest,
-    Shortest,
+}
+
+impl Length {
+    const ALL: [Length; 4] = [Length::Short, Length::Medium, Length::Long, Length::Longest];
+
+    fn label(self) -> &'static str {
+        match self {
+            Length::Short => tr!("feed-length-short"),
+            Length::Medium => tr!("feed-length-medium"),
+            Length::Long => tr!("feed-length-long"),
+            Length::Longest => tr!("feed-length-longest"),
+        }
+    }
+
+    fn holds(self, seconds: f64) -> bool {
+        let minutes = seconds / 60.0;
+        match self {
+            Length::Short => minutes < 10.0,
+            Length::Medium => (10.0..30.0).contains(&minutes),
+            Length::Long => (30.0..60.0).contains(&minutes),
+            Length::Longest => minutes >= 60.0,
+        }
+    }
+}
+
+/// The lowest ratings the drawer offers, in tenths of a star.
+fn ratings() -> [(u8, &'static str); 3] {
+    [
+        (30, tr!("feed-rating-3")),
+        (40, tr!("feed-rating-4")),
+        (45, tr!("feed-rating-45")),
+    ]
+}
+
+/// The shapes the drawer offers, as the library's format chips name them.
+fn shapes() -> [(FormatFilter, &'static str); 4] {
+    [
+        (FormatFilter::Flat, tr!("filter-flat")),
+        (FormatFilter::Vr180, "180°"),
+        (FormatFilter::Vr360, "360°"),
+        (FormatFilter::Fisheye, tr!("filter-fisheye")),
+    ]
+}
+
+/// A scene's shape, as the library's format chips name them.
+fn shape(s: &FeedScene) -> Option<FormatFilter> {
+    use fp_library::ProjectionKind as P;
+    Some(match P::of(&s.format?.projection) {
+        P::Flat => FormatFilter::Flat,
+        P::Equirect180 => FormatFilter::Vr180,
+        P::Equirect360 | P::Eac => FormatFilter::Vr360,
+        P::Fisheye => FormatFilter::Fisheye,
+    })
+}
+
+/// What the Filters drawer keeps: scenes with any of the studios, people,
+/// tags and shapes chosen (each kind narrowing the others), of the length
+/// chosen and rated at least as high.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FeedFilters {
+    pub studios: BTreeSet<String>,
+    pub people: BTreeSet<String>,
+    pub tags: BTreeSet<String>,
+    pub shapes: Vec<FormatFilter>,
+    /// 3D only.
+    pub stereo: bool,
+    pub length: Option<Length>,
+    /// Tenths of a star (see [`ratings`]).
+    pub rating: Option<u8>,
+}
+
+/// One filter that is on, as its chip under the sorts names it.
+enum On {
+    Studio(String),
+    Person(String),
+    Tag(String),
+    Shape(FormatFilter),
+    Stereo,
+    Length(Length),
+    Rating(u8),
+}
+
+impl FeedFilters {
+    fn on(&self) -> Vec<On> {
+        let mut on: Vec<On> = self.studios.iter().cloned().map(On::Studio).collect();
+        on.extend(self.people.iter().cloned().map(On::Person));
+        on.extend(self.tags.iter().cloned().map(On::Tag));
+        on.extend(self.shapes.iter().copied().map(On::Shape));
+        if self.stereo {
+            on.push(On::Stereo);
+        }
+        on.extend(self.length.map(On::Length));
+        on.extend(self.rating.map(On::Rating));
+        on
+    }
+
+    pub fn count(&self) -> usize {
+        self.on().len()
+    }
+
+    /// The chips of the filters that are on.
+    fn labels(&self) -> Vec<String> {
+        self.on()
+            .into_iter()
+            .map(|o| match o {
+                On::Studio(s) => tr!("filter-on-studio", studio = s),
+                On::Person(p) => p,
+                On::Tag(t) => tr!("filter-on-tag", tag = t),
+                On::Shape(f) => shape_label(f).to_string(),
+                On::Stereo => "3D".to_string(),
+                On::Length(l) => l.label().to_string(),
+                On::Rating(r) => rating_label(r).to_string(),
+            })
+            .collect()
+    }
+
+    /// Takes off the filter of chip `i` (see [`FeedFilters::labels`]).
+    fn take_off(&mut self, i: usize) {
+        match self.on().into_iter().nth(i) {
+            Some(On::Studio(s)) => {
+                self.studios.remove(&s);
+            }
+            Some(On::Person(p)) => {
+                self.people.remove(&p);
+            }
+            Some(On::Tag(t)) => {
+                self.tags.remove(&t);
+            }
+            Some(On::Shape(f)) => self.shapes.retain(|x| *x != f),
+            Some(On::Stereo) => self.stereo = false,
+            Some(On::Length(_)) => self.length = None,
+            Some(On::Rating(_)) => self.rating = None,
+            None => {}
+        }
+    }
+
+    fn keeps(&self, s: &FeedScene) -> bool {
+        let any = |chosen: &BTreeSet<String>, has: &[String]| {
+            chosen.is_empty() || has.iter().any(|x| chosen.contains(x))
+        };
+        (self.studios.is_empty() || s.studio.as_ref().is_some_and(|x| self.studios.contains(x)))
+            && any(&self.people, &s.actors)
+            && any(&self.tags, &s.tags)
+            && (self.shapes.is_empty() || shape(s).is_some_and(|f| self.shapes.contains(&f)))
+            && (!self.stereo || s.format.is_some_and(|f| f.stereo.is_stereo()))
+            && self
+                .length
+                .is_none_or(|l| s.duration.is_some_and(|d| l.holds(d)))
+            && self
+                .rating
+                .is_none_or(|r| s.rating.is_some_and(|x| x * 10.0 + 0.01 >= r as f32))
+    }
+}
+
+fn shape_label(f: FormatFilter) -> &'static str {
+    shapes()
+        .iter()
+        .find(|(s, _)| *s == f)
+        .map_or("", |(_, label)| label)
+}
+
+fn rating_label(r: u8) -> &'static str {
+    ratings()
+        .iter()
+        .find(|(x, _)| *x == r)
+        .map_or("", |(_, label)| label)
+}
+
+/// The drawer's choices among the scenes the page lists before its
+/// filters, each with how many have it, most first.
+#[derive(Default)]
+struct Facets {
+    studios: Vec<(String, usize)>,
+    people: Vec<(String, usize)>,
+    tags: Vec<(String, usize)>,
+    shapes: Vec<(FormatFilter, usize)>,
+    stereo: usize,
+    timed: bool,
+    rated: bool,
+}
+
+/// How many times each name comes, most first, then by name.
+fn tally<'a>(names: impl Iterator<Item = &'a String>) -> Vec<(String, usize)> {
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for n in names {
+        *counts.entry(n.as_str()).or_default() += 1;
+    }
+    let mut out: Vec<(String, usize)> = counts
+        .into_iter()
+        .map(|(n, c)| (n.to_string(), c))
+        .collect();
+    out.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase()))
+    });
+    out
+}
+
+/// Where `url` falls in shuffle `seed`: the same while the seed is.
+fn shuffle_key(seed: u64, url: &str) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325 ^ seed;
+    for b in url.bytes() {
+        h = (h ^ b as u64).wrapping_mul(0x100_0000_01b3);
+    }
+    // splitmix64's finish, so nearby seeds give unrelated orders.
+    h = (h ^ (h >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    h = (h ^ (h >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    h ^ (h >> 31)
+}
+
+/// A seed for a new shuffle.
+fn new_seed() -> u64 {
+    fp_core::playback::now_ms() as u64
 }
 
 pub struct FeedView {
@@ -50,10 +282,21 @@ pub struct FeedView {
     pub group: Option<usize>,
     pub search: String,
     pub sort: FeedSort,
+    /// Largest first.
+    pub descending: bool,
+    /// The order of [`FeedSort::Shuffle`]: new each visit and each Shuffle
+    /// again, so opening a scene's page and coming back keeps it.
+    pub seed: u64,
     pub scripted_only: bool,
     pub favorites_only: bool,
+    pub filters: FeedFilters,
+    pub filters_open: bool,
+    /// How the drawer's long sections are narrowed, by title.
+    pub lists: HashMap<&'static str, page::ListState>,
     /// Scenes shown (paging).
     pub shown: usize,
+    /// The grid goes back to its top (the drawer changed a filter).
+    pub to_top: bool,
     pub details: Option<Details>,
     /// Scenes whose details were asked for.
     pub requested: HashSet<String>,
@@ -82,9 +325,15 @@ impl FeedView {
             group: None,
             search: String::new(),
             sort: FeedSort::Feed,
+            descending: false,
+            seed: new_seed(),
             scripted_only: false,
             favorites_only: false,
+            filters: FeedFilters::default(),
+            filters_open: false,
+            lists: HashMap::new(),
             shown: PAGE,
+            to_top: false,
             details: None,
             requested: HashSet::new(),
             unsaved: 0,
@@ -198,21 +447,30 @@ impl FeedView {
         }
     }
 
-    /// The scenes to show: searched, filtered and sorted.
-    pub fn visible(&self) -> Vec<&FeedScene> {
+    /// The scenes of the group shown, searched and with the Scripted and
+    /// Favorites chips, before the drawer's filters.
+    fn searched(&self) -> Vec<&FeedScene> {
         let words: Vec<String> = self
             .search
             .split_whitespace()
             .map(str::to_lowercase)
             .collect();
         // A search looks through the group chosen ("All": every group).
-        let mut out: Vec<&FeedScene> = self
-            .scope()
+        self.scope()
             .iter()
             .filter_map(|u| self.scenes.get(u))
             .filter(|s| words.is_empty() || s.matches(&words))
             .filter(|s| !self.scripted_only || s.scripted)
             .filter(|s| !self.favorites_only || s.favorite)
+            .collect()
+    }
+
+    /// The scenes to show: searched, filtered and sorted.
+    pub fn visible(&self) -> Vec<&FeedScene> {
+        let mut out: Vec<&FeedScene> = self
+            .searched()
+            .into_iter()
+            .filter(|s| self.filters.keeps(s))
             .collect();
         let title = |s: &FeedScene| widgets::display_title(&s.title).to_lowercase();
         // Known values first in either direction, the rest after in feed
@@ -230,15 +488,89 @@ impl FeedView {
             }
         }
         let date = |s: &FeedScene| s.released.or(s.added);
+        let down = self.descending;
         match self.sort {
             FeedSort::Feed => {}
-            FeedSort::Title => out.sort_by_cached_key(|s| title(s)),
-            FeedSort::Newest => out.sort_by(|a, b| known(date(a), date(b), true)),
-            FeedSort::Rating => out.sort_by(|a, b| known(a.rating, b.rating, true)),
-            FeedSort::Longest => out.sort_by(|a, b| known(a.duration, b.duration, true)),
-            FeedSort::Shortest => out.sort_by(|a, b| known(a.duration, b.duration, false)),
+            FeedSort::Title => {
+                out.sort_by_cached_key(|s| title(s));
+                if down {
+                    out.reverse();
+                }
+            }
+            FeedSort::Newest => out.sort_by(|a, b| known(date(a), date(b), down)),
+            FeedSort::Rating => out.sort_by(|a, b| known(a.rating, b.rating, down)),
+            FeedSort::Length => out.sort_by(|a, b| known(a.duration, b.duration, down)),
+            FeedSort::Shuffle => out.sort_by_cached_key(|s| shuffle_key(self.seed, &s.url)),
         }
         out
+    }
+
+    /// The drawer's choices, each section's counted over the scenes the
+    /// other sections keep: how many picking one would show. What is chosen
+    /// stays listed, with nothing left too.
+    fn facets(&self) -> Facets {
+        let scenes = self.searched();
+        let kept_without = |clear: fn(&mut FeedFilters)| -> Vec<&FeedScene> {
+            let mut others = self.filters.clone();
+            clear(&mut others);
+            scenes.iter().copied().filter(|s| others.keeps(s)).collect()
+        };
+        let chosen_too = |mut counts: Vec<(String, usize)>, chosen: &BTreeSet<String>| {
+            for c in chosen {
+                if !counts.iter().any(|(n, _)| n == c) {
+                    counts.push((c.clone(), 0));
+                }
+            }
+            counts
+        };
+        let by_studio = kept_without(|f| f.studios.clear());
+        let by_person = kept_without(|f| f.people.clear());
+        let by_tag = kept_without(|f| f.tags.clear());
+        let by_shape = kept_without(|f| f.shapes.clear());
+        let by_stereo = kept_without(|f| f.stereo = false);
+        let mut shapes: Vec<(FormatFilter, usize)> = shapes()
+            .iter()
+            .map(|(f, _)| (*f, by_shape.iter().filter(|s| shape(s) == Some(*f)).count()))
+            .filter(|(f, n)| *n > 0 || self.filters.shapes.contains(f))
+            .collect();
+        shapes.sort_by_key(|s| std::cmp::Reverse(s.1));
+        Facets {
+            studios: chosen_too(
+                tally(by_studio.iter().filter_map(|s| s.studio.as_ref())),
+                &self.filters.studios,
+            ),
+            people: chosen_too(
+                tally(by_person.iter().flat_map(|s| s.actors.iter())),
+                &self.filters.people,
+            ),
+            tags: chosen_too(
+                tally(by_tag.iter().flat_map(|s| s.tags.iter())),
+                &self.filters.tags,
+            ),
+            shapes,
+            stereo: by_stereo
+                .iter()
+                .filter(|s| s.format.is_some_and(|f| f.stereo.is_stereo()))
+                .count(),
+            timed: scenes.iter().any(|s| s.duration.is_some()),
+            rated: scenes.iter().any(|s| s.rating.is_some()),
+        }
+    }
+
+    /// Of the group's scenes that need their details read for their studio,
+    /// people and tags, how many have them, of how many; `None` once all do.
+    fn reading(&self) -> Option<(usize, usize)> {
+        let deovr = self.kind == SourceKind::DeoVr;
+        let scope = self.scope();
+        let pending = scope
+            .iter()
+            .filter(|u| {
+                self.scenes
+                    .get(*u)
+                    .is_some_and(|s| !s.detailed && (s.bare || deovr))
+            })
+            .count();
+        (pending > 0).then(|| (scope.len() - pending, scope.len()))
     }
 
     /// Whether any scene says `has`.
@@ -330,22 +662,62 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut F
     }
     let back = header(ui, v.actions, source, name, f);
     let mut changed = filters(ui, f, haptics);
-    let shown = f.visible();
-    let total = shown.len();
-    let mut sort = f.sort;
+    let count = tr!("count-scenes", count = f.visible().len());
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        changed |= page::sort_bar(ui, &sort_choices(f), &mut sort);
-        page::count_label(ui, &page::plural(total, "scene", "scenes"));
+        let choices = sort_choices(f);
+        if page::sort_bar(ui, &choices, &mut f.sort) {
+            f.descending = f.sort.default_descending();
+            f.seed = new_seed();
+            changed = true;
+        }
+        match f.sort {
+            FeedSort::Feed => {}
+            FeedSort::Shuffle => {
+                if page::shuffle_again(ui) {
+                    f.seed = new_seed();
+                    changed = true;
+                }
+            }
+            sort => changed |= page::direction(ui, &mut f.descending, direction_tips(sort)),
+        }
+        page::count_label(ui, &count);
     });
+    match page::active_filters(ui, &f.filters.labels()) {
+        Some(page::FilterEdit::Remove(i)) => {
+            f.filters.take_off(i);
+            changed = true;
+        }
+        Some(page::FilterEdit::Clear) => {
+            f.filters = FeedFilters::default();
+            changed = true;
+        }
+        None => {}
+    }
     ui.add_space(10.0);
     page::status(ui, f.loading && f.order.is_empty(), f.error.as_deref());
 
+    let shown = f.visible();
+    let total = shown.len();
     let list: Vec<FeedScene> = shown.into_iter().take(f.shown).cloned().collect();
-    let picked = scene_grid(ui, v.thumbs, f, &list, total, haptics);
-    f.sort = sort;
+    let top = std::mem::take(&mut f.to_top) || changed;
+    let picked = scene_grid(ui, v.thumbs, f, &list, total, haptics, top);
+    if f.filters_open {
+        let facets = f.facets();
+        let mut open = true;
+        let count = tr!("count-scenes", count = total);
+        let clear = page::filter_drawer(ui, &mut open, &count, |ui| {
+            changed |= drawer(ui, f, &facets);
+        });
+        f.filters_open = open;
+        if clear {
+            f.filters = FeedFilters::default();
+            changed = true;
+        }
+    }
     if changed {
         f.shown = PAGE;
+        f.to_top = true;
     }
     if picked.more {
         f.shown += PAGE;
@@ -366,10 +738,118 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut F
             url,
         });
     }
-    if f.kind == SourceKind::HereSphere {
-        fill_details(v.actions, source, f, picked.on_screen);
-    }
+    // A DeoVR listing has what a card shows; a HereSphere one, addresses.
+    let on_screen = if f.kind == SourceKind::HereSphere {
+        picked.on_screen
+    } else {
+        Vec::new()
+    };
+    fill_details(v.actions, source, f, on_screen);
     back
+}
+
+/// The Filters drawer's sections, those the scenes have choices for; true
+/// when a filter changed.
+fn drawer(ui: &mut egui::Ui, f: &mut FeedView, facets: &Facets) -> bool {
+    let mut changed = false;
+    if let Some((done, of)) = f.reading() {
+        ui.label(
+            RichText::new(tr!("feed-reading-details", done = done, of = of)).color(theme::TEXT_2),
+        );
+        ui.add(egui::ProgressBar::new(done as f32 / of.max(1) as f32).desired_height(6.0));
+    } else if f.scanning {
+        ui.label(RichText::new(tr!("feed-reading")).color(theme::TEXT_2));
+    }
+    let sections = [
+        (
+            tr!("filter-studio"),
+            tr!("filter-find-studio"),
+            &facets.studios,
+            &mut f.filters.studios,
+        ),
+        (
+            tr!("filter-people"),
+            tr!("filter-find-person"),
+            &facets.people,
+            &mut f.filters.people,
+        ),
+        (
+            tr!("filter-tags"),
+            tr!("filter-find-tag"),
+            &facets.tags,
+            &mut f.filters.tags,
+        ),
+    ];
+    for (title, hint, items, chosen) in sections {
+        if items.is_empty() {
+            continue;
+        }
+        let choices: Vec<(&str, Option<usize>)> =
+            items.iter().map(|(n, c)| (n.as_str(), Some(*c))).collect();
+        let state = f.lists.entry(title).or_default();
+        if let Some(name) =
+            page::filter_list(ui, title, hint, &choices, |n| chosen.contains(n), state)
+        {
+            if !chosen.remove(name) {
+                chosen.insert(name.to_string());
+            }
+            changed = true;
+        }
+    }
+    if facets.timed {
+        page::filter_section(ui, tr!("filter-length"), |ui| {
+            for (l, label) in Length::ALL.map(|l| (l, l.label())) {
+                let on = f.filters.length == Some(l);
+                if page::filter_chip(ui, label, None, on) {
+                    f.filters.length = (!on).then_some(l);
+                    changed = true;
+                }
+            }
+        });
+    }
+    if !facets.shapes.is_empty() || facets.stereo > 0 {
+        page::filter_section(ui, tr!("adjust-format"), |ui| {
+            for (s, n) in &facets.shapes {
+                let on = f.filters.shapes.contains(s);
+                if page::filter_chip(ui, shape_label(*s), Some(*n), on) {
+                    if on {
+                        f.filters.shapes.retain(|x| x != s);
+                    } else {
+                        f.filters.shapes.push(*s);
+                    }
+                    changed = true;
+                }
+            }
+            if facets.stereo > 0
+                && page::filter_chip(ui, "3D", Some(facets.stereo), f.filters.stereo)
+            {
+                f.filters.stereo = !f.filters.stereo;
+                changed = true;
+            }
+        });
+    }
+    if facets.rated {
+        page::filter_section(ui, tr!("filter-rating"), |ui| {
+            for (r, label) in ratings() {
+                let on = f.filters.rating == Some(r);
+                if page::filter_chip(ui, label, None, on) {
+                    f.filters.rating = (!on).then_some(r);
+                    changed = true;
+                }
+            }
+        });
+    }
+    changed
+}
+
+/// What the direction caret says for `sort`: largest first, smallest first.
+fn direction_tips(sort: FeedSort) -> [&'static str; 2] {
+    match sort {
+        FeedSort::Title => [tr!("sort-z-to-a"), tr!("sort-a-to-z")],
+        FeedSort::Newest => [tr!("sort-newest-first"), tr!("sort-oldest-first")],
+        FeedSort::Rating => [tr!("sort-highest-first"), tr!("sort-lowest-first")],
+        _ => [tr!("sort-longest-first"), tr!("sort-shortest-first")],
+    }
 }
 
 /// The page's title, how many scenes, and Refresh; true when Back was
@@ -383,17 +863,17 @@ fn header(
 ) -> bool {
     let mut subtitle = format!(
         "{} · {}",
-        f.kind.label(),
-        page::plural(f.order.len(), "scene", "scenes")
+        super::sources::kind_label(f.kind),
+        tr!("count-scenes", count = f.order.len())
     );
     // Scenes are shown (last time's, or a listing before its scan) while
     // the rest arrives.
     if !f.order.is_empty() && (f.loading || f.scanning) {
-        subtitle.push_str(" · updating…");
+        subtitle.push_str(&format!(" · {}", tr!("feed-updating")));
     }
     page::header(ui, name, Some(&subtitle), |ui| {
         if widgets::icon_button(ui, icons::ARROWS_CLOCKWISE, 44.0, false)
-            .tip("Refresh")
+            .tip(tr!("feed-refresh"))
             .clicked()
         {
             f.loading = true;
@@ -410,17 +890,32 @@ fn filters(ui: &mut egui::Ui, f: &mut FeedView, haptics: bool) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        changed |= page::search_field(ui, &mut f.search, "Search titles, people, tags", 300.0);
+        changed |= page::search_field(ui, &mut f.search, tr!("feed-search"), 300.0);
+        if page::filters_button(ui, f.filters.count()).clicked() {
+            f.filters_open = !f.filters_open;
+        }
         ui.add_space(10.0);
         if haptics
             && f.any(|s| s.scripted)
-            && widgets::chip_icon(ui, Some(icons::WAVEFORM), "Scripted", f.scripted_only).clicked()
+            && widgets::chip_icon(
+                ui,
+                Some(icons::WAVEFORM),
+                tr!("feed-scripted"),
+                f.scripted_only,
+            )
+            .clicked()
         {
             f.scripted_only = !f.scripted_only;
             changed = true;
         }
         if f.any(|s| s.favorite)
-            && widgets::chip_icon(ui, Some(icons::HEART), "Favorites", f.favorites_only).clicked()
+            && widgets::chip_icon(
+                ui,
+                Some(icons::HEART),
+                tr!("filter-favorites"),
+                f.favorites_only,
+            )
+            .clicked()
         {
             f.favorites_only = !f.favorites_only;
             changed = true;
@@ -434,7 +929,7 @@ fn filters(ui: &mut egui::Ui, f: &mut FeedView, haptics: bool) -> bool {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
-                    if widgets::chip(ui, "All", f.group.is_none()).clicked() {
+                    if widgets::chip(ui, tr!("filter-all"), f.group.is_none()).clicked() {
                         f.group = None;
                         changed = true;
                     }
@@ -453,16 +948,19 @@ fn filters(ui: &mut egui::Ui, f: &mut FeedView, haptics: bool) -> bool {
 
 /// The orders the scenes can be shown in: those the feed has data for.
 fn sort_choices(f: &FeedView) -> Vec<(FeedSort, &'static str)> {
-    let mut sorts = vec![(FeedSort::Feed, "Feed order"), (FeedSort::Title, "Title")];
+    let mut sorts = vec![
+        (FeedSort::Feed, tr!("sort-feed")),
+        (FeedSort::Title, tr!("sort-title")),
+    ];
     if f.any(|s| s.released.or(s.added).is_some()) {
-        sorts.push((FeedSort::Newest, "Newest"));
+        sorts.push((FeedSort::Newest, tr!("sort-newest")));
     }
     if f.any(|s| s.rating.is_some()) {
-        sorts.push((FeedSort::Rating, "Rating"));
+        sorts.push((FeedSort::Rating, tr!("filter-rating")));
     }
     sorts.extend([
-        (FeedSort::Longest, "Longest"),
-        (FeedSort::Shortest, "Shortest"),
+        (FeedSort::Length, tr!("filter-length")),
+        (FeedSort::Shuffle, tr!("sort-shuffle")),
     ]);
     sorts
 }
@@ -486,16 +984,17 @@ fn scene_grid(
     list: &[FeedScene],
     total: usize,
     haptics: bool,
+    top: bool,
 ) -> Picked {
     let mut picked = Picked::default();
-    page::scroll(ui, |ui| {
+    page::scroll_from(ui, top, |ui| {
         if list.is_empty() && !f.loading && f.error.is_none() {
             let (title, body) = if f.order.is_empty() {
-                ("No scenes", "The server lists no scenes here.")
+                (tr!("feed-no-scenes"), tr!("feed-no-scenes-desc"))
             } else {
                 (
-                    "Nothing matches",
-                    "Try another search, or clear the filters.",
+                    tr!("filter-nothing-matches"),
+                    tr!("filter-nothing-matches-desc"),
                 )
             };
             page::empty_state(ui, icons::VIRTUAL_REALITY, title, body, |_| {});
@@ -530,19 +1029,14 @@ fn scene_grid(
                 picked.open = Some(s.url.clone());
             }
         });
-        if total > list.len() {
-            ui.vertical_centered(|ui| {
-                picked.more = widgets::button(ui, None, "Show more", Kind::Secondary).clicked();
-            });
-            ui.add_space(20.0);
-        }
+        picked.more = total > list.len() && page::load_more(ui, false);
     });
     picked
 }
 
 /// Asks for the details of scenes whose listing lacks them: cards on screen
-/// first; while searching, the rest of the group after, so their tags and
-/// performers are searched too.
+/// first; while searching or filtering, the rest of the group after, so
+/// their studios, performers and tags are searched and filtered too.
 fn fill_details(
     actions: &mut Vec<Action>,
     source: &str,
@@ -558,7 +1052,7 @@ fn fill_details(
         });
     }
     // A scan on its way brings what a search looks through anyway.
-    if !f.search.trim().is_empty() && !f.scanning {
+    if (!f.search.trim().is_empty() || f.filters_open) && !f.scanning {
         let rest = f.unfilled();
         if !rest.is_empty() {
             f.requested.extend(rest.iter().cloned());
@@ -629,14 +1123,16 @@ fn details(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut Fe
                         facts.push(page::rating(r));
                     }
                     if scene.favorite && !writable {
-                        facts.push(format!("{}  Favorite", icons::HEART));
+                        facts.push(format!("{}  {}", icons::HEART, tr!("feed-favorite")));
                     }
                     if scene.scripted && v.settings.haptics_enabled {
-                        facts.push(format!("{}  Haptics", icons::WAVEFORM));
+                        facts.push(format!("{}  {}", icons::WAVEFORM, tr!("settings-haptics")));
                     }
                     page::facts(ui, &facts);
                     ui.add_space(10.0);
-                    if widgets::button(ui, Some(icons::PLAY), "Play", Kind::Primary).clicked() {
+                    if widgets::button(ui, Some(icons::PLAY), tr!("player-play"), Kind::Primary)
+                        .clicked()
+                    {
                         play_at = Some(0.0);
                     }
                     ui.horizontal(|ui| {
@@ -645,9 +1141,9 @@ fn details(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut Fe
                     });
                     if writable {
                         let label = if scene.favorite {
-                            "Favorite"
+                            tr!("feed-favorite")
                         } else {
-                            "Add to favorites"
+                            tr!("feed-add-favorite")
                         };
                         if widgets::chip_icon(ui, Some(icons::HEART), label, scene.favorite)
                             .clicked()
@@ -671,7 +1167,7 @@ fn details(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut Fe
                         versions.dedup();
                         if !versions.is_empty() {
                             ui.label(
-                                RichText::new(format!("Versions: {}", versions.join(", ")))
+                                RichText::new(tr!("feed-versions", versions = versions.join(", ")))
                                     .font(theme::font(Weight::Regular, 15.0))
                                     .color(theme::TEXT_3),
                             );
@@ -686,18 +1182,18 @@ fn details(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut Fe
                 ui.add_space(16.0);
             }
             if !scene.actors.is_empty() {
-                widgets::section_label(ui, "Performers");
+                widgets::section_label(ui, tr!("feed-performers"));
                 search = search.take().or(page::pills(ui, &scene.actors));
                 ui.add_space(14.0);
             }
             if !scene.tags.is_empty() {
-                widgets::section_label(ui, "Tags");
+                widgets::section_label(ui, tr!("filter-tags"));
                 search = search.take().or(page::pills(ui, &scene.tags));
                 ui.add_space(14.0);
             }
             let markers = info.as_ref().map(|i| i.markers.as_slice()).unwrap_or(&[]);
             if !markers.is_empty() {
-                widgets::section_label(ui, "Chapters");
+                widgets::section_label(ui, tr!("adjust-chapters"));
                 ui.add_space(2.0);
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
@@ -708,7 +1204,7 @@ fn details(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut Fe
                             format!("{}  {name}", fmt_time(*t))
                         };
                         if widgets::chip_icon(ui, Some(icons::PLAY), &label, false)
-                            .tip("Play from here")
+                            .tip(tr!("feed-play-from-here"))
                             .clicked()
                         {
                             play_at = Some(*t);
@@ -803,15 +1299,157 @@ mod tests {
         f.search.clear();
         f.sort = FeedSort::Title;
         assert_eq!(titles(&f), ["Alps", "Beach", "Canyon"]);
-        f.sort = FeedSort::Longest;
-        assert_eq!(titles(&f), ["Alps", "Beach", "Canyon"]);
-        f.sort = FeedSort::Shortest;
+        f.descending = true;
         assert_eq!(titles(&f), ["Canyon", "Beach", "Alps"]);
+        f.sort = FeedSort::Length;
+        assert_eq!(titles(&f), ["Alps", "Beach", "Canyon"]);
+        f.descending = false;
+        assert_eq!(titles(&f), ["Canyon", "Beach", "Alps"]);
+        f.descending = true;
         f.sort = FeedSort::Rating;
         assert_eq!(titles(&f)[0], "Canyon");
         f.sort = FeedSort::Feed;
         f.scripted_only = true;
         assert_eq!(titles(&f), ["Alps"]);
+    }
+
+    /// Ten scenes: studios, people, tags, shapes, lengths and ratings to
+    /// filter by.
+    fn varied() -> FeedView {
+        use fp_core::format::{Projection, StereoLayout, VideoFormat};
+        let vr180 = VideoFormat::new(Projection::EQUIRECT_180, StereoLayout::SideBySide);
+        let flat = VideoFormat::new(Projection::Flat, StereoLayout::Mono);
+        let scenes: Vec<FeedScene> = (0..10)
+            .map(|i| FeedScene {
+                studio: Some(if i < 6 { "North" } else { "South" }.into()),
+                actors: if i % 2 == 0 {
+                    vec!["Ana".into()]
+                } else {
+                    vec!["Bo".into(), "Ana".into()]
+                },
+                tags: if i < 3 {
+                    vec!["beach".into()]
+                } else {
+                    vec!["night".into()]
+                },
+                format: Some(if i < 7 { vr180 } else { flat }),
+                rating: Some(i as f32 / 2.0),
+                ..scene(
+                    &format!("s{i}"),
+                    &format!("Scene {i}"),
+                    (i * 10 * 60) as f64,
+                )
+            })
+            .collect();
+        let mut f = FeedView::new(SourceKind::HereSphere);
+        f.loaded(
+            Ok(FeedLibrary {
+                groups: vec![("All".into(), scenes.iter().map(|s| s.url.clone()).collect())],
+                scenes,
+            }),
+            false,
+        );
+        f
+    }
+
+    #[test]
+    fn the_drawer_narrows_and_counts() {
+        let mut f = varied();
+        let facets = f.facets();
+        assert_eq!(facets.studios, [("North".into(), 6), ("South".into(), 4)]);
+        assert_eq!(facets.people, [("Ana".into(), 10), ("Bo".into(), 5)]);
+        assert_eq!(
+            facets.shapes,
+            [(FormatFilter::Vr180, 7), (FormatFilter::Flat, 3)]
+        );
+        assert_eq!(facets.stereo, 7);
+        // Any of a kind, all of the kinds.
+        f.filters.studios.insert("North".into());
+        assert_eq!(f.visible().len(), 6);
+        f.filters.tags.insert("beach".into());
+        f.filters.tags.insert("night".into());
+        assert_eq!(f.visible().len(), 6);
+        f.filters.people.insert("Bo".into());
+        assert_eq!(titles(&f), ["Scene 1", "Scene 3", "Scene 5"]);
+        f.filters.length = Some(Length::Medium);
+        assert_eq!(titles(&f), ["Scene 1"], "10 min; 30 is not under 30");
+        f.filters.length = Some(Length::Long);
+        assert_eq!(titles(&f), ["Scene 3", "Scene 5"]);
+        f.filters.rating = Some(20);
+        assert_eq!(titles(&f), ["Scene 5"], "rated 2.5; Scene 3 1.5");
+        f.filters.rating = Some(30);
+        // Each on as a chip, taken off one by one.
+        assert_eq!(
+            f.filters.labels(),
+            [
+                "Studio · North",
+                "Bo",
+                "Tag · beach",
+                "Tag · night",
+                "30–60 min",
+                "3★ and up"
+            ]
+        );
+        f.filters.take_off(5);
+        f.filters.take_off(1);
+        assert_eq!(f.filters.count(), 4);
+        assert!(f.filters.people.is_empty() && f.filters.rating.is_none());
+        // Each section counts within what the others keep: North's scenes of
+        // 30 to 60 minutes. South has none there, and is left out.
+        let facets = f.facets();
+        assert_eq!(facets.studios, [("North".into(), 3)]);
+        assert_eq!(facets.people, [("Ana".into(), 3), ("Bo".into(), 2)]);
+        f.filters.studios = ["South".to_string()].into();
+        assert_eq!(
+            f.facets().studios,
+            [("North".into(), 3), ("South".into(), 0)],
+            "a choice stays listed with nothing left"
+        );
+        f.filters = FeedFilters {
+            shapes: vec![FormatFilter::Flat],
+            ..FeedFilters::default()
+        };
+        assert_eq!(f.visible().len(), 3);
+        f.filters.stereo = true;
+        assert!(f.visible().is_empty(), "the flat scenes are 2D");
+    }
+
+    #[test]
+    fn a_shuffle_holds_until_shuffled_again() {
+        let mut f = varied();
+        f.sort = FeedSort::Shuffle;
+        f.seed = 1;
+        let first = titles(&f);
+        assert_eq!(first.len(), 10);
+        assert_eq!(titles(&f), first, "the same seed, the same order");
+        f.seed = 2;
+        let second = titles(&f);
+        assert_ne!(second, first);
+        let mut sorted = second.clone();
+        sorted.sort();
+        assert_eq!(sorted.len(), 10, "every scene once");
+        assert!(FeedSort::Length.default_descending() && !FeedSort::Title.default_descending());
+    }
+
+    #[test]
+    fn filtering_a_deovr_feed_reads_every_scene() {
+        // Its listing has no studios, people or tags.
+        let mut f = view();
+        let mut actions = Vec::new();
+        fill_details(&mut actions, "s", &mut f, Vec::new());
+        assert!(actions.is_empty(), "nothing asked for while just browsing");
+        assert_eq!(f.reading(), Some((0, 3)));
+        f.filters_open = true;
+        fill_details(&mut actions, "s", &mut f, Vec::new());
+        match actions.as_slice() {
+            [Action::FeedFill { urls, front, .. }] => {
+                assert_eq!(urls, &["a", "b", "c"]);
+                assert!(!front);
+            }
+            other => panic!("{other:?}"),
+        }
+        f.scene_loaded("b", Ok(SceneInfo::default()), false);
+        assert_eq!(f.reading(), Some((1, 3)));
     }
 
     #[test]

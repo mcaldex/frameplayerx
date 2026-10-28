@@ -272,6 +272,9 @@ pub fn read_info(input: &Input) -> MediaInfo {
     let mut hints = ContainerHints::default();
     let mut streams = Vec::new();
     for (index, &st) in input.streams().iter().enumerate() {
+        if input.hidden(index) {
+            continue;
+        }
         // SAFETY: stream pointers and their codec parameters are valid while
         // the input is open.
         let (st, par) = unsafe { (&*st, &*(*st).codecpar) };
@@ -383,14 +386,20 @@ pub fn read_info(input: &Input) -> MediaInfo {
             })
             .collect()
     };
+    // A Blu-ray title: the playlist's length and chapters, not its first
+    // clip's.
+    let (container, duration, chapters) = match input.title() {
+        Some(t) => ("bluray".to_string(), t.duration, t.chapters.clone()),
+        None => (container, duration, chapters),
+    };
     MediaInfo {
         name: input.name.clone(),
         container,
         duration,
         video: input.best_stream(ff::AVMEDIA_TYPE_VIDEO).filter(|i| {
             streams
-                .get(*i)
-                .is_some_and(|s: &StreamInfo| s.kind == StreamKind::Video)
+                .iter()
+                .any(|s: &StreamInfo| s.index == *i && s.kind == StreamKind::Video)
         }),
         audio: input.best_stream(ff::AVMEDIA_TYPE_AUDIO),
         title: dict_get(fmt.metadata, "title"),

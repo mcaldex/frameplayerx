@@ -13,7 +13,7 @@
 //! | `gaze YAW PITCH` / `gaze off` | an eye tracker looking that way in the world, in degrees / none |
 //! | `recenter` | recenter on where the head faces |
 //! | `aim YAW PITCH` | controller ray direction in degrees |
-//! | `point PANEL X Y` | aim at a panel (`main`, `bar`, `adjust`, `keyboard`) at fractional X, Y |
+//! | `point PANEL X Y` | aim at a panel (`main`, `bar`, `adjust`, `keyboard`, `tracks`) at fractional X, Y |
 //! | `click` | pull and release the trigger |
 //! | `button a/b/x/y/menu/stick/shoulder` | press and release a right-hand button |
 //! | `stick X Y FRAMES` | hold the thumbstick |
@@ -21,10 +21,13 @@
 //! | `grip V` / `trigger V` | hold the grip / trigger at V (0..1) until changed |
 //! | `status` | print what is playing and the view settings |
 //! | `open LOCATION` | open a file or URL |
+//! | `close` | close the open video, as its Close button does |
 //! | `shot NAME` | save the left eye as OUT_DIR/NAME.png |
 //! | `sbs NAME` | save both eyes side by side |
 //! | `screen NAME [TAB]` | show a browser screen (`home`, `library`, `sources`, `settings` and its tab) |
 //! | `adjust [TAB]` | open the adjustments panel (at tab TAB) |
+//! | `tracks` | open the audio and subtitles picker |
+//! | `filters` | open the Filters drawer of the source page shown (a Jellyfin grid, a feed) |
 //! | `chroma` | turn chroma key on for the open video |
 //! | `panel PANEL NAME` | save a panel's image flat, pixel for pixel, as OUT_DIR/NAME.png |
 
@@ -244,6 +247,7 @@ impl Sim {
                 ui.screen = screen;
                 ui.details = None;
                 ui.remap_open = None;
+                ui.remap_grip = false;
                 // As the tab does: Sources shows the list, not a source or
                 // a form.
                 ui.source = None;
@@ -262,6 +266,15 @@ impl Sim {
                             ui.remap_open = Some(crate::ui::RemapSlot::Button(
                                 crate::bindings::RIGHT,
                                 crate::bindings::Button::South,
+                            ));
+                            SettingsTab::Controller
+                        }
+                        // ...with the right Y's grip choices open.
+                        "controller-grip" => {
+                            ui.remap_grip = true;
+                            ui.remap_open = Some(crate::ui::RemapSlot::Grip(
+                                crate::bindings::RIGHT,
+                                crate::bindings::Button::North,
                             ));
                             SettingsTab::Controller
                         }
@@ -300,6 +313,21 @@ impl Sim {
                 self.app.repaint_all();
                 self.run_frames(3)?;
             }
+            Some("filters") => {
+                use crate::ui::SourcePage;
+                match self.app.ui.source.as_mut().map(|s| &mut s.page) {
+                    Some(SourcePage::Feed(f)) => f.filters_open = true,
+                    Some(SourcePage::Jellyfin(j)) => j.show_filters(true),
+                    _ => return Err("no Jellyfin grid or feed is open".into()),
+                }
+                self.app.repaint_all();
+                self.run_frames(6)?;
+            }
+            Some("tracks") => {
+                self.app.ui.tracks_open = true;
+                self.app.repaint_all();
+                self.run_frames(3)?;
+            }
             // Pauses the open video, so a short test clip doesn't end (and
             // hide the player's panels) before the shots that follow.
             Some("pause") => {
@@ -307,6 +335,10 @@ impl Sim {
                     p.player.pause();
                 }
                 self.app.repaint_all();
+                self.run_frames(3)?;
+            }
+            Some("close") => {
+                self.app.apply(crate::ui::Action::ClosePlayback);
                 self.run_frames(3)?;
             }
             // Passthrough videos are fully unlocked.
@@ -340,6 +372,13 @@ impl Sim {
             // `haptics on` / `haptics off`, as Settings › General does.
             Some("haptics") => {
                 self.app.settings.haptics_enabled = parts.get(1) != Some(&"off");
+                self.app.repaint_all();
+                self.run_frames(3)?;
+            }
+            // `remote on` / `remote off`: the phone and browser remote, as
+            // Settings › Remote control does.
+            Some("remote") => {
+                self.app.settings.remote.web_enabled = parts.get(1) != Some(&"off");
                 self.app.repaint_all();
                 self.run_frames(3)?;
             }
@@ -378,9 +417,10 @@ impl Sim {
                 self.app.repaint_all();
                 self.run_frames(3)?;
             }
-            // Turns the global chroma key on (Settings > Passthrough).
+            // Turns the global chroma key on, or off with `chroma-global off`
+            // (Settings > Passthrough).
             Some("chroma-global") => {
-                self.app.settings.default_view.chroma_key = true;
+                self.app.settings.default_view.chroma_key = parts.get(1) != Some(&"off");
                 self.app.repaint_all();
                 self.run_frames(3)?;
             }

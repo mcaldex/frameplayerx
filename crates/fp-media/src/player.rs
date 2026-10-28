@@ -206,14 +206,22 @@ pub struct Player {
     threads: Vec<JoinHandle<()>>,
 }
 
+/// The streams a video starts with: an audio stream in place of the file's
+/// own choice, and the embedded subtitles to show.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Tracks {
+    pub audio: Option<usize>,
+    pub subtitle: Option<usize>,
+}
+
 impl Player {
-    /// Opens `src` and starts playback (or holds paused, per config), showing
-    /// the embedded subtitle stream `subtitle` picks from the file's streams.
+    /// Opens `src` and starts playback (or holds paused, per config), with
+    /// the streams `tracks` picks from the file's.
     pub fn open(
         src: Arc<dyn ByteSource>,
         name: &str,
         config: PlayerConfig,
-        subtitle: impl FnOnce(&MediaInfo) -> Option<usize>,
+        tracks: impl FnOnce(&MediaInfo) -> Tracks,
     ) -> Result<Player> {
         let quit = Arc::new(AtomicBool::new(false));
         let input = Input::open(src, name, quit.clone())?;
@@ -221,16 +229,20 @@ impl Player {
         if info.video.is_none() && info.audio.is_none() {
             return Err(Error::NoStream("video or audio"));
         }
-        let subtitle_stream = subtitle(&info);
+        let tracks = tracks(&info);
+        let audio_stream = tracks
+            .audio
+            .filter(|i| info.audio_streams().any(|s| s.index == *i))
+            .or(info.audio);
         let shared = Arc::new(Shared {
             quit,
             clock: Clock::default(),
             ctl: Mutex::new(Control {
                 paused: config.start_paused,
                 seek: None,
-                audio_stream: info.audio,
+                audio_stream,
                 audio_changed: false,
-                subtitle_stream,
+                subtitle_stream: tracks.subtitle,
             }),
             ctl_cv: Condvar::new(),
             vpkts: PacketQueue::new(),
@@ -1037,13 +1049,16 @@ mod tests {
 
     /// Opens a test clip showing its first subtitle stream.
     fn open(name: &str, cfg: PlayerConfig) -> Player {
-        open_with(name, cfg, |i| i.subtitle_streams().next().map(|s| s.index))
+        open_with(name, cfg, |i| Tracks {
+            subtitle: i.subtitle_streams().next().map(|s| s.index),
+            ..Tracks::default()
+        })
     }
 
     fn open_with(
         name: &str,
         cfg: PlayerConfig,
-        subtitle: impl FnOnce(&MediaInfo) -> Option<usize>,
+        tracks: impl FnOnce(&MediaInfo) -> Tracks,
     ) -> Player {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/data")
@@ -1052,7 +1067,7 @@ mod tests {
             Arc::new(FileSource::open(&path).unwrap()),
             name,
             cfg,
-            subtitle,
+            tracks,
         )
         .unwrap()
     }
@@ -1167,7 +1182,7 @@ mod tests {
                 start_paused: true,
                 ..cfg()
             },
-            |_| None,
+            |_| Tracks::default(),
         )
         .unwrap();
         run(&p, 2.0, |p, f| {
@@ -1237,13 +1252,35 @@ mod tests {
                 start_at: 0.5,
                 ..cfg()
             },
-            |_| None,
+            |_| Tracks::default(),
         );
         run(&p, 2.0, |p, f| {
             f.is_some() && p.state() != PlayerState::Buffering
         });
         assert_eq!(p.subtitle_stream(), None);
         assert!(p.subtitles().is_empty());
+    }
+
+    #[test]
+    fn a_picked_audio_stream_plays_only_if_it_is_audio() {
+        let paused = || PlayerConfig {
+            start_paused: true,
+            ..cfg()
+        };
+        let p = open_with("h264_aac_180_LR.mp4", paused(), |_| Tracks::default());
+        let own = p.audio_stream();
+        assert!(own.is_some());
+        let video = p.info().video;
+        let p = open_with("h264_aac_180_LR.mp4", paused(), |_| Tracks {
+            audio: video,
+            ..Tracks::default()
+        });
+        assert_eq!(p.audio_stream(), own, "the video stream is no audio");
+        let p = open_with("h264_aac_180_LR.mp4", paused(), |_| Tracks {
+            audio: own,
+            ..Tracks::default()
+        });
+        assert_eq!(p.audio_stream(), own);
     }
 
     #[test]

@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 use fp_core::PlaybackStatus;
-use fp_remote::{RemoteConfig, RemoteEvent, RemoteHub, RemoteItem, RemoteLibrary};
+use fp_remote::{RemoteConfig, RemoteEvent, RemoteHub};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::path::PathBuf;
@@ -201,59 +201,19 @@ pub fn parse_response(raw: &[u8]) -> HttpResponse {
     }
 }
 
-// ---- Fake library ----
-
-pub struct FakeLibrary {
-    pub items: Vec<RemoteItem>,
-    pub thumb: PathBuf,
-}
-
-impl FakeLibrary {
-    pub fn new() -> FakeLibrary {
-        let dir = std::env::temp_dir().join(format!("fp-remote-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        // One file per instance: tests run in parallel in one process, and
-        // rewriting a shared file truncates it under a concurrent reader.
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let thumb = dir.join(format!("thumb-1-{n}.jpg"));
-        std::fs::write(&thumb, JPEG).unwrap();
-        let item = |id: i64, title: &str, thumb: bool| RemoteItem {
-            id,
-            title: title.into(),
-            location: format!("/media/{id}.mp4"),
-            duration: Some(60.0 * id as f64),
-            format_label: "180° Side by side".into(),
-            has_thumbnail: thumb,
-        };
-        FakeLibrary {
-            items: vec![
-                item(1, "Beach sunset", true),
-                item(2, "Mountain hike", false),
-                item(3, "Beach volleyball <script>alert(1)</script>", false),
-                item(4, "City walk", false),
-            ],
-            thumb,
-        }
-    }
-}
+// ---- A picture ----
 
 /// Smallest plausible JPEG prefix: the bytes only need to round-trip.
-pub const JPEG: &[u8] = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00test-thumbnail\xff\xd9";
+pub const JPEG: &[u8] = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00test-picture\xff\xd9";
 
-impl RemoteLibrary for FakeLibrary {
-    fn search(&self, query: &str, limit: usize, offset: usize) -> Vec<RemoteItem> {
-        let q = query.to_lowercase();
-        self.items
-            .iter()
-            .filter(|i| i.title.to_lowercase().contains(&q))
-            .skip(offset)
-            .take(limit)
-            .cloned()
-            .collect()
-    }
-
-    fn thumbnail_path(&self, id: i64) -> Option<PathBuf> {
-        (id == 1).then(|| self.thumb.clone())
-    }
+/// A picture file of its own: tests run in parallel in one process, and
+/// rewriting a shared file truncates it under a concurrent reader.
+pub fn picture_file() -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("fp-remote-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = dir.join(format!("picture-{n}.jpg"));
+    std::fs::write(&path, JPEG).unwrap();
+    path
 }

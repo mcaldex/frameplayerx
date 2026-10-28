@@ -368,12 +368,19 @@ impl Rewriter {
                         b.refs_after = self.mark(b)?;
                         b.marked = true;
                     }
-                    let subset = self
+                    let subset = match self
                         .subset
                         .values()
                         .find(|s| s.view_ids.get(1) == Some(&view_id))
-                        .cloned()
-                        .ok_or(Bad::Unsupported(format!("view {view_id}")))?;
+                    {
+                        Some(s) => s.clone(),
+                        // Joined between the in-band parameter sets: a clip
+                        // cut mid-GOP, a seek into a transport stream.
+                        None if self.subset.is_empty() => {
+                            return Err(Bad::Broken("second view before its parameter set"));
+                        }
+                        None => return Err(Bad::Unsupported(format!("view {view_id}"))),
+                    };
                     let flags = (e2 >> 2 & 1 == 1, e2 >> 1 & 1 == 1);
                     let base_id = b.id;
                     let idr = e0 >> 6 & 1 == 0;

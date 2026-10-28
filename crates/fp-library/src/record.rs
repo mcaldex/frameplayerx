@@ -11,6 +11,8 @@ use rusqlite::types::Type;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::library::WATCHED_FRACTION;
+
 macro_rules! id_type {
     ($(#[$doc:meta])* $name:ident) => {
         $(#[$doc])*
@@ -127,26 +129,6 @@ pub(crate) fn effective_columns(
     )
 }
 
-/// A sprite sheet of small frames at even intervals, for scrub previews.
-///
-/// Frame `i` (zero based) shows time `(i + 0.5) * interval` and sits at
-/// column `i % columns`, row `i / columns`, each cell `cell_width` by
-/// `cell_height` pixels. Frames smaller than a cell are centred on black.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct PreviewStrip {
-    /// JPEG file, `<cache>/<id>_strip.jpg`.
-    pub path: PathBuf,
-    pub frames: u32,
-    /// Frames per row.
-    pub columns: u32,
-    /// Width of one cell in pixels.
-    pub cell_width: u32,
-    /// Height of one cell in pixels.
-    pub cell_height: u32,
-    /// Seconds between frames.
-    pub interval: f64,
-}
-
 /// One video in the library, mirroring a `media` row plus its tags.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MediaRecord {
@@ -184,17 +166,18 @@ pub struct MediaRecord {
     pub play_count: u32,
     /// Unix seconds of the last playback.
     pub last_played: Option<i64>,
-    /// Seconds to resume from; 0 when not started or finished.
+    /// Seconds to resume from; 0 when not started or watched.
     pub resume_position: f64,
     /// Unix seconds when first indexed.
     pub added_at: i64,
     /// The file was not found by the last scan of its folder.
     pub missing: bool,
-    /// Generated thumbnail JPEG.
+    /// Generated thumbnail JPEG, for videos whose source offers none.
     pub thumbnail: Option<PathBuf>,
-    /// Generated scrub preview sprite sheet.
-    pub preview_strip: Option<PreviewStrip>,
-    /// Thumbnail offered by a remote source (DeoVR feed, DLNA).
+    /// The frame where it was left off, made by the metadata worker after
+    /// playback.
+    pub resume_thumbnail: Option<PathBuf>,
+    /// Picture offered by its server (Jellyfin, DLNA, a DeoVR feed).
     pub thumbnail_url: Option<String>,
     /// The metadata worker has processed this row.
     pub probed: bool,
@@ -208,6 +191,30 @@ pub struct MediaRecord {
     /// What its source says about it (Jellyfin's overview, a scene's
     /// description).
     pub description: Option<String>,
+    /// The audio and subtitles picked while it played.
+    pub tracks: PickedTracks,
+}
+
+/// The audio and subtitles picked for a video, which it plays with again
+/// when it opens (while they are still there). What wasn't picked follows
+/// the settings.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PickedTracks {
+    /// The audio stream, by index.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitles: Option<PickedSubtitles>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PickedSubtitles {
+    Off,
+    /// An embedded stream, by index.
+    Stream(usize),
+    /// A subtitle file, by location.
+    File(String),
 }
 
 impl MediaRecord {
@@ -234,6 +241,25 @@ impl MediaRecord {
         self.duration
             .filter(|d| *d > 0.0)
             .map(|d| (self.resume_position / d).clamp(0.0, 1.0))
+    }
+
+    /// Started and not yet watched, as
+    /// [`Library::continue_watching`](crate::Library::continue_watching)
+    /// lists it.
+    pub fn partly_watched(&self) -> bool {
+        self.resume_position > 0.0 && self.progress().is_none_or(|p| p < WATCHED_FRACTION)
+    }
+
+    /// What a card shows, as a path or URL: the frame where it was left off
+    /// while partly watched, else its server's picture, else the thumbnail
+    /// made for it.
+    pub fn picture(&self) -> Option<String> {
+        self.resume_thumbnail
+            .as_ref()
+            .filter(|_| self.partly_watched())
+            .map(|p| p.display().to_string())
+            .or_else(|| self.thumbnail_url.clone())
+            .or_else(|| self.thumbnail.as_ref().map(|p| p.display().to_string()))
     }
 }
 
@@ -293,8 +319,8 @@ pub struct TagCount {
 pub(crate) const MEDIA_COLUMNS: &str = "m.id, m.location, m.source_id, m.title, m.size, m.mtime,
     m.duration, m.width, m.height, m.video_codec, m.detected_format, m.detected_evidence,
     m.user_format, m.view_settings, m.keyframes, m.rating, m.favorite, m.play_count,
-    m.last_played, m.resume_position, m.added_at, m.missing, m.thumbnail, m.preview_strip,
-    m.thumbnail_url, m.probed, m.probe_error, m.scripts, m.subtitles, m.description,
+    m.last_played, m.resume_position, m.added_at, m.missing, m.thumbnail, m.resume_thumbnail,
+    m.thumbnail_url, m.probed, m.probe_error, m.scripts, m.subtitles, m.description, m.tracks,
     (SELECT json_group_array(t.name ORDER BY t.name COLLATE NOCASE)
        FROM media_tags mt JOIN tags t ON t.id = mt.tag_id WHERE mt.media_id = m.id)";
 
@@ -369,14 +395,15 @@ pub(crate) fn media_from_row(row: &Row<'_>) -> rusqlite::Result<MediaRecord> {
         added_at: row.get(20)?,
         missing: row.get(21)?,
         thumbnail: row.get::<_, Option<String>>(22)?.map(PathBuf::from),
-        preview_strip: json_opt(row, 23)?,
+        resume_thumbnail: row.get::<_, Option<String>>(23)?.map(PathBuf::from),
         thumbnail_url: row.get(24)?,
         probed: row.get(25)?,
         probe_error: row.get(26)?,
         scripts: json_col(row, 27)?,
         subtitles: json_col(row, 28)?,
         description: row.get(29)?,
-        tags: json_col(row, 30)?,
+        tracks: json_opt(row, 30)?.unwrap_or_default(),
+        tags: json_col(row, 31)?,
     })
 }
 

@@ -48,6 +48,9 @@ pub enum SubtitleMode {
 /// Settings › Interface size: the sizes offered.
 pub const UI_SCALES: std::ops::RangeInclusive<f32> = 0.8..=1.5;
 
+/// Settings › Image cache: the sizes offered, in MB.
+pub const IMAGE_CACHE_SIZES: [u32; 5] = [100, 250, 500, 1000, 2000];
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -59,6 +62,9 @@ pub struct Settings {
     pub subtitles: SubtitleMode,
     /// The language subtitles are wanted in (ISO 639-1).
     pub subtitle_language: String,
+    /// The interface's language, one of [`crate::i18n::LANGUAGES`]; none
+    /// follows Steam's.
+    pub language: Option<String>,
     /// Defaults for videos without saved adjustments.
     pub default_view: ViewSettings,
     /// Show the real world around flat screens and the UI.
@@ -87,6 +93,13 @@ pub struct Settings {
     pub check_updates: bool,
     /// UI text size multiplier, in [`UI_SCALES`].
     pub ui_scale: f32,
+    /// Room for server pictures kept on the headset, in MB
+    /// ([`crate::image_cache`]).
+    pub image_cache_mb: u32,
+    /// Make thumbnails for videos whose server offers no picture.
+    pub make_thumbnails: bool,
+    /// A partly watched video shows the frame where it was left off.
+    pub resume_frames: bool,
     /// Flat videos and the panels follow the head ([`crate::world::follow`]).
     pub follow: bool,
     /// The performance overlay (Settings › General › Diagnostics).
@@ -125,11 +138,11 @@ impl Default for Settings {
             audio_device: "default".into(),
             volume: 1.0,
             subtitles: SubtitleMode::default(),
-            subtitle_language: std::env::var("LANG")
-                .ok()
+            subtitle_language: crate::i18n::system_language()
                 .and_then(|l| fp_core::language::from_locale(&l))
                 .unwrap_or("en")
                 .to_string(),
+            language: None,
             default_view: ViewSettings::default(),
             passthrough: false,
             autofocus: Default::default(),
@@ -150,6 +163,9 @@ impl Default for Settings {
             },
             check_updates: true,
             ui_scale: 1.0,
+            image_cache_mb: 500,
+            make_thumbnails: true,
+            resume_frames: true,
             follow: false,
             perf_overlay: false,
             show_gaze: false,
@@ -177,6 +193,14 @@ impl Settings {
 
     pub fn sources_path() -> PathBuf {
         fp_core::dirs::config_dir().join("sources.json")
+    }
+
+    /// The language the interface is shown in: the one picked, else
+    /// [`crate::i18n::automatic`].
+    pub fn interface_language(&self) -> String {
+        self.language
+            .clone()
+            .unwrap_or_else(|| crate::i18n::automatic().to_string())
     }
 
     /// Loads settings, falling back to defaults (and logging why) when the

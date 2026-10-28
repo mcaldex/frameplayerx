@@ -487,9 +487,9 @@ mod tests {
         assert!(r.is_err());
     }
 
-    /// What making one video's thumbnails costs, as the library worker
-    /// does it: a probe, a 640 px thumbnail at 20 % and 20 preview frames
-    /// of 160 px. Prints wall and CPU time.
+    /// What making one video's pictures costs, as the library worker does
+    /// it: a probe, a 640 px thumbnail at 20 % and a 1280 px frame where it
+    /// was left off (here at half way). Prints wall and CPU time.
     #[test]
     #[ignore = "a benchmark: THUMB_BENCH=video"]
     fn thumbnail_cost() {
@@ -522,13 +522,11 @@ mod tests {
             "main".into(),
             &g.grab(d * 0.2, 640, 640, Crop::Full).unwrap(),
         );
-        for i in 0..20 {
-            let t = (i as f64 + 0.5) * d / 20.0;
-            save(
-                format!("strip{i:02}"),
-                &g.grab(t, 160, 160, Crop::Full).unwrap(),
-            );
-        }
+        let mut g = Grabber::open(src(), &path, no_interrupt()).unwrap();
+        save(
+            "resume".into(),
+            &g.grab(d * 0.5, 1280, 1280, Crop::Full).unwrap(),
+        );
         let (cpu1, rss) = cpu();
         eprintln!(
             "{path}: {:.2} s wall, {:.2} s CPU, peak RSS {} MiB",

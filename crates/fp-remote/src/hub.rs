@@ -1,15 +1,16 @@
 //! [`RemoteHub`]: the app-facing entry point that owns both servers.
 
 use crate::deovr::DeovrServer;
+use crate::details::{DetailsCell, RemoteDetails};
+use crate::pairing::{Entered, Pairing};
 use crate::status::StatusCell;
 use crate::web::WebServer;
 use crate::{RemoteConfig, RemoteError, token};
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use fp_core::sync::{lock, read, write};
 use fp_core::{PlaybackStatus, PlayerCommand};
-use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 /// Something a remote client asked the player to do.
@@ -22,40 +23,25 @@ pub enum RemoteEvent {
     Text(String),
 }
 
-/// One library entry as the web remote shows it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct RemoteItem {
-    /// Library id; used for `GET /api/thumb/<id>`.
-    pub id: i64,
-    pub title: String,
-    /// Location passed back in `PlayerCommand::Open` when tapped.
-    pub location: String,
-    /// Seconds, when known.
-    pub duration: Option<f64>,
-    /// Short format description, e.g. "180° Side by side".
-    pub format_label: String,
-    /// Whether [`RemoteLibrary::thumbnail_path`] has an image for `id`.
-    pub has_thumbnail: bool,
-}
-
-/// Library access the app provides to the web remote. Called from server
-/// worker threads, so implementations must be thread-safe and should not
-/// block for long.
-pub trait RemoteLibrary: Send + Sync {
-    /// Items matching `query` (empty = everything, app-defined order).
-    fn search(&self, query: &str, limit: usize, offset: usize) -> Vec<RemoteItem>;
-    /// Path of a JPEG thumbnail for item `id`, if there is one.
-    fn thumbnail_path(&self, id: i64) -> Option<PathBuf>;
-}
-
 /// Capacity of the event queue; when the app stops draining it, further
 /// events are dropped (and logged) instead of growing without bound.
 const EVENT_QUEUE: usize = 1024;
 
+/// The web remote's wording, in the app's language: its language tag and
+/// its strings by id.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PageText {
+    pub(crate) lang: String,
+    pub(crate) strings: BTreeMap<String, String>,
+}
+
 /// State shared by the hub and every server thread.
 pub(crate) struct Shared {
     pub(crate) status: StatusCell,
+    pub(crate) details: DetailsCell,
     pub(crate) token: RwLock<String>,
+    pub(crate) page: RwLock<PageText>,
+    pairing: Mutex<Pairing>,
     events: Sender<RemoteEvent>,
 }
 
@@ -69,6 +55,11 @@ impl Shared {
 
     pub(crate) fn token(&self) -> String {
         read(&self.token).clone()
+    }
+
+    /// A code typed on a phone's pairing page.
+    pub(crate) fn enter_code(&self, typed: &str) -> Entered {
+        lock(&self.pairing).enter(typed)
     }
 }
 
@@ -98,7 +89,10 @@ impl RemoteHub {
             config,
             shared: Arc::new(Shared {
                 status: StatusCell::default(),
+                details: DetailsCell::default(),
                 token: RwLock::new(token),
+                page: RwLock::new(PageText::default()),
+                pairing: Mutex::new(Pairing::default()),
                 events: tx,
             }),
             events: rx,
@@ -110,6 +104,16 @@ impl RemoteHub {
     /// The configuration the hub was created with.
     pub fn config(&self) -> &RemoteConfig {
         &self.config
+    }
+
+    /// The web remote's text in the app's language (`lang`, a language
+    /// tag): each `{{id:English}}` of its pages, and the strings its script
+    /// shows. A page open in another language reloads itself.
+    pub fn set_page_text(&self, lang: &str, strings: impl IntoIterator<Item = (String, String)>) {
+        *write(&self.shared.page) = PageText {
+            lang: lang.to_string(),
+            strings: strings.into_iter().collect(),
+        };
     }
 
     /// Starts the DeoVR-compatible TCP API on `bind_address:deovr_port` and
@@ -130,9 +134,9 @@ impl RemoteHub {
         Ok(addr)
     }
 
-    /// Starts the web remote on `bind_address:web_port`, serving `lib`, and
-    /// returns the bound address.
-    pub fn start_web(&self, lib: Arc<dyn RemoteLibrary>) -> Result<SocketAddr, RemoteError> {
+    /// Starts the web remote on `bind_address:web_port` and returns the
+    /// bound address.
+    pub fn start_web(&self) -> Result<SocketAddr, RemoteError> {
         let mut slot = lock(&self.web);
         if slot.is_some() {
             return Err(RemoteError::AlreadyRunning("web remote"));
@@ -141,7 +145,6 @@ impl RemoteHub {
         let server = WebServer::start(
             bind,
             self.shared.clone(),
-            lib,
             self.config.max_event_streams.max(1),
         )?;
         let addr = server.addr();
@@ -174,6 +177,13 @@ impl RemoteHub {
     /// the network. The servers pick changes up on their own threads.
     pub fn publish(&self, status: &PlaybackStatus) {
         self.shared.status.publish(status);
+    }
+
+    /// Records what the web remote shows of the open video beyond its
+    /// status ([`RemoteDetails::default`] when none is open). Compares
+    /// first, so calling it often costs only that.
+    pub fn publish_details(&self, details: &RemoteDetails) {
+        self.shared.details.publish(details);
     }
 
     /// The command/text queue. Each receiver clone competes for events, so
@@ -220,15 +230,27 @@ impl RemoteHub {
         Ok(new)
     }
 
-    /// The URL to show as a QR code: `http://<lan_ip>:<port>/?token=...`,
-    /// using the bound port while the web remote runs, else the configured one.
-    pub fn pairing_url(&self, lan_ip: impl Into<IpAddr>) -> String {
+    /// The address to open on a phone, `<lan_ip>:<port>`, using the bound
+    /// port while the web remote runs, else the configured one.
+    pub fn pairing_address(&self, lan_ip: impl Into<IpAddr>) -> String {
         let port = self.web_addr().map_or(self.config.web_port, |a| a.port());
-        let host = match lan_ip.into() {
-            IpAddr::V4(v4) => v4.to_string(),
-            IpAddr::V6(v6) => format!("[{v6}]"),
-        };
-        format!("http://{host}:{port}/?token={}", self.token())
+        match lan_ip.into() {
+            IpAddr::V4(v4) => format!("{v4}:{port}"),
+            IpAddr::V6(v6) => format!("[{v6}]:{port}"),
+        }
+    }
+
+    /// The code the headset shows for a phone to pair with: kept while it
+    /// is shown (call this each time it is drawn), and replaced once a
+    /// phone pairs with it or ten minutes after it was last shown. `None`
+    /// after five wrong codes, until [`new_pairing_code`](Self::new_pairing_code).
+    pub fn pairing_code(&self) -> Result<Option<String>, RemoteError> {
+        lock(&self.shared.pairing).show()
+    }
+
+    /// Starts pairing again after wrong codes stopped it, with a new code.
+    pub fn new_pairing_code(&self) {
+        lock(&self.shared.pairing).restart();
     }
 }
 
@@ -244,15 +266,15 @@ mod tests {
     use std::net::Ipv4Addr;
 
     #[test]
-    fn pairing_url_and_token_rotation() {
+    fn pairing_address_and_token_rotation() {
         let hub = RemoteHub::new(RemoteConfig::default()).unwrap();
         let t = hub.token();
         assert_eq!(
-            hub.pairing_url(Ipv4Addr::new(192, 168, 1, 9)),
-            format!("http://192.168.1.9:8790/?token={t}")
+            hub.pairing_address(Ipv4Addr::new(192, 168, 1, 9)),
+            "192.168.1.9:8790"
         );
         let v6: IpAddr = "fe80::1".parse().unwrap();
-        assert!(hub.pairing_url(v6).starts_with("http://[fe80::1]:8790/"));
+        assert_eq!(hub.pairing_address(v6), "[fe80::1]:8790");
         let t2 = hub.regenerate_token().unwrap();
         assert_ne!(t, t2);
         assert_eq!(hub.token(), t2);

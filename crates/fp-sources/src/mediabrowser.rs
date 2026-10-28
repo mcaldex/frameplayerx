@@ -26,7 +26,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 mod catalog;
-pub use catalog::{MbFilter, MbHome, MbItem, MbKind, MbPage, MbQuery, MbSort, MbVersion};
+pub use catalog::{MbFacets, MbFilter, MbHome, MbItem, MbKind, MbPage, MbQuery, MbSort, MbVersion};
 
 /// Largest JSON document accepted from a MediaBrowser API endpoint (64 MiB).
 const JSON_LIMIT: u64 = 64 << 20;
@@ -209,6 +209,16 @@ pub(crate) fn parse_quick_connect_connect(v: &Value) -> (bool, Option<String>, O
     (authenticated, token, user_id)
 }
 
+/// An item's primary image at card size. Its tag is in the address, so a
+/// changed image has a new one.
+fn primary_image(base_url: &str, id: &str, item: &Value) -> String {
+    let mut url = format!("{base_url}/Items/{id}/Images/Primary?maxWidth=480&quality=80");
+    if let Some(tag) = get(item, "ImageTags").and_then(|t| text(t, "Primary")) {
+        url += &format!("&tag={}", encode_form_value(&tag));
+    }
+    url
+}
+
 /// Converts an item from `/Users/{userId}/Views` into a directory [`Entry`].
 pub(crate) fn parse_views(v: &Value, base_url: &str) -> Vec<Entry> {
     array(v, "Items")
@@ -217,9 +227,7 @@ pub(crate) fn parse_views(v: &Value, base_url: &str) -> Vec<Entry> {
             let id = text(item, "Id")?;
             let name = text(item, "Name").unwrap_or_default();
             let mut e = dir_entry(&name, encode_location(base_url, "view", &id), None);
-            e.thumbnail_url = Some(format!(
-                "{base_url}/Items/{id}/Images/Primary?maxWidth=480&quality=80"
-            ));
+            e.thumbnail_url = Some(primary_image(base_url, &id, item));
             e.modified = text(item, "DateCreated").and_then(|d| crate::timeutil::parse_iso8601(&d));
             Some(e)
         })
@@ -234,17 +242,13 @@ pub(crate) fn item_to_entry(v: &Value, base_url: &str) -> Option<Entry> {
     match item_type.as_str() {
         "CollectionFolder" | "Folder" | "Series" | "Season" | "BoxSet" => {
             let mut e = dir_entry(&name, encode_location(base_url, "folder", &id), None);
-            e.thumbnail_url = Some(format!(
-                "{base_url}/Items/{id}/Images/Primary?maxWidth=480&quality=80"
-            ));
+            e.thumbnail_url = Some(primary_image(base_url, &id, v));
             e.modified = text(v, "DateCreated").and_then(|d| crate::timeutil::parse_iso8601(&d));
             Some(e)
         }
         "UserView" => {
             let mut e = dir_entry(&name, encode_location(base_url, "view", &id), None);
-            e.thumbnail_url = Some(format!(
-                "{base_url}/Items/{id}/Images/Primary?maxWidth=480&quality=80"
-            ));
+            e.thumbnail_url = Some(primary_image(base_url, &id, v));
             e.modified = text(v, "DateCreated").and_then(|d| crate::timeutil::parse_iso8601(&d));
             Some(e)
         }
@@ -252,9 +256,10 @@ pub(crate) fn item_to_entry(v: &Value, base_url: &str) -> Option<Entry> {
             let location = encode_location(base_url, "item", &id);
             let mut e = Entry::new(&name, location, EntryKind::Video);
             e.duration = num(v, "RunTimeTicks").map(ticks_to_seconds);
-            e.thumbnail_url = Some(format!(
-                "{base_url}/Items/{id}/Images/Primary?maxWidth=480&quality=80"
-            ));
+            // The 16:9 art Jellyfin's own rows show, as the library keeps it
+            // wherever the video was started from.
+            e.thumbnail_url =
+                catalog::parse_item(v, base_url).and_then(|i| i.landscape.or(i.poster));
             e.modified = text(v, "DateCreated").and_then(|d| crate::timeutil::parse_iso8601(&d));
             let path = text(v, "Path").unwrap_or_default();
             e.format = detect_from_name(&path)
@@ -1119,7 +1124,8 @@ mod tests {
                     "Id": "v1",
                     "Name": "Movies",
                     "Type": "UserView",
-                    "DateCreated": "2024-01-15T12:00:00Z"
+                    "DateCreated": "2024-01-15T12:00:00Z",
+                    "ImageTags": {"Primary": "p1"}
                 },
                 {
                     "Id": "v2",
@@ -1138,7 +1144,7 @@ mod tests {
         assert_eq!(views[0].kind, EntryKind::Directory);
         assert_eq!(
             views[0].thumbnail_url.as_deref(),
-            Some("http://server:8096/Items/v1/Images/Primary?maxWidth=480&quality=80")
+            Some("http://server:8096/Items/v1/Images/Primary?maxWidth=480&quality=80&tag=p1")
         );
         assert!(views[0].modified.is_some());
 
@@ -1166,7 +1172,8 @@ mod tests {
                     "Name": "Blade Runner",
                     "Type": "Movie",
                     "RunTimeTicks": 70200000000.0,
-                    "Path": "/media/Blade Runner 2049.mkv"
+                    "Path": "/media/Blade Runner 2049.mkv",
+                    "ImageTags": {"Primary": "mp", "Thumb": "mt"}
                 },
                 {
                     "Id": "e1",
@@ -1199,15 +1206,21 @@ mod tests {
         assert_eq!(entries[2].location, "mb:http://server:8096#item=m1");
         assert_eq!(entries[2].kind, EntryKind::Video);
         assert_eq!(entries[2].duration, Some(7020.0));
+        // The 16:9 art, not the poster.
         assert_eq!(
             entries[2].thumbnail_url.as_deref(),
-            Some("http://server:8096/Items/m1/Images/Primary?maxWidth=480&quality=80")
+            Some("http://server:8096/Items/m1/Images/Thumb?maxWidth=640&quality=90&tag=mt")
         );
 
         assert_eq!(entries[3].name, "The Original");
         assert_eq!(entries[3].location, "mb:http://server:8096#item=e1");
         assert_eq!(entries[3].kind, EntryKind::Video);
         assert_eq!(entries[3].duration, Some(4080.0));
+        // A server that sends no tags: its still, untagged.
+        assert_eq!(
+            entries[3].thumbnail_url.as_deref(),
+            Some("http://server:8096/Items/e1/Images/Primary?maxHeight=480&quality=90")
+        );
     }
 
     #[test]

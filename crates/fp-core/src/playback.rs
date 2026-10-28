@@ -40,15 +40,49 @@ impl PlaybackStatus {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum PlayerCommand {
-    Open { location: String },
+    Open {
+        location: String,
+    },
     Play,
     Pause,
     TogglePause,
-    Seek { position: f64 },
-    SeekRelative { delta: f64 },
-    SetSpeed { speed: f64 },
+    Seek {
+        position: f64,
+    },
+    SeekRelative {
+        delta: f64,
+    },
+    SetSpeed {
+        speed: f64,
+    },
     Stop,
     Recenter,
+    /// 0 to 1.5; above 1 is louder than the video.
+    SetVolume {
+        volume: f64,
+    },
+    /// Mutes, or turns the sound back on at the volume before.
+    ToggleMute,
+    /// The previous or next video in Up next.
+    Previous,
+    Next,
+    /// Plays this audio stream (by its index in the file).
+    SelectAudio {
+        stream: usize,
+    },
+    /// Shows these subtitles; none turns them off.
+    SelectSubtitles {
+        track: Option<SubtitleTrack>,
+    },
+}
+
+/// Subtitles a video has: an embedded stream (by its index in the file),
+/// or one of the subtitle files beside it (by position).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubtitleTrack {
+    Stream(usize),
+    File(usize),
 }
 
 pub fn now_ms() -> u64 {

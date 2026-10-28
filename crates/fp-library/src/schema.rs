@@ -102,9 +102,20 @@ CREATE INDEX history_started ON history(started_at);
 /// Version 2: what a video's source says about it.
 const V2: &str = "ALTER TABLE media ADD COLUMN description TEXT;";
 
+/// Version 3: the frame where a partly watched video was left off, and the
+/// position it was made for; scrub-preview sheets are gone.
+const V3: &str = "
+ALTER TABLE media DROP COLUMN preview_strip;
+ALTER TABLE media ADD COLUMN resume_thumbnail TEXT;
+ALTER TABLE media ADD COLUMN resume_thumbnail_at REAL;
+";
+
+/// Version 4: the audio and subtitles picked for a video.
+const V4: &str = "ALTER TABLE media ADD COLUMN tracks TEXT;";
+
 /// All migrations, oldest first. The schema version equals the number of
 /// migrations applied.
-pub(crate) const MIGRATIONS: &[&str] = &[V1, V2];
+pub(crate) const MIGRATIONS: &[&str] = &[V1, V2, V3, V4];
 
 /// Schema version this build writes.
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;

@@ -88,7 +88,7 @@ impl App {
             return;
         }
         let Some(src) = self.services.opener.source(&source) else {
-            self.ui.toast("That source is not available");
+            self.ui.toast(tr!("source-not-available"));
             return;
         };
         // Into the listing on screen, else a folder page of its own.
@@ -112,12 +112,18 @@ impl App {
         let lib = self.services.library.clone();
         self.jobs.spawn("list", move || {
             let result = src.list(location.as_deref()).map(|mut e| {
-                // Thumbnails the library already made for these videos.
-                for entry in e.iter_mut().filter(|e| {
-                    e.thumbnail_url.is_none() && e.kind == fp_core::source::EntryKind::Video
-                }) {
-                    if let Ok(Some(r)) = lib.get_by_location(&entry.location) {
-                        entry.thumbnail_url = r.thumbnail.map(|p| p.display().to_string());
+                // The library's pictures for these videos: where one was
+                // left off, or a thumbnail made for one the server has none
+                // for.
+                for entry in e
+                    .iter_mut()
+                    .filter(|e| e.kind == fp_core::source::EntryKind::Video)
+                {
+                    if let Ok(Some(r)) = lib.get_by_location(&entry.location)
+                        && (r.partly_watched() || entry.thumbnail_url.is_none())
+                        && let Some(p) = r.picture()
+                    {
+                        entry.thumbnail_url = Some(p);
                     }
                 }
                 e
@@ -125,13 +131,11 @@ impl App {
             let result = result.map_err(|e| {
                 let removable = source == crate::services::REMOVABLE_SOURCE;
                 match e {
-                    fp_sources::Error::NotInserted => {
-                        "The microSD card or USB drive this is on is not inserted.".to_string()
-                    }
+                    fp_sources::Error::NotInserted => tr!("source-not-inserted").to_string(),
                     _ if removable && crate::drives::removable_mounts().is_empty() => {
-                        "No microSD card or USB drive is inserted.".to_string()
+                        tr!("source-no-drives").to_string()
                     }
-                    e => e.to_string(),
+                    e => ui::errors::source(&e),
                 }
             });
             Job::Listed {
@@ -152,7 +156,7 @@ impl App {
         if source == crate::services::LOCAL_HUB {
             self.ui.source = Some(SourceView {
                 source,
-                name: "On this device".into(),
+                name: tr!("sources-local").into(),
                 back_to,
                 page: SourcePage::Local(Default::default()),
             });
@@ -167,7 +171,7 @@ impl App {
             .source_config(&source)
             .map(fp_sources::SourceConfig::kind)
         else {
-            self.ui.toast("That source is not available");
+            self.ui.toast(tr!("source-not-available"));
             return;
         };
         let name = self.source_name(&source);
@@ -279,8 +283,8 @@ impl App {
         self.jobs.spawn("jellyfin", move || {
             std::thread::sleep(delay);
             let result = match src.as_media_browser() {
-                Some(mb) => ui::jellyfin::run(mb, &load).map_err(|e| e.to_string()),
-                None => Err("not a Jellyfin or Emby server".to_string()),
+                Some(mb) => ui::jellyfin::run(mb, &load).map_err(|e| ui::errors::source(&e)),
+                None => Err(tr!("source-not-jellyfin").to_string()),
             };
             Job::Jellyfin {
                 source,
@@ -298,11 +302,12 @@ impl App {
         };
         if !crate::libraries::present(l) {
             let card = l.card.as_ref().map_or("", |c| c.label.as_str());
-            self.ui.toast(format!("Insert {card} to scan {}", l.name));
+            self.ui
+                .toast(tr!("scan-insert-card", card = card, name = l.name.as_str()));
             return;
         }
         if self.ui.scans.contains_key(source) {
-            self.ui.toast(format!("{} is being scanned", l.name));
+            self.ui.toast(tr!("scan-busy", name = l.name.as_str()));
             return;
         }
         self.scan_libraries(|l| l.id == source, force, true);
@@ -318,8 +323,8 @@ impl App {
             Some(e) => self.ui.toast(e.to_string()),
             None => {
                 self.ui.toast(match change.save_error {
-                    Some(e) => unsaved(&format!("Added {}", cfg.name()), &e),
-                    None => format!("Added {}", cfg.name()),
+                    Some(e) => tr!("source-added-unsaved", name = cfg.name(), error = e),
+                    None => tr!("source-added", name = cfg.name()),
                 });
                 self.open_source(cfg.id().to_string(), Screen::Sources);
             }
@@ -362,8 +367,8 @@ impl App {
         match change.errors.into_iter().find(|e| e.id == id) {
             Some(e) => self.ui.toast(e.to_string()),
             None => self.ui.toast(match change.save_error {
-                Some(e) => unsaved(&format!("Changed {}", cfg.name()), &e),
-                None => format!("Saved {}", cfg.name()),
+                Some(e) => tr!("source-changed-unsaved", name = cfg.name(), error = e),
+                None => tr!("source-saved", name = cfg.name()),
             }),
         }
         // Its browser and saved listing were made with the old details.
@@ -396,7 +401,7 @@ impl App {
             .cloned()
             .collect();
         if let Some(e) = self.services.set_sources(list).save_error {
-            self.ui.toast(unsaved("Removed", &e));
+            self.ui.toast(tr!("source-removed-unsaved", error = e));
         }
     }
 
@@ -429,7 +434,8 @@ impl App {
     pub(super) fn lock_source(&mut self, id: &str) {
         self.ui.unlocked_sources.remove(id);
         self.close_source_view(id);
-        self.ui.toast(format!("Locked {}", self.source_name(id)));
+        let name = self.source_name(id);
+        self.ui.toast(tr!("source-locked-toast", name = name));
     }
 
     /// Gives a source a PIN, or takes it away (`None`).
@@ -455,13 +461,14 @@ impl App {
                 if self.ui.source_form.as_ref().is_some_and(editing) {
                     self.ui.source_form = None;
                 }
-                self.ui.toast(format!("{name} is locked with a PIN"));
+                self.ui.toast(tr!("source-pin-set", name = name.as_str()));
             }
             Some(_) => {}
             None => {
                 self.settings.source_pins.remove(source);
                 self.ui.unlocked_sources.remove(source);
-                self.ui.toast(format!("Removed the PIN of {name}"));
+                self.ui
+                    .toast(tr!("source-pin-removed", name = name.as_str()));
             }
         }
     }
@@ -482,7 +489,7 @@ impl App {
         };
         self.jobs.spawn("jellyfin-mark", move || {
             let Some(mb) = src.as_media_browser() else {
-                return Job::Toast("Not a Jellyfin or Emby server".into());
+                return Job::Toast(tr!("source-not-jellyfin-toast").into());
             };
             let r = match mark {
                 ui::jellyfin::Mark::Favorite => mb.set_favorite(&id, on),
@@ -490,7 +497,7 @@ impl App {
             };
             match r {
                 Ok(()) => Job::Done,
-                Err(e) => Job::Toast(format!("The server did not take it: {e}")),
+                Err(e) => Job::Toast(tr!("server-refused", error = ui::errors::source(&e))),
             }
         });
     }
@@ -502,11 +509,11 @@ impl App {
         };
         self.jobs.spawn("feed-favorite", move || {
             let Some(feed) = src.as_scene_feed() else {
-                return Job::Toast("Not a DeoVR feed or HereSphere API".into());
+                return Job::Toast(tr!("source-not-feed").into());
             };
             match feed.set_favorite(&url, on) {
                 Ok(()) => Job::Done,
-                Err(e) => Job::Toast(format!("The server did not take it: {e}")),
+                Err(e) => Job::Toast(tr!("server-refused", error = ui::errors::source(&e))),
             }
         });
     }
@@ -532,11 +539,11 @@ impl App {
                 let _ = tx.send(listed(Ok(lib.clone()), true));
             }
             let Some(feed) = src.as_scene_feed() else {
-                return listed(Err("not a scene feed".into()), false);
+                return listed(Err(tr!("source-not-scene-feed").into()), false);
             };
             let mut lib = match feed.library() {
                 Ok(lib) => lib,
-                Err(e) => return listed(Err(e.to_string()), false),
+                Err(e) => return listed(Err(ui::errors::source(&e)), false),
             };
             let _ = tx.send(listed(Ok(lib.clone()), false));
             let scenes = feed.scan();
@@ -589,7 +596,9 @@ impl App {
     pub(super) fn discover_dlna(&mut self) {
         self.ui.dlna_searching = true;
         self.jobs.spawn("dlna", || {
-            Job::Dlna(fp_sources::discover(Duration::from_secs(3)).map_err(|e| e.to_string()))
+            Job::Dlna(
+                fp_sources::discover(Duration::from_secs(3)).map_err(|e| ui::errors::source(&e)),
+            )
         });
     }
 
@@ -603,7 +612,7 @@ impl App {
             Job::QuickConnectInitiated(
                 seq,
                 fp_sources::quick_connect_initiate_url(&addr, insecure_tls)
-                    .map_err(|e| e.to_string()),
+                    .map_err(|e| ui::errors::source(&e)),
             )
         });
     }
@@ -617,7 +626,7 @@ impl App {
         self.jobs.spawn("quick_connect_poll", move || {
             let addr = fp_sources::urlutil::with_http_scheme(&address);
             let r = fp_sources::quick_connect_poll_url(&addr, &secret, insecure_tls)
-                .map_err(|e| e.to_string());
+                .map_err(|e| ui::errors::source(&e));
             Job::QuickConnectPolled(secret, r)
         });
     }
@@ -630,12 +639,6 @@ fn scene_details(
     url: &str,
     full: bool,
 ) -> Result<fp_sources::SceneInfo, String> {
-    let feed = src.as_scene_feed().ok_or("not a scene feed")?;
-    feed.scene(url, full).map_err(|e| e.to_string())
-}
-
-/// A toast for a source change that holds until FramePlayerX quits but
-/// couldn't be saved.
-fn unsaved(done: &str, error: &str) -> String {
-    format!("{done} until you quit: the sources couldn't be saved ({error})")
+    let feed = src.as_scene_feed().ok_or(tr!("source-not-scene-feed"))?;
+    feed.scene(url, full).map_err(|e| ui::errors::source(&e))
 }

@@ -15,13 +15,27 @@ pub struct Row {
 
 /// Play next, Add to queue and Add to playlist for `req`.
 pub fn buttons(ui: &mut egui::Ui, v: &mut View, req: &OpenRequest) {
-    if widgets::button(ui, Some(icons::SKIP_FORWARD), "Play next", Kind::Secondary).clicked() {
+    if widgets::button(
+        ui,
+        Some(icons::SKIP_FORWARD),
+        tr!("jf-play-next"),
+        Kind::Secondary,
+    )
+    .clicked()
+    {
         v.actions.push(Action::Queue {
             req: req.clone(),
             next: true,
         });
     }
-    if widgets::button(ui, Some(icons::QUEUE), "Add to queue", Kind::Secondary).clicked() {
+    if widgets::button(
+        ui,
+        Some(icons::QUEUE),
+        tr!("jf-add-to-queue"),
+        Kind::Secondary,
+    )
+    .clicked()
+    {
         v.actions.push(Action::Queue {
             req: req.clone(),
             next: false,
@@ -30,7 +44,7 @@ pub fn buttons(ui: &mut egui::Ui, v: &mut View, req: &OpenRequest) {
     if widgets::button(
         ui,
         Some(icons::PLAYLIST),
-        "Add to playlist",
+        tr!("jf-add-to-playlist"),
         Kind::Secondary,
     )
     .clicked()
@@ -50,7 +64,7 @@ fn row(v: &View, req: &OpenRequest) -> Row {
         return Row {
             title: widgets::display_title(&r.title),
             facts: super::library::facts(&r, v.settings.default_format),
-            thumb: super::library::thumb_key(&r),
+            thumb: r.picture(),
         };
     }
     let e = req.entry.as_ref();
@@ -81,14 +95,26 @@ pub fn page(ui: &mut egui::Ui, v: &mut View) {
     }
     let n = q.items.len();
     let subtitle = match n {
-        0 => "Nothing queued: Play next and Add to queue are on a video's details".to_string(),
-        _ if q.plays_through => format!("{} of {n} · plays through to the end", q.pos + 1),
-        _ => format!("{} of {n} · X and Y step through the list", q.pos + 1),
+        0 => tr!("queue-empty").to_string(),
+        _ if q.plays_through => {
+            let at = q.pos + 1;
+            tr!("queue-plays-through", at = at, of = n)
+        }
+        _ => {
+            let at = q.pos + 1;
+            tr!("queue-steps", at = at, of = n)
+        }
     };
-    let back = page::header(ui, "Up next", Some(&subtitle), |ui| {
+    let back = page::header(ui, tr!("player-up-next"), Some(&subtitle), |ui| {
         if n > 1
-            && widgets::button_sized(ui, Some(icons::TRASH), "Clear", Kind::Secondary, 44.0)
-                .clicked()
+            && widgets::button_sized(
+                ui,
+                Some(icons::TRASH),
+                tr!("common-clear"),
+                Kind::Secondary,
+                44.0,
+            )
+            .clicked()
         {
             v.actions.push(Action::QueueClear);
         }
@@ -96,7 +122,7 @@ pub fn page(ui: &mut egui::Ui, v: &mut View) {
             && widgets::button_sized(
                 ui,
                 Some(icons::PLAYLIST),
-                "Save as playlist",
+                tr!("queue-save-as-playlist"),
                 Kind::Secondary,
                 44.0,
             )
@@ -104,7 +130,7 @@ pub fn page(ui: &mut egui::Ui, v: &mut View) {
         {
             v.state.picking = Some(Picking {
                 reqs: q.items.clone(),
-                title: "Up next".into(),
+                title: tr!("player-up-next").into(),
             });
         }
     });
@@ -122,7 +148,7 @@ pub fn page(ui: &mut egui::Ui, v: &mut View) {
         ui.add_space(4.0);
         for (i, r) in rows.iter().enumerate() {
             let facts = if i == q.pos && v.playback.is_some() {
-                format!("Now playing  ·  {}", r.facts)
+                format!("{}  ·  {}", tr!("queue-now-playing"), r.facts)
             } else {
                 r.facts.clone()
             };

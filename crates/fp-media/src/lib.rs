@@ -7,7 +7,9 @@
 //!   subtitle decoders.
 //! - `v4l2`: the native V4L2 stateful decoder for H.264/HEVC (10-bit HEVC as
 //!   Q10C), with the Steam Frame's admission-check workaround.
-//! - `mvc`: 3D Blu-ray video (H.264 MVC) on a plain H.264 decoder.
+//! - `mvc`: 3D Blu-ray video (H.264 MVC) on a plain H.264 decoder;
+//!   `second_view`: its second view read from transport streams.
+//! - `bluray`: Blu-ray disc images, their main title played clip after clip.
 //! - [`frame`]: decoded video frames in GPU-uploadable layouts.
 //! - [`player`]: the threaded player with a video-master clock.
 //! - [`audio`]: output, time-stretch and ambisonic rendering.
@@ -15,6 +17,7 @@
 
 pub mod audio;
 pub mod bench;
+pub(crate) mod bluray;
 pub mod clock;
 pub(crate) mod decode;
 pub mod frame;
@@ -24,6 +27,7 @@ pub(crate) mod io;
 pub(crate) mod mvc;
 pub(crate) mod nal;
 pub mod player;
+pub(crate) mod second_view;
 pub mod subtitle;
 pub mod thumb;
 #[cfg(test)]
@@ -33,7 +37,7 @@ pub(crate) mod v4l2;
 pub use decode::{HwDecode, hardware_sessions, hevc_10bit_hardware, set_hevc_10bit_hardware};
 pub use frame::{ColorInfo, PixelLayout, Q10cPicture, VideoFrame};
 pub use info::{MediaInfo, StreamInfo, StreamKind};
-pub use player::{Player, PlayerConfig, PlayerState, Stats};
+pub use player::{Player, PlayerConfig, PlayerState, Stats, Tracks};
 pub use subtitle::Cue;
 
 use fp_ffmpeg_sys as ff;
@@ -51,6 +55,9 @@ pub enum Error {
     NoStream(&'static str),
     #[error("unsupported: {0}")]
     Unsupported(String),
+    /// A disc image that can't be read as a Blu-ray.
+    #[error("disc image: {0}")]
+    Disc(String),
     /// The hardware decoder has no room for the stream beside the other
     /// video sessions open (Steam's streaming holds one).
     #[error("hardware decoder busy: {0}")]

@@ -14,11 +14,17 @@ pub fn format_choices() -> Vec<(&'static str, VideoFormat)> {
     use StereoLayout::*;
     let f = |p, s| VideoFormat::new(p, s);
     vec![
-        ("Flat 2D", f(Projection::Flat, Mono)),
-        ("Flat 3D Half SBS", f(Projection::Flat, HalfSideBySide)),
-        ("Flat 3D SBS", f(Projection::Flat, SideBySide)),
-        ("Flat 3D Half TB", f(Projection::Flat, HalfTopBottom)),
-        ("Flat 3D TB", f(Projection::Flat, TopBottom)),
+        (tr!("format-flat-2d"), f(Projection::Flat, Mono)),
+        (
+            tr!("format-flat-3d-half-sbs"),
+            f(Projection::Flat, HalfSideBySide),
+        ),
+        (tr!("format-flat-3d-sbs"), f(Projection::Flat, SideBySide)),
+        (
+            tr!("format-flat-3d-half-tb"),
+            f(Projection::Flat, HalfTopBottom),
+        ),
+        (tr!("format-flat-3d-tb"), f(Projection::Flat, TopBottom)),
         ("180° SBS", f(Projection::EQUIRECT_180, SideBySide)),
         ("180° TB", f(Projection::EQUIRECT_180, TopBottom)),
         ("180° 2D", f(Projection::EQUIRECT_180, Mono)),
@@ -26,15 +32,15 @@ pub fn format_choices() -> Vec<(&'static str, VideoFormat)> {
         ("360° TB", f(Projection::EQUIRECT_360, TopBottom)),
         ("360° SBS", f(Projection::EQUIRECT_360, SideBySide)),
         (
-            "Fisheye 190° SBS",
+            tr!("format-fisheye-190"),
             f(Projection::fisheye(190.0), SideBySide),
         ),
         (
-            "Fisheye 200° SBS",
+            tr!("format-fisheye-200"),
             f(Projection::fisheye(200.0), SideBySide),
         ),
         (
-            "Fisheye 220° SBS",
+            tr!("format-fisheye-220"),
             f(Projection::fisheye(220.0), SideBySide),
         ),
         (
@@ -61,12 +67,18 @@ pub fn control_bar(ctx: &egui::Context, v: &mut View) {
     widgets::panel_slab(ctx, 28.0);
     let frame = egui::Frame::new()
         .outer_margin(widgets::SHADOW_ROOM)
-        .inner_margin(egui::Margin::symmetric(28, 18));
+        .inner_margin(egui::Margin::symmetric(BAR_MARGIN, 18));
     egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
         let Some(pb) = v.playback.as_deref_mut() else {
             return;
         };
-        title_row(ui, pb, v.state, v.settings.hardware_decoding);
+        title_row(
+            ui,
+            pb,
+            v.state,
+            v.settings.hardware_decoding,
+            &v.settings.subtitle_language,
+        );
         ui.add_space(6.0);
         seek_row(ui, pb, v.state, v.actions);
         ui.add_space(8.0);
@@ -80,7 +92,7 @@ pub fn control_bar(ctx: &egui::Context, v: &mut View) {
                 .layout(Layout::left_to_right(Align::Center)),
         );
         widgets::well(&mut left, |ui| browse_and_sound(ui, pb, v.state, v.actions));
-        transport(ui, row, pb, v.settings.seek_step, v.actions);
+        transport(ui, row, pb, v.settings.seek_step, v.queue, v.actions);
         let mut right = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(row)
@@ -100,6 +112,10 @@ pub fn control_bar(ctx: &egui::Context, v: &mut View) {
     });
 }
 
+/// The control bar's side margin; the audio and subtitles picker lines up
+/// with the end of what is inside it.
+pub const BAR_MARGIN: i8 = 28;
+
 /// The format and stream pills open the adjust panel's Format tab (again
 /// closes it).
 fn toggle_format_tab(state: &mut super::UiState) {
@@ -108,18 +124,19 @@ fn toggle_format_tab(state: &mut super::UiState) {
     state.adjust_tab = 0;
 }
 
-/// Title, status and format.
+/// Title, status, format, and the audio and subtitles in use.
 fn title_row(
     ui: &mut egui::Ui,
     pb: &crate::playback::Playback,
     state: &mut super::UiState,
     hardware_decoding: bool,
+    language: &str,
 ) {
     ui.horizontal(|ui| {
         ui.set_height(30.0);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if format_pill(ui, &widgets::format_short(&pb.format))
-                .tip("Change the format")
+                .tip(tr!("player-change-format"))
                 .clicked()
             {
                 toggle_format_tab(state);
@@ -133,6 +150,13 @@ fn title_row(
                 {
                     toggle_format_tab(state);
                 }
+            }
+            if let Some(label) = tracks_label(pb, language)
+                && tracks_pill(ui, &label, state.tracks_open)
+                    .tip(tr!("player-tracks"))
+                    .clicked()
+            {
+                state.tracks_open = !state.tracks_open;
             }
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 let message = match pb.player.error() {
@@ -217,20 +241,20 @@ fn browse_and_sound(
     actions: &mut Vec<Action>,
 ) {
     if widgets::key(ui, icons::SQUARES_FOUR, 52.0, false)
-        .tip("Browse")
+        .tip(tr!("player-browse"))
         .clicked()
     {
         actions.push(Action::ShowBrowser(true));
     }
     if widgets::key(ui, icons::QUEUE, 52.0, false)
-        .tip("Up next")
+        .tip(tr!("player-up-next"))
         .clicked()
     {
         actions.push(Action::ShowUpNext);
     }
     let speed = pb.player.speed();
     if widgets::pill_key(ui, &fmt_speed(speed), (speed - 1.0).abs() > 1e-3)
-        .tip("Speed")
+        .tip(tr!("player-speed"))
         .clicked()
     {
         actions.push(Action::SetSpeed(next_speed(speed)));
@@ -244,7 +268,11 @@ fn browse_and_sound(
         icons::SPEAKER_HIGH
     };
     if widgets::key(ui, speaker, 52.0, false)
-        .tip(if vol <= 0.001 { "Unmute" } else { "Mute" })
+        .tip(if vol <= 0.001 {
+            tr!("player-unmute")
+        } else {
+            tr!("player-mute")
+        })
         .clicked()
     {
         if vol <= 0.001 {
@@ -255,40 +283,82 @@ fn browse_and_sound(
         }
     }
     let mut vol_edit = vol;
-    if widgets::slider(ui, &mut vol_edit, 0.0..=1.5, 130.0).changed() {
+    if widgets::slider(ui, &mut vol_edit, 0.0..=1.5, 100.0).changed() {
         actions.push(Action::SetVolume(vol_edit));
     }
     ui.add_space(6.0);
 }
 
-/// Rewind, play and forward, centred on the row.
+/// Previous, rewind, play, forward and next, centred on the row.
 fn transport(
     ui: &mut egui::Ui,
     row: egui::Rect,
     pb: &crate::playback::Playback,
     step: f64,
+    queue: &crate::queue::Queue,
     actions: &mut Vec<Action>,
 ) {
     let paused = pb.player.is_paused() || pb.player.state() == PlayerState::Ended;
-    let centre_w = 56.0 + 16.0 + 72.0 + 16.0 + 56.0;
+    let centre_w = 52.0 + 56.0 + 72.0 + 56.0 + 52.0 + 4.0 * 12.0;
     let centre = egui::Rect::from_center_size(row.center(), Vec2::new(centre_w, row.height()));
     let mut mid = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(centre)
             .layout(Layout::left_to_right(Align::Center)),
     );
-    mid.spacing_mut().item_spacing.x = 16.0;
-    if skip_button(&mut mid, -step).tip("Rewind").clicked() {
+    mid.spacing_mut().item_spacing.x = 12.0;
+    queue_key(&mut mid, queue, -1, actions);
+    if skip_button(&mut mid, -step)
+        .tip(tr!("player-rewind"))
+        .clicked()
+    {
         actions.push(Action::SeekRelative(-step));
     }
     if play_button(&mut mid, paused)
-        .tip(if paused { "Play" } else { "Pause" })
+        .tip(if paused {
+            tr!("player-play")
+        } else {
+            tr!("player-pause")
+        })
         .clicked()
     {
         actions.push(Action::TogglePause);
     }
-    if skip_button(&mut mid, step).tip("Forward").clicked() {
+    if skip_button(&mut mid, step)
+        .tip(tr!("player-forward"))
+        .clicked()
+    {
         actions.push(Action::SeekRelative(step));
+    }
+    queue_key(&mut mid, queue, 1, actions);
+}
+
+/// The previous (`dir` -1) or next video in Up next, as the controller's
+/// X and Y; dimmed when there is none that way.
+fn queue_key(ui: &mut egui::Ui, queue: &crate::queue::Queue, dir: i32, actions: &mut Vec<Action>) {
+    let to = queue
+        .pos
+        .checked_add_signed(dir as isize)
+        .and_then(|i| queue.items.get(i));
+    let (icon, name) = if dir < 0 {
+        (icons::SKIP_BACK, tr!("player-previous"))
+    } else {
+        (icons::SKIP_FORWARD, tr!("player-next"))
+    };
+    let tip = match to {
+        Some(req) => {
+            let title = widgets::display_title(&req.shown_title());
+            tr!("player-step-to", step = name, title = title)
+        }
+        None if queue.items.len() < 2 => tr!("player-no-other-videos").into(),
+        None if dir < 0 => tr!("player-first-video").into(),
+        None => tr!("player-last-video").into(),
+    };
+    let key = ui
+        .add_enabled_ui(to.is_some(), |ui| widgets::key(ui, icon, 52.0, false))
+        .inner;
+    if key.tip(&tip).clicked() {
+        actions.push(Action::StepQueue(dir));
     }
 }
 
@@ -303,13 +373,13 @@ fn view_keys(
     actions: &mut Vec<Action>,
 ) {
     if widgets::key(ui, icons::X, 52.0, false)
-        .tip("Close")
+        .tip(tr!("player-close"))
         .clicked()
     {
         actions.push(Action::ClosePlayback);
     }
     if widgets::key(ui, icons::EYE_SLASH, 52.0, false)
-        .tip("Hide")
+        .tip(tr!("player-hide"))
         .clicked()
     {
         actions.push(Action::HideControls);
@@ -319,14 +389,14 @@ fn view_keys(
     if passthrough_available {
         if pb.format.projection == Projection::Flat {
             if widgets::key(ui, icons::ARMCHAIR, 52.0, passthrough)
-                .tip("Room")
+                .tip(tr!("player-room"))
                 .clicked()
             {
                 actions.push(Action::TogglePassthrough);
             }
         } else if let Some(f) = pb.mask_toggled()
             && widgets::key(ui, icons::ARMCHAIR, 52.0, pb.format.alpha_packed)
-                .tip("Room, through the video's mask")
+                .tip(tr!("player-room-mask"))
                 .clicked()
         {
             actions.push(Action::SetFormat(Some(f)));
@@ -335,19 +405,19 @@ fn view_keys(
     // Only a flat screen follows: around 180°/360° video you look about.
     if pb.format.projection == Projection::Flat
         && widgets::key(ui, icons::BED, 52.0, follow)
-            .tip("Screen follows you")
+            .tip(tr!("settings-follow"))
             .clicked()
     {
         actions.push(Action::ToggleFollow);
     }
     if widgets::key(ui, icons::BOOKMARK_SIMPLE, 52.0, false)
-        .tip("Bookmark")
+        .tip(tr!("player-bookmark"))
         .clicked()
     {
         actions.push(Action::AddBookmark);
     }
     if widgets::key(ui, icons::SLIDERS_HORIZONTAL, 52.0, state.adjust_open)
-        .tip("Adjust")
+        .tip(tr!("player-adjust"))
         .clicked()
     {
         state.adjust_open = !state.adjust_open;
@@ -378,23 +448,95 @@ fn format_pill(ui: &mut egui::Ui, text: &str) -> egui::Response {
         theme::TEXT_2,
     );
     let (rect, resp) = ui.allocate_exact_size(g.size() + Vec2::new(20.0, 10.0), Sense::click());
+    let t = pill_face(ui, &resp, false);
+    let fg = theme::TEXT_2.lerp_to_gamma(theme::TEXT, t);
+    ui.painter().galley(rect.center() - g.size() / 2.0, g, fg);
+    resp
+}
+
+/// The raised body of a pill on the title row, lit while the pointer is
+/// on it and blue while what it opens is `open`; returns how lit it is.
+fn pill_face(ui: &egui::Ui, resp: &egui::Response, open: bool) -> f32 {
     let t = ui
         .ctx()
         .animate_bool_with_time(resp.id, resp.hovered(), 0.12);
+    let s = ui
+        .ctx()
+        .animate_bool_with_time(resp.id.with("open"), open, 0.12);
+    let lit = |a: Color32, b: Color32, on: Color32| a.lerp_to_gamma(b, t).lerp_to_gamma(on, s);
     depth::raised(
         ui.painter(),
-        rect,
+        resp.rect,
         8.0,
         depth::Raised {
-            top: Color32::from_rgb(46, 54, 65).lerp_to_gamma(Color32::from_rgb(62, 72, 86), t),
-            bottom: Color32::from_rgb(33, 40, 49).lerp_to_gamma(Color32::from_rgb(44, 52, 63), t),
+            top: lit(
+                Color32::from_rgb(46, 54, 65),
+                Color32::from_rgb(62, 72, 86),
+                Color32::from_rgb(31, 76, 114),
+            ),
+            bottom: lit(
+                Color32::from_rgb(33, 40, 49),
+                Color32::from_rgb(44, 52, 63),
+                Color32::from_rgb(21, 52, 82),
+            ),
             light: Color32::from_white_alpha(26),
             lift: 0.3,
             glow: None,
         },
     );
-    let fg = theme::TEXT_2.lerp_to_gamma(theme::TEXT, t);
-    ui.painter().galley(rect.center() - g.size() / 2.0, g, fg);
+    t
+}
+
+/// What the audio and subtitles pill says: the audio track when there is a
+/// choice of them, then the subtitles; none when there is nothing to choose.
+fn tracks_label(pb: &crate::playback::Playback, language: &str) -> Option<String> {
+    let info = pb.player.info();
+    let audio: Vec<_> = info.audio_streams().collect();
+    let subtitles = crate::subtitles::rows(language, info, &pb.subtitle_files);
+    if audio.len() < 2 && subtitles.is_empty() {
+        return None;
+    }
+    let mut label = String::new();
+    if audio.len() > 1 {
+        let playing = pb.player.audio_stream();
+        let name = audio.iter().find(|s| Some(s.index) == playing).map_or_else(
+            || tr!("tracks-off").to_string(),
+            |s| crate::subtitles::track_name(s),
+        );
+        label = format!("{}  {name}      ", icons::SPEAKER_HIGH);
+    }
+    let shown = subtitles
+        .iter()
+        .find(|r| showing(pb, r.pick))
+        .map_or(tr!("tracks-off"), |r| r.title.as_str());
+    label += &format!("{}  {shown}   {}", icons::SUBTITLES, icons::CARET_UP);
+    Some(label)
+}
+
+/// Whether `pick` is the subtitles showing.
+fn showing(pb: &crate::playback::Playback, pick: Pick) -> bool {
+    pb.subtitles_showing() == pick
+}
+
+/// The pill naming the audio and subtitles in use, which opens the picker
+/// above the bar.
+fn tracks_pill(ui: &mut egui::Ui, label: &str, open: bool) -> egui::Response {
+    let g = widgets::one_line(
+        ui.painter(),
+        label.to_string(),
+        theme::font(Weight::SemiBold, 14.0),
+        theme::TEXT,
+        320.0,
+    );
+    let (rect, resp) = ui.allocate_exact_size(g.size() + Vec2::new(24.0, 10.0), Sense::click());
+    pill_face(ui, &resp, open);
+    let fg = if open {
+        theme::ACCENT_HOVER
+    } else {
+        theme::TEXT
+    };
+    ui.painter()
+        .galley_with_override_text_color(rect.center() - g.size() / 2.0, g, fg);
     resp
 }
 
@@ -434,13 +576,18 @@ pub(crate) fn stream_info_labels(
         format!("{} ({}-bit {chroma})", v.pixel_format, v.bit_depth)
     };
     let size = if v.mvc {
-        format!("{}×{} per eye", v.width / 2, v.height)
+        let (w, h) = (v.width / 2, v.height);
+        tr!("player-size-per-eye", width = w, height = h)
     } else {
         format!("{}×{}", v.width, v.height)
     };
-    let tooltip = format!(
-        "Decoder: {decoder}\nFormat: {codec} · {pixel}\nResolution: {size} @ {:.2} fps",
-        v.fps
+    let fps = format!("{:.2}", v.fps);
+    let tooltip = tr!(
+        "player-stream-tip",
+        decoder = decoder,
+        format = format!("{codec} · {pixel}"),
+        size = size,
+        fps = fps
     );
     (badge_text, tooltip)
 }
@@ -448,10 +595,17 @@ pub(crate) fn stream_info_labels(
 /// The decoder playing the video and, for software, why not hardware.
 fn decoder_text(v: &fp_media::StreamInfo, st: &fp_media::Stats, hardware_on: bool) -> String {
     if st.hardware {
-        format!("Hardware ({})", st.video_decoder)
+        tr!(
+            "player-decoder-hardware",
+            decoder = st.video_decoder.as_str()
+        )
     } else {
         let why = crate::playback::software_reason(v, hardware_on, st.hardware_error.as_deref());
-        format!("Software ({}): {why}", st.video_decoder)
+        tr!(
+            "player-decoder-software",
+            decoder = st.video_decoder.as_str(),
+            why = why
+        )
     }
 }
 
@@ -468,21 +622,7 @@ fn stream_pill(ui: &mut egui::Ui, text: &str, hardware: bool) -> egui::Response 
         text_color,
     );
     let (rect, resp) = ui.allocate_exact_size(g.size() + Vec2::new(20.0, 10.0), Sense::click());
-    let t = ui
-        .ctx()
-        .animate_bool_with_time(resp.id, resp.hovered(), 0.12);
-    depth::raised(
-        ui.painter(),
-        rect,
-        8.0,
-        depth::Raised {
-            top: Color32::from_rgb(46, 54, 65).lerp_to_gamma(Color32::from_rgb(62, 72, 86), t),
-            bottom: Color32::from_rgb(33, 40, 49).lerp_to_gamma(Color32::from_rgb(44, 52, 63), t),
-            light: Color32::from_white_alpha(26),
-            lift: 0.3,
-            glow: None,
-        },
-    );
+    let t = pill_face(ui, &resp, false);
     let fg = text_color.lerp_to_gamma(theme::TEXT, t);
     ui.painter().galley(rect.center() - g.size() / 2.0, g, fg);
     resp
@@ -660,15 +800,17 @@ fn seek_bar(
     }
 }
 
-const TABS: [(&str, &str); 7] = [
-    (icons::FRAME_CORNERS, "Format"),
-    (icons::ARROWS_OUT_CARDINAL, "Position"),
-    (icons::CUBE, "Stereo"),
-    (icons::SUN, "Picture"),
-    (icons::EYEGLASSES, "Passthrough"),
-    (icons::SUBTITLES, "Audio & subs"),
-    (icons::VIBRATE, "Haptics"),
-];
+fn tabs() -> [(&'static str, &'static str); 7] {
+    [
+        (icons::FRAME_CORNERS, tr!("adjust-format")),
+        (icons::ARROWS_OUT_CARDINAL, tr!("adjust-position")),
+        (icons::CUBE, tr!("adjust-stereo")),
+        (icons::SUN, tr!("adjust-picture")),
+        (icons::EYEGLASSES, tr!("settings-passthrough")),
+        (icons::LIST, tr!("adjust-chapters")),
+        (icons::VIBRATE, tr!("settings-haptics")),
+    ]
+}
 
 /// Format, view adjustments, tracks and haptics for the open video.
 pub fn adjust_panel(ctx: &egui::Context, v: &mut View) {
@@ -681,13 +823,14 @@ pub fn adjust_panel(ctx: &egui::Context, v: &mut View) {
             return;
         };
         ui.label(
-            RichText::new("Adjust")
+            RichText::new(tr!("player-adjust"))
                 .font(theme::font(Weight::Bold, 26.0))
                 .color(theme::TEXT),
         );
         ui.add_space(4.0);
         // Haptics is the last tab, left out while haptics are off.
-        let tabs = &TABS[..TABS.len() - usize::from(!v.settings.haptics_enabled)];
+        let all = tabs();
+        let tabs = &all[..all.len() - usize::from(!v.settings.haptics_enabled)];
         if v.state.adjust_tab >= tabs.len() {
             v.state.adjust_tab = 0;
         }
@@ -731,10 +874,9 @@ pub fn adjust_panel(ctx: &egui::Context, v: &mut View) {
                     }
                     3 => picture_tab(ui, &mut pb.settings),
                     4 => {
-                        widgets::section_label(ui, "Passthrough videos");
+                        widgets::section_label(ui, tr!("settings-passthrough-videos"));
                         ui.label(
-                            RichText::new("This video's settings, saved with its adjustments.")
-                                .color(theme::TEXT_2),
+                            RichText::new(tr!("adjust-passthrough-desc")).color(theme::TEXT_2),
                         );
                         ui.add_space(6.0);
                         chroma_tab(
@@ -746,13 +888,7 @@ pub fn adjust_panel(ctx: &egui::Context, v: &mut View) {
                             v.actions,
                         );
                     }
-                    5 => audio_and_text(
-                        ui,
-                        pb,
-                        &v.settings.subtitle_language,
-                        &mut v.state.foreign_subtitles_open,
-                        v.actions,
-                    ),
+                    5 => chapters_tab(ui, pb, v.actions),
                     _ => haptics_tab(ui, pb.script_count, v.settings, v.devices),
                 }
                 if pb.settings != before {
@@ -776,18 +912,25 @@ fn format_tab(
     let s = &mut pb.settings;
     let d = ViewSettings::default();
     let user = pb.evidence == fp_core::format::Evidence::User;
-    widgets::section_label(ui, "Format");
+    widgets::section_label(ui, tr!("adjust-format"));
     ui.label(
-        RichText::new(format!(
-            "Detected {} ({})",
-            pb.detected.format.label(),
-            pb.detected.evidence.label()
+        RichText::new(tr!(
+            "adjust-detected",
+            format = super::format_label(&pb.detected.format),
+            evidence = super::evidence_label(pb.detected.evidence)
         ))
         .color(theme::TEXT_2),
     );
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
-        if widgets::chip_icon(ui, Some(icons::MAGIC_WAND), "Automatic", !user).clicked() {
+        if widgets::chip_icon(
+            ui,
+            Some(icons::MAGIC_WAND),
+            tr!("adjust-format-automatic"),
+            !user,
+        )
+        .clicked()
+        {
             actions.push(Action::SetFormat(None));
         }
         for (label, f) in format_choices() {
@@ -802,28 +945,54 @@ fn format_tab(
     });
     if let Projection::Fisheye { fov } = pb.format.projection {
         ui.add_space(6.0);
-        widgets::section_label(ui, "Fisheye lens");
+        widgets::section_label(ui, tr!("adjust-fisheye-lens"));
         widgets::rows(ui, |r| {
             let mut f = fov;
-            if r.slider("Field of view", None, &mut f, 120.0..=300.0, fov, "°", 0) {
+            if r.slider(
+                tr!("adjust-field-of-view"),
+                None,
+                &mut f,
+                120.0..=300.0,
+                fov,
+                "°",
+                0,
+            ) {
                 actions.push(Action::SetFormat(Some(VideoFormat {
                     projection: Projection::Fisheye { fov: f.round() },
                     ..pb.format
                 })));
             }
-            r.slider("Lens k1", None, &mut s.lens_k1, -0.5..=0.5, 0.0, "", 2);
-            r.slider("Lens k2", None, &mut s.lens_k2, -0.5..=0.5, 0.0, "", 2);
+            r.slider(
+                tr!("adjust-lens-k1"),
+                None,
+                &mut s.lens_k1,
+                -0.5..=0.5,
+                0.0,
+                "",
+                2,
+            );
+            r.slider(
+                tr!("adjust-lens-k2"),
+                None,
+                &mut s.lens_k2,
+                -0.5..=0.5,
+                0.0,
+                "",
+                2,
+            );
         });
         ui.add_space(6.0);
-        widgets::section_label(ui, "Lens centre");
-        let images: &[[&str; 2]] = match pb.format.stereo {
-            StereoLayout::Mono => &[["Across", "Up"]],
-            StereoLayout::SideBySide | StereoLayout::HalfSideBySide => {
-                &[["Left, across", "Left, up"], ["Right, across", "Right, up"]]
-            }
-            StereoLayout::TopBottom | StereoLayout::HalfTopBottom => {
-                &[["Top, across", "Top, up"], ["Bottom, across", "Bottom, up"]]
-            }
+        widgets::section_label(ui, tr!("adjust-lens-centre"));
+        let images: Vec<[&str; 2]> = match pb.format.stereo {
+            StereoLayout::Mono => vec![[tr!("lens-across"), tr!("lens-up")]],
+            StereoLayout::SideBySide | StereoLayout::HalfSideBySide => vec![
+                [tr!("lens-left-across"), tr!("lens-left-up")],
+                [tr!("lens-right-across"), tr!("lens-right-up")],
+            ],
+            StereoLayout::TopBottom | StereoLayout::HalfTopBottom => vec![
+                [tr!("lens-top-across"), tr!("lens-top-up")],
+                [tr!("lens-bottom-across"), tr!("lens-bottom-up")],
+            ],
         };
         widgets::rows(ui, |r| {
             for (i, titles) in images.iter().enumerate() {
@@ -836,21 +1005,14 @@ fn format_tab(
                 }
             }
         });
-        ui.label(
-            RichText::new(
-                "Where each image circle's centre is, if not in the middle. \
-                 Point at a slider and push the thumbstick left or right \
-                 for fine steps.",
-            )
-            .color(theme::TEXT_3),
-        );
+        ui.label(RichText::new(tr!("adjust-lens-centre-desc")).color(theme::TEXT_3));
     }
     if pb.format.projection == Projection::Flat {
         ui.add_space(6.0);
-        widgets::section_label(ui, "Screen");
+        widgets::section_label(ui, tr!("adjust-screen"));
         widgets::rows(ui, |r| {
             r.slider(
-                "Distance",
+                tr!("adjust-distance"),
                 None,
                 &mut s.screen_distance,
                 1.0..=20.0,
@@ -859,8 +1021,8 @@ fn format_tab(
                 1,
             );
             r.slider(
-                "Width",
-                Some("Its longer side: a portrait video's height."),
+                tr!("adjust-width"),
+                Some(tr!("settings-screen-width-desc")),
                 &mut s.screen_width,
                 0.5..=30.0,
                 d.screen_width,
@@ -868,7 +1030,7 @@ fn format_tab(
                 1,
             );
             r.slider(
-                "Curvature",
+                tr!("adjust-curvature"),
                 None,
                 &mut s.screen_curvature,
                 0.0..=1.0,
@@ -880,7 +1042,7 @@ fn format_tab(
     }
     if let Some(video) = pb.player.info().video_stream() {
         ui.add_space(6.0);
-        widgets::section_label(ui, "Video stream");
+        widgets::section_label(ui, tr!("adjust-video-stream"));
         widgets::rows(ui, |r| {
             let st = pb.player.stats();
             let decoder = decoder_text(video, &st, hardware_decoding);
@@ -889,7 +1051,7 @@ fn format_tab(
             } else {
                 theme::WARN
             };
-            r.info_colored("Decoder", &decoder, color);
+            r.info_colored(tr!("adjust-decoder"), &decoder, color);
             let codec_name = match video.codec.as_str() {
                 "hevc" => "HEVC (H.265)".to_string(),
                 "h264" => "H.264 (AVC)".to_string(),
@@ -902,10 +1064,10 @@ fn format_tab(
             } else {
                 format!("{codec_name} 8-bit ({})", video.chroma())
             };
-            r.row("Format", None, |ui| {
+            r.row(tr!("adjust-format"), None, |ui| {
                 ui.label(RichText::new(format_desc).color(theme::TEXT_2));
             });
-            r.row("Resolution", None, |ui| {
+            r.row(tr!("adjust-resolution"), None, |ui| {
                 ui.label(
                     RichText::new(format!(
                         "{} × {} @ {:.2} fps",
@@ -915,7 +1077,7 @@ fn format_tab(
                 );
             });
             if !video.pixel_format.is_empty() {
-                r.row("Pixel format", None, |ui| {
+                r.row(tr!("adjust-pixel-format"), None, |ui| {
                     ui.label(RichText::new(&video.pixel_format).color(theme::TEXT_2));
                 });
             }
@@ -927,14 +1089,14 @@ fn position_tab(ui: &mut egui::Ui, s: &mut ViewSettings, moved: bool, actions: &
     let d = ViewSettings::default();
     widgets::rows(ui, |r| {
         r.row(
-            "Screen and panels",
-            Some("Where a flat screen, the control bar, this panel and the browse panel start."),
+            tr!("adjust-placement"),
+            Some(tr!("adjust-placement-desc")),
             |ui| {
                 let button = ui.add_enabled_ui(moved, |ui| {
                     widgets::button(
                         ui,
                         Some(icons::ARROW_COUNTER_CLOCKWISE),
-                        "Put back",
+                        tr!("adjust-put-back"),
                         Kind::Secondary,
                     )
                 });
@@ -945,13 +1107,45 @@ fn position_tab(ui: &mut egui::Ui, s: &mut ViewSettings, moved: bool, actions: &
         );
     });
     widgets::rows(ui, |r| {
-        r.slider("Yaw", None, &mut s.yaw, -180.0..=180.0, 0.0, "°", 0);
-        r.slider("Pitch", None, &mut s.pitch, -90.0..=90.0, 0.0, "°", 0);
-        r.slider("Roll", None, &mut s.roll, -45.0..=45.0, 0.0, "°", 0);
-        r.slider("Zoom", None, &mut s.zoom, 0.5..=2.5, 1.0, "×", 2);
         r.slider(
-            "Height",
-            Some("Raise or lower yourself in the scene."),
+            tr!("adjust-yaw"),
+            None,
+            &mut s.yaw,
+            -180.0..=180.0,
+            0.0,
+            "°",
+            0,
+        );
+        r.slider(
+            tr!("adjust-pitch"),
+            None,
+            &mut s.pitch,
+            -90.0..=90.0,
+            0.0,
+            "°",
+            0,
+        );
+        r.slider(
+            tr!("adjust-roll"),
+            None,
+            &mut s.roll,
+            -45.0..=45.0,
+            0.0,
+            "°",
+            0,
+        );
+        r.slider(
+            tr!("adjust-zoom"),
+            None,
+            &mut s.zoom,
+            0.5..=2.5,
+            1.0,
+            "×",
+            2,
+        );
+        r.slider(
+            tr!("settings-height"),
+            Some(tr!("adjust-height-desc")),
             &mut s.height,
             -1.0..=1.0,
             d.height,
@@ -959,8 +1153,8 @@ fn position_tab(ui: &mut egui::Ui, s: &mut ViewSettings, moved: bool, actions: &
             2,
         );
         r.slider(
-            "Forward",
-            Some("Move closer to or back from the scene."),
+            tr!("adjust-forward"),
+            Some(tr!("adjust-forward-desc")),
             &mut s.forward,
             -1.0..=1.0,
             d.forward,
@@ -968,14 +1162,7 @@ fn position_tab(ui: &mut egui::Ui, s: &mut ViewSettings, moved: bool, actions: &
             2,
         );
     });
-    ui.label(
-        RichText::new(
-            "Or hold a grip and the trigger and drag the picture; \
-             press the thumbstick to undo. Right grip and thumbstick \
-             up / down changes your height.",
-        )
-        .color(theme::TEXT_3),
-    );
+    ui.label(RichText::new(tr!("adjust-position-hint")).color(theme::TEXT_3));
     super::settings::background(ui, &mut s.background);
 }
 
@@ -992,8 +1179,8 @@ fn stereo_tab(
     let d = ViewSettings::default();
     widgets::rows(ui, |r| {
         r.slider(
-            "Depth",
-            Some("Eye separation; lower if it's hard to fuse."),
+            tr!("adjust-depth"),
+            Some(tr!("adjust-depth-desc")),
             &mut s.ipd_offset,
             -5.0..=5.0,
             0.0,
@@ -1015,7 +1202,7 @@ fn stereo_tab(
             }
         }
         r.slider(
-            "Vertical align",
+            tr!("adjust-vertical-align"),
             None,
             &mut s.vertical_align,
             -3.0..=3.0,
@@ -1024,7 +1211,7 @@ fn stereo_tab(
             1,
         );
         r.slider(
-            "Rotation align",
+            tr!("adjust-rotation-align"),
             None,
             &mut s.rotation_align,
             -3.0..=3.0,
@@ -1033,12 +1220,12 @@ fn stereo_tab(
             1,
         );
         r.switch(
-            "Swap eyes",
-            Some("For left/right swapped files."),
+            tr!("adjust-swap-eyes"),
+            Some(tr!("adjust-swap-eyes-desc")),
             &mut s.swap_eyes,
         );
         r.slider(
-            "Subtitle depth",
+            tr!("settings-subtitle-depth"),
             None,
             &mut s.subtitle_distance,
             0.8..=10.0,
@@ -1076,7 +1263,7 @@ fn looking_at(focus: &crate::autofocus::Autofocus, depth: f32) -> String {
 fn picture_tab(ui: &mut egui::Ui, s: &mut ViewSettings) {
     widgets::rows(ui, |r| {
         r.slider(
-            "Brightness",
+            tr!("adjust-brightness"),
             None,
             &mut s.brightness,
             -0.5..=0.5,
@@ -1084,10 +1271,42 @@ fn picture_tab(ui: &mut egui::Ui, s: &mut ViewSettings) {
             "",
             2,
         );
-        r.slider("Contrast", None, &mut s.contrast, 0.5..=1.5, 1.0, "", 2);
-        r.slider("Saturation", None, &mut s.saturation, 0.0..=2.0, 1.0, "", 2);
-        r.slider("Gamma", None, &mut s.gamma, 0.5..=2.0, 1.0, "", 2);
-        r.slider("Sharpen", None, &mut s.sharpen, 0.0..=1.0, 0.0, "", 2);
+        r.slider(
+            tr!("adjust-contrast"),
+            None,
+            &mut s.contrast,
+            0.5..=1.5,
+            1.0,
+            "",
+            2,
+        );
+        r.slider(
+            tr!("adjust-saturation"),
+            None,
+            &mut s.saturation,
+            0.0..=2.0,
+            1.0,
+            "",
+            2,
+        );
+        r.slider(
+            tr!("adjust-gamma"),
+            None,
+            &mut s.gamma,
+            0.5..=2.0,
+            1.0,
+            "",
+            2,
+        );
+        r.slider(
+            tr!("adjust-sharpen"),
+            None,
+            &mut s.sharpen,
+            0.0..=1.0,
+            0.0,
+            "",
+            2,
+        );
     });
 }
 
@@ -1097,9 +1316,9 @@ fn adjust_footer(ui: &mut egui::Ui, pb: &crate::playback::Playback, actions: &mu
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         let label = if pb.record_id.is_some() {
-            "Save for this video"
+            tr!("adjust-save")
         } else {
-            "Keep for this session"
+            tr!("adjust-keep")
         };
         if ui
             .add_enabled_ui(pb.settings_dirty, |ui| {
@@ -1113,7 +1332,7 @@ fn adjust_footer(ui: &mut egui::Ui, pb: &crate::playback::Playback, actions: &mu
         if widgets::button(
             ui,
             Some(icons::ARROW_COUNTER_CLOCKWISE),
-            "Reset",
+            tr!("adjust-reset"),
             Kind::Secondary,
         )
         .clicked()
@@ -1121,7 +1340,7 @@ fn adjust_footer(ui: &mut egui::Ui, pb: &crate::playback::Playback, actions: &mu
             actions.push(Action::ResetView);
         }
         if widgets::icon_button(ui, icons::TIMER, 48.0, false)
-            .tip("Keyframe")
+            .tip(tr!("adjust-keyframe"))
             .clicked()
         {
             actions.push(Action::AddKeyframe);
@@ -1130,7 +1349,7 @@ fn adjust_footer(ui: &mut egui::Ui, pb: &crate::playback::Playback, actions: &mu
             && widgets::button(
                 ui,
                 None,
-                &format!("Clear {} keyframes", pb.keyframes.frames.len()),
+                &tr!("adjust-clear-keyframes", count = pb.keyframes.frames.len()),
                 Kind::Ghost,
             )
             .clicked()
@@ -1141,11 +1360,13 @@ fn adjust_footer(ui: &mut egui::Ui, pb: &crate::playback::Playback, actions: &mu
 }
 
 /// Chroma key colours offered as one tap.
-const KEY_COLORS: [(&str, [f32; 3]); 3] = [
-    ("Green screen", [0.0, 1.0, 0.0]),
-    ("Blue screen", [0.08, 0.04, 1.0]),
-    ("Magenta", [1.0, 0.0, 1.0]),
-];
+fn key_colors() -> [(&'static str, [f32; 3]); 3] {
+    [
+        (tr!("key-green-screen"), [0.0, 1.0, 0.0]),
+        (tr!("key-blue-screen"), [0.08, 0.04, 1.0]),
+        (tr!("key-magenta"), [1.0, 0.0, 1.0]),
+    ]
+}
 
 /// Passthrough tab: the video's own packed mask (`_alpha` videos) or a
 /// chroma key, so the room shows where the video's background was. The key
@@ -1161,11 +1382,11 @@ fn chroma_tab(
     widgets::rows(ui, |r| {
         let mut packed = format.alpha_packed;
         let desc = if packed && format.alpha_pack_scale().is_none() {
-            "Only side-by-side videos can carry a mask: set the format to a side-by-side one."
+            tr!("adjust-mask-needs-sbs")
         } else {
-            "For videos with a built-in see-through mask. On by itself for _alpha files."
+            tr!("adjust-mask-desc")
         };
-        if r.switch("Use the video's mask", Some(desc), &mut packed) {
+        if r.switch(tr!("adjust-mask"), Some(desc), &mut packed) {
             actions.push(Action::SetFormat(Some(VideoFormat {
                 alpha_packed: packed,
                 ..format
@@ -1173,11 +1394,11 @@ fn chroma_tab(
         }
         let mut own = s.own_key();
         if r.switch(
-            "Own settings for this video",
+            tr!("adjust-own-key"),
             Some(if own {
-                "Saved with this video. Turn off to use the global settings."
+                tr!("adjust-own-key-on")
             } else {
-                "Using the global settings. Change anything below to adjust this video."
+                tr!("adjust-own-key-off")
             }),
             &mut own,
         ) {
@@ -1207,21 +1428,20 @@ pub(super) fn chroma_controls(
     let d = ViewSettings::default();
     widgets::rows(ui, |r| {
         r.switch(
-            "Remove the background",
+            tr!("adjust-chroma"),
             Some(if passthrough_available {
-                "Makes one colour of the video see-through, so your room shows behind it."
+                tr!("adjust-chroma-desc")
             } else {
-                "Makes one colour of the video see-through. This headset doesn't share \
-                 passthrough with apps, so it turns dark instead."
+                tr!("adjust-chroma-desc-dark")
             }),
             &mut s.chroma_key,
         );
     });
     if s.chroma_key {
-        premium::label(ui, "Background colour");
+        premium::label(ui, tr!("adjust-chroma-colour-heading"));
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
-            for (label, c) in KEY_COLORS {
+            for (label, c) in key_colors() {
                 let on = s.key_color.iter().zip(c).all(|(a, b)| (a - b).abs() < 0.02);
                 if premium::swatch(ui, label, c, on).clicked() {
                     s.key_color = c;
@@ -1229,7 +1449,7 @@ pub(super) fn chroma_controls(
             }
         });
         widgets::rows(ui, |r| {
-            r.row("Colour", None, |ui| {
+            r.row(tr!("adjust-chroma-colour"), None, |ui| {
                 let [cr, cg, cb] = s.key_color.map(|c| (c.clamp(0.0, 1.0) * 255.0) as u8);
                 let (rect, _) = ui.allocate_exact_size(Vec2::new(64.0, 32.0), Sense::hover());
                 ui.painter().rect_filled(
@@ -1239,7 +1459,7 @@ pub(super) fn chroma_controls(
                 );
             });
             r.slider(
-                "Red",
+                tr!("adjust-red"),
                 None,
                 &mut s.key_color[0],
                 0.0..=1.0,
@@ -1248,7 +1468,7 @@ pub(super) fn chroma_controls(
                 2,
             );
             r.slider(
-                "Green",
+                tr!("adjust-green"),
                 None,
                 &mut s.key_color[1],
                 0.0..=1.0,
@@ -1257,7 +1477,7 @@ pub(super) fn chroma_controls(
                 2,
             );
             r.slider(
-                "Blue",
+                tr!("adjust-blue"),
                 None,
                 &mut s.key_color[2],
                 0.0..=1.0,
@@ -1266,11 +1486,11 @@ pub(super) fn chroma_controls(
                 2,
             );
         });
-        premium::label(ui, "Fine-tune");
+        premium::label(ui, tr!("adjust-fine-tune"));
         widgets::rows(ui, |r| {
             r.slider(
-                "Similarity",
-                Some("How close to the colour a pixel can be and still disappear."),
+                tr!("adjust-similarity"),
+                Some(tr!("adjust-similarity-desc")),
                 &mut s.key_similarity,
                 0.0..=1.0,
                 d.key_similarity,
@@ -1278,7 +1498,7 @@ pub(super) fn chroma_controls(
                 2,
             );
             r.slider(
-                "Edge softness",
+                tr!("adjust-edge-softness"),
                 None,
                 &mut s.key_smoothness,
                 0.0..=0.5,
@@ -1287,8 +1507,8 @@ pub(super) fn chroma_controls(
                 2,
             );
             r.slider(
-                "Spill removal",
-                Some("Takes the background's tint off hair and edges."),
+                tr!("adjust-spill"),
+                Some(tr!("adjust-spill-desc")),
                 &mut s.key_spill,
                 0.0..=1.0,
                 d.key_spill,
@@ -1300,92 +1520,18 @@ pub(super) fn chroma_controls(
     s.key() != before
 }
 
-/// Videos with more subtitles than this list those in other languages only
-/// when asked.
-const FOLD_SUBTITLES: usize = 6;
-
-fn audio_and_text(
-    ui: &mut egui::Ui,
-    pb: &crate::playback::Playback,
-    language: &str,
-    foreign_open: &mut bool,
-    actions: &mut Vec<Action>,
-) {
-    let info = pb.player.info();
-    widgets::section_label(ui, "Audio");
-    let current = pb.player.audio_stream();
-    let streams: Vec<_> = info.audio_streams().collect();
-    if streams.is_empty() {
-        ui.label(RichText::new("No audio").color(theme::TEXT_3));
+/// Chapters tab: the video's chapters and bookmarks to go to, and how
+/// playback is going.
+fn chapters_tab(ui: &mut egui::Ui, pb: &crate::playback::Playback, actions: &mut Vec<Action>) {
+    if pb.markers.is_empty() {
+        ui.label(RichText::new(tr!("adjust-no-chapters")).color(theme::TEXT_2));
     } else {
-        widgets::rows(ui, |r| {
-            for s in &streams {
-                let mut title = crate::subtitles::track_name(s);
-                if s.ambisonic {
-                    title += " · spatial";
-                }
-                let desc = format!("{} · {} ch", s.codec, s.channels);
-                r.row(&title, Some(desc.as_str()), |ui| {
-                    if radio(ui, current == Some(s.index)).clicked() {
-                        actions.push(Action::SelectAudio(s.index));
-                    }
-                });
-            }
-        });
-    }
-    widgets::section_label(ui, "Subtitles");
-    let sub_stream = pb.player.subtitle_stream();
-    let file = pb.active_subtitle_file;
-    let on = |pick: Pick| match pick {
-        Pick::Off => sub_stream.is_none() && file.is_none(),
-        Pick::File(i) => file == Some(i),
-        Pick::Stream(s) => sub_stream == Some(s) && file.is_none(),
-    };
-    let rows = crate::subtitles::rows(language, info, &pb.subtitle_files);
-    let fold = rows.len() > FOLD_SUBTITLES;
-    let (shown, folded): (Vec<_>, Vec<_>) = rows
-        .into_iter()
-        .partition(|row| !fold || !row.foreign || on(row.pick));
-    let mut track = |r: &mut widgets::Rows, title: &str, detail: &str, pick: Pick| {
-        let detail = Some(detail).filter(|d| !d.is_empty());
-        r.row(title, detail, |ui| {
-            if radio(ui, on(pick)).clicked() {
-                if let Pick::File(i) = pick {
-                    actions.push(Action::SelectSubtitleFile(Some(i)));
-                } else {
-                    actions.push(Action::SelectSubtitleFile(None));
-                    actions.push(Action::SelectSubtitleStream(pick.stream()));
-                }
-            }
-        });
-    };
-    widgets::rows(ui, |r| {
-        track(r, "Off", "", Pick::Off);
-        for row in &shown {
-            track(r, &row.title, &row.detail, row.pick);
-        }
-        if !folded.is_empty() {
-            let more = format!("{} more", folded.len());
-            r.row("Other languages", Some(more.as_str()), |ui| {
-                let label = if *foreign_open { "Hide" } else { "Show" };
-                if widgets::button(ui, None, label, Kind::Secondary).clicked() {
-                    *foreign_open = !*foreign_open;
-                }
-            });
-            if *foreign_open {
-                for row in &folded {
-                    track(r, &row.title, &row.detail, row.pick);
-                }
-            }
-        }
-    });
-    if !pb.markers.is_empty() {
-        widgets::section_label(ui, "Chapters and bookmarks");
+        widgets::section_label(ui, tr!("adjust-chapters-heading"));
         widgets::rows(ui, |r| {
             for (t, name) in &pb.markers {
                 r.row(name, Some(fmt_time(*t).as_str()), |ui| {
                     if widgets::icon_button(ui, icons::PLAY, 40.0, false)
-                        .tip("Go")
+                        .tip(tr!("adjust-chapter-go"))
                         .clicked()
                     {
                         actions.push(Action::Seek(*t));
@@ -1396,42 +1542,195 @@ fn audio_and_text(
     }
     let st = pb.player.stats();
     ui.label(
-        RichText::new(format!(
-            "Video: {}{} · dropped {} of {} · stalled {} · Audio: {} via {}",
-            st.video_decoder,
-            if st.hardware { " (hardware)" } else { "" },
-            st.frames_dropped,
-            st.frames_shown + st.frames_dropped,
-            st.stalls,
-            st.audio_decoder,
-            st.audio_sink
-        ))
+        RichText::new({
+            let decoder = if st.hardware {
+                tr!("adjust-stats-hardware", decoder = st.video_decoder.as_str())
+            } else {
+                st.video_decoder.clone()
+            };
+            let frames = st.frames_shown + st.frames_dropped;
+            tr!(
+                "adjust-stats",
+                decoder = decoder,
+                dropped = st.frames_dropped,
+                frames = frames,
+                stalls = st.stalls,
+                audio = st.audio_decoder.as_str(),
+                sink = st.audio_sink.as_str()
+            )
+        })
         .font(theme::font(Weight::Regular, 14.0))
         .color(theme::TEXT_3),
     );
 }
 
-/// A round radio mark, filled when chosen; the whole row reads as the choice.
-fn radio(ui: &mut egui::Ui, on: bool) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::click());
-    let t = ui
-        .ctx()
-        .animate_bool_with_time(resp.id, resp.hovered(), 0.12);
-    let p = ui.painter();
-    p.circle_filled(
-        rect.center(),
-        18.0,
-        Color32::from_white_alpha((t * 18.0) as u8),
+const TRACK_ROW: f32 = 56.0;
+const TRACK_PAD: f32 = 20.0;
+const LIST_GAP: f32 = 10.0;
+
+/// The audio and subtitles picker over the control bar: the two lists side
+/// by side, each scrolling when long, and a row plays its track at once.
+/// Its body is as tall as the longer list needs, standing on the panel's
+/// bottom edge; a click on the rest of the panel closes it.
+pub fn tracks_panel(ctx: &egui::Context, v: &mut View) {
+    let Some(pb) = v.playback.as_deref() else {
+        return;
+    };
+    let info = pb.player.info();
+    let audio: Vec<_> = info.audio_streams().collect();
+    let subtitles = crate::subtitles::rows(&v.settings.subtitle_language, info, &pb.subtitle_files);
+    let label_h = ctx.fonts(|f| f.row_height(&theme::font(Weight::SemiBold, 13.0)));
+    let rows = audio.len().max(1).max(subtitles.len() + 1) as f32;
+    let tall = 2.0 * TRACK_PAD + label_h + LIST_GAP + 8.0 + rows * TRACK_ROW;
+    let full = ctx.screen_rect() - widgets::SHADOW_ROOM;
+    let body = egui::Rect::from_min_max(
+        egui::pos2(full.left(), (full.bottom() - tall).max(full.top())),
+        full.max,
     );
-    if on {
-        p.circle_filled(rect.center(), 11.0, theme::ACCENT);
-        p.circle_filled(rect.center(), 4.5, Color32::WHITE);
-    } else {
-        p.circle_stroke(
-            rect.center(),
-            10.0,
-            egui::Stroke::new(2.0_f32, theme::TEXT_3.lerp_to_gamma(Color32::WHITE, t)),
+    widgets::slab(ctx, body, 24.0);
+    if ctx.input(|i| {
+        i.pointer.any_click() && i.pointer.interact_pos().is_some_and(|p| !body.contains(p))
+    }) {
+        v.state.tracks_open = false;
+    }
+    let actions = &mut *v.actions;
+    egui::CentralPanel::default()
+        .frame(egui::Frame::NONE)
+        .show(ctx, |ui| {
+            let inner = body.shrink(TRACK_PAD);
+            let w = (inner.width() - TRACK_PAD) / 2.0;
+            let column = |x: f32| {
+                egui::Rect::from_min_size(egui::pos2(x, inner.top()), Vec2::new(w, inner.height()))
+            };
+            let playing = pb.player.audio_stream();
+            track_list(
+                ui,
+                column(inner.left()),
+                tr!("tracks-audio"),
+                &pb.title,
+                |ui, fresh| {
+                    if audio.is_empty() {
+                        ui.label(RichText::new(tr!("tracks-no-audio")).color(theme::TEXT_3));
+                    }
+                    for s in &audio {
+                        let mut title = crate::subtitles::track_name(s);
+                        if s.ambisonic {
+                            title += tr!("tracks-spatial");
+                        }
+                        let detail = format!("{} · {} ch", s.codec, s.channels);
+                        let on = playing == Some(s.index);
+                        let row = track_row(ui, &title, &detail, on);
+                        if on && fresh {
+                            row.scroll_to_me(Some(Align::Center));
+                        }
+                        if row.clicked() && !on {
+                            actions.push(Action::SelectAudio(s.index));
+                        }
+                    }
+                },
+            );
+            let right = column(inner.right() - w);
+            track_list(
+                ui,
+                right,
+                tr!("settings-subtitles"),
+                &pb.title,
+                |ui, fresh| {
+                    let mut pick = |ui: &mut egui::Ui, title: &str, detail: &str, pick: Pick| {
+                        let on = showing(pb, pick);
+                        let row = track_row(ui, title, detail, on);
+                        if on && fresh {
+                            row.scroll_to_me(Some(Align::Center));
+                        }
+                        if row.clicked() && !on {
+                            actions.push(Action::SelectSubtitles(pick));
+                        }
+                    };
+                    pick(ui, tr!("tracks-off"), "", Pick::Off);
+                    for row in &subtitles {
+                        pick(ui, &row.title, &row.detail, row.pick);
+                    }
+                },
+            );
+        });
+}
+
+/// One of the picker's lists in `rect`, under its label. The first time it
+/// shows for `video`, `add` is told to scroll to the row in use.
+fn track_list(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    label: &str,
+    video: &str,
+    add: impl FnOnce(&mut egui::Ui, bool),
+) {
+    let mut ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(Layout::top_down(Align::Min)),
+    );
+    ui.spacing_mut().item_spacing.y = LIST_GAP;
+    widgets::section_label(&mut ui, label);
+    widgets::card(&mut ui, |ui| {
+        let salt = (label, video);
+        let fresh = egui::scroll_area::State::load(ui.ctx(), ui.make_persistent_id(salt)).is_none();
+        egui::ScrollArea::vertical()
+            .id_salt(salt)
+            .auto_shrink([false, true])
+            .show(ui, |ui| add(ui, fresh));
+    });
+}
+
+/// A row of the picker: the whole row picks its track, and a check marks
+/// the one in use.
+fn track_row(ui: &mut egui::Ui, title: &str, detail: &str, on: bool) -> egui::Response {
+    let w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, TRACK_ROW), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let t = ui
+            .ctx()
+            .animate_bool_with_time(resp.id, resp.hovered(), 0.12);
+        let p = ui.painter();
+        let face = rect.shrink(2.0);
+        if on {
+            p.rect_filled(
+                face,
+                egui::CornerRadius::same(10),
+                theme::ACCENT.gamma_multiply(0.16),
+            );
+        }
+        if t > 0.0 {
+            p.rect_filled(
+                face,
+                egui::CornerRadius::same(10),
+                Color32::from_white_alpha((t * 14.0) as u8),
+            );
+        }
+        let text_w = w - 16.0 - 52.0;
+        let line =
+            |text: &str, font, color| widgets::one_line(p, text.to_string(), font, color, text_w);
+        let title_g = line(title, theme::font(Weight::Medium, 17.0), theme::TEXT);
+        let detail_g = (!detail.is_empty())
+            .then(|| line(detail, theme::font(Weight::Regular, 14.0), theme::TEXT_2));
+        let (title_h, detail_h) = (
+            title_g.size().y,
+            detail_g.as_ref().map_or(0.0, |g| 2.0 + g.size().y),
         );
+        let x = rect.left() + 16.0;
+        let y = rect.center().y - (title_h + detail_h) / 2.0;
+        p.galley(egui::pos2(x, y), title_g, theme::TEXT);
+        if let Some(g) = detail_g {
+            p.galley(egui::pos2(x, y + title_h + 2.0), g, theme::TEXT_2);
+        }
+        if on {
+            p.text(
+                egui::pos2(rect.right() - 26.0, rect.center().y),
+                egui::Align2::CENTER_CENTER,
+                icons::CHECK,
+                theme::icon(22.0),
+                theme::ACCENT_HOVER,
+            );
+        }
     }
     resp
 }
@@ -1444,9 +1743,9 @@ fn haptics_tab(
 ) {
     ui.label(
         RichText::new(if scripts == 0 {
-            "No haptic script for this video.".to_string()
+            tr!("haptics-no-script").to_string()
         } else {
-            format!("{scripts} script axis(es) loaded.")
+            tr!("haptics-scripts-loaded", count = scripts)
         })
         .color(theme::TEXT_2),
     );
@@ -1461,7 +1760,7 @@ fn haptics_tab(
     let mut invert = l0.invert;
     widgets::rows(ui, |r| {
         o = r.slider(
-            "Timing offset",
+            tr!("settings-timing-offset"),
             None,
             &mut offset,
             -500.0..=500.0,
@@ -1469,9 +1768,25 @@ fn haptics_tab(
             " ms",
             0,
         );
-        a = r.slider("Stroke bottom", None, &mut lo, 0.0..=100.0, 0.0, "%", 0);
-        b = r.slider("Stroke top", None, &mut hi, 0.0..=100.0, 100.0, "%", 0);
-        r.switch("Invert stroke", None, &mut invert);
+        a = r.slider(
+            tr!("haptics-stroke-bottom"),
+            None,
+            &mut lo,
+            0.0..=100.0,
+            0.0,
+            "%",
+            0,
+        );
+        b = r.slider(
+            tr!("haptics-stroke-top"),
+            None,
+            &mut hi,
+            0.0..=100.0,
+            100.0,
+            "%",
+            0,
+        );
+        r.switch(tr!("haptics-invert"), None, &mut invert);
     });
     let l0 = settings
         .haptics
@@ -1486,20 +1801,18 @@ fn haptics_tab(
     if o {
         settings.haptics.offset_ms = offset.round() as i64;
     }
-    widgets::section_label(ui, "Devices");
+    widgets::section_label(ui, tr!("settings-devices"));
     if devices.is_empty() {
-        ui.label(
-            RichText::new("None connected. Add one in Settings › Haptics.").color(theme::TEXT_3),
-        );
+        ui.label(RichText::new(tr!("haptics-none-connected")).color(theme::TEXT_3));
     } else {
         widgets::rows(ui, |r| {
             for d in devices {
                 let desc = if d.connected {
-                    "Connected".to_string()
+                    tr!("haptics-connected").to_string()
                 } else {
                     d.last_error
                         .clone()
-                        .unwrap_or_else(|| "Not connected".into())
+                        .unwrap_or_else(|| tr!("settings-device-not-connected").into())
                 };
                 r.row(&d.name, Some(desc.as_str()), |ui| {
                     let c = if d.connected { theme::OK } else { theme::ERROR };

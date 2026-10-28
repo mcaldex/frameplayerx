@@ -1,20 +1,30 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{lang}}">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light dark">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0d1015">
 <meta name="referrer" content="no-referrer">
-<title>FramePlayerX Remote: not paired</title>
+<title>{{remote-unpaired-title:FramePlayerX Remote: not paired}}</title>
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
-<main>
-  <section class="card">
-    <h1>Not paired</h1>
-    <p>This browser has not been paired with the headset yet, or the pairing was reset.</p>
-    <p>In FramePlayerX, open <strong>Settings → Remote</strong> and scan the QR code with this phone's camera.</p>
-  </section>
+<header class="bar">
+  <span class="brand">FramePlayer<span class="x">X</span></span>
+</header>
+<main class="pair">
+  <div>
+    <h1>{{remote-pair-heading:Pair with the headset}}</h1>
+    <p>{{remote-pair-how:In FramePlayerX, open Settings › Remote control and enter the code it shows.}}</p>
+  </div>
+  <form method="post" action="/pair" autocomplete="off">
+    <label for="code">{{remote-pair-code:Code}}</label>
+    <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="7" required autofocus>
+    <button type="submit">{{remote-pair:Pair}}</button>
+    <p class="error" role="alert">{{pair-message:}}</p>
+  </form>
 </main>
+<p class="pair-foot">{{remote-pair-stays:This phone stays paired until Unpair all phones in the headset.}}</p>
 </body>
 </html>

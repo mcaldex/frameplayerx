@@ -1,7 +1,7 @@
 //! The library's metadata worker, implemented with FFmpeg through fp-media.
 
 use crate::services::Opener;
-use fp_library::{FrameRequest, MediaProber, ProbeInfo, RgbaImage, ThumbnailCrop};
+use fp_library::{MediaProber, ProbeInfo, RgbaImage, ThumbnailCrop};
 use fp_media::thumb::{Crop, Grabber};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -14,8 +14,8 @@ pub struct FfmpegProber {
     /// CPU and the network from playback for minutes (and quitting waited
     /// for it).
     pub busy: Arc<AtomicBool>,
-    /// The video probed last, still open for its thumbnails: the worker
-    /// asks for them right after the probe.
+    /// The video probed last, still open for its thumbnail: the worker
+    /// asks for it right after the probe.
     open: Mutex<Option<(String, Grabber)>>,
 }
 
@@ -121,42 +121,15 @@ impl MediaProber for FfmpegProber {
         max_height: u32,
         crop: ThumbnailCrop,
     ) -> fp_library::Result<RgbaImage> {
-        let mut img = None;
-        let request = FrameRequest {
-            at_seconds,
-            max_width,
-            max_height,
-        };
-        self.thumbnails(location, crop, &[request], &mut |_, i| {
-            img = Some(i);
-            Ok(())
-        })?;
-        img.ok_or_else(|| fp_library::Error::Probe("no frame".into()))
-    }
-
-    fn thumbnails(
-        &self,
-        location: &str,
-        crop: ThumbnailCrop,
-        requests: &[FrameRequest],
-        each: &mut dyn FnMut(usize, RgbaImage) -> fp_library::Result<()>,
-    ) -> fp_library::Result<()> {
         self.check()?;
-        let mut g = self.take(location)?;
-        for (i, r) in requests.iter().enumerate() {
-            self.check()?;
-            let img = g
-                .grab(r.at_seconds, r.max_width, r.max_height, self::crop(crop))
-                .map_err(|e| self.err(e))?;
-            each(
-                i,
-                RgbaImage {
-                    width: img.width,
-                    height: img.height,
-                    pixels: img.pixels,
-                },
-            )?;
-        }
-        Ok(())
+        let img = self
+            .take(location)?
+            .grab(at_seconds, max_width, max_height, self::crop(crop))
+            .map_err(|e| self.err(e))?;
+        Ok(RgbaImage {
+            width: img.width,
+            height: img.height,
+            pixels: img.pixels,
+        })
     }
 }

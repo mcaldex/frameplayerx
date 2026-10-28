@@ -1,69 +1,134 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{lang}}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="light dark">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0d1015">
 <meta name="referrer" content="no-referrer">
-<title>FramePlayerX Remote</title>
+<title>{{remote-title:FramePlayerX Remote}}</title>
 <link rel="stylesheet" href="/app.css">
+<script id="strings" type="application/json">{{strings}}</script>
 <script src="/app.js" defer></script>
 </head>
 <body>
 <header class="bar">
-  <h1>FramePlayerX</h1>
-  <span id="conn" class="conn" role="status" aria-live="polite">Connecting…</span>
+  <span class="brand">FramePlayer<span class="x">X</span></span>
+  <span id="conn" class="conn" role="status" aria-live="polite"><span class="dot" aria-hidden="true"></span><span id="conn-text">{{remote-connecting:Connecting…}}</span></span>
 </header>
+
 <main>
-  <section class="card" aria-labelledby="np-h">
-    <h2 id="np-h" class="eyebrow">Now playing</h2>
-    <p id="np-title" class="title">Nothing playing</p>
+  <section id="idle" class="card idle" aria-labelledby="idle-h">
+    <span class="idle-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M8 5.5v13l11-6.5z"/></svg>
+    </span>
+    <div>
+      <h1 id="idle-h">{{remote-nothing-playing:Nothing playing}}</h1>
+      <p>{{remote-nothing-hint:Start a video in the headset to control it here.}}</p>
+    </div>
+  </section>
+
+  <section id="player" class="card player" aria-label="{{remote-now-playing:Now playing}}" hidden>
+    <div class="picture">
+      <img id="picture" alt="" hidden>
+      <span id="format" class="badge" hidden></span>
+    </div>
+
+    <div class="title-row">
+      <div class="titles">
+        <h1 id="title"></h1>
+        <p id="marker" class="marker" hidden></p>
+      </div>
+      <button id="close" type="button" class="icon-button" aria-label="{{remote-close:Close}}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+
     <div class="seek">
-      <input id="seek" type="range" min="0" max="0" step="0.1" value="0" aria-label="Seek position" disabled>
+      <div class="track">
+        <div id="segments" class="segments" aria-hidden="true"></div>
+        <input id="seek" type="range" min="0" max="0" step="0.1" value="0" aria-label="{{remote-seek:Seek position}}">
+        <span id="seek-knob" class="knob" aria-hidden="true"></span>
+      </div>
       <div class="times" aria-hidden="true"><span id="pos">0:00</span><span id="dur">0:00</span></div>
     </div>
+
     <div class="transport">
-      <button id="back" type="button" aria-label="Back 10 seconds">−10 s</button>
-      <button id="play" type="button" class="primary" aria-label="Play">Play</button>
-      <button id="fwd" type="button" aria-label="Forward 10 seconds">+10 s</button>
+      <button id="prev" type="button" class="round side" aria-label="{{remote-previous:Previous video}}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6.5v11L9.5 12z" fill="currentColor"/><path d="M6 6v12"/></svg>
+      </button>
+      <button id="back" type="button" class="round" aria-label="{{remote-back-10:Back 10 seconds}}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 3.8v3.6h3.6"/><text x="12" y="15.2" text-anchor="middle" font-size="7.2" font-weight="700" fill="currentColor" stroke="none">10</text></svg>
+      </button>
+      <button id="play" type="button" class="round main" aria-label="{{remote-play:Play}}">
+        <svg id="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l11-6.5z" fill="currentColor"/></svg>
+        <svg id="icon-pause" viewBox="0 0 24 24" aria-hidden="true" hidden><rect x="6.5" y="5" width="4" height="14" rx="1.2" fill="currentColor"/><rect x="13.5" y="5" width="4" height="14" rx="1.2" fill="currentColor"/></svg>
+      </button>
+      <button id="fwd" type="button" class="round" aria-label="{{remote-forward-10:Forward 10 seconds}}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 3.8v3.6h-3.6"/><text x="12" y="15.2" text-anchor="middle" font-size="7.2" font-weight="700" fill="currentColor" stroke="none">10</text></svg>
+      </button>
+      <button id="next" type="button" class="round side" aria-label="{{remote-next:Next video}}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 6.5v11l8.5-5.5z" fill="currentColor"/><path d="M18 6v12"/></svg>
+      </button>
     </div>
-    <div class="row">
-      <label for="speed">Speed</label>
-      <select id="speed">
-        <option value="0.5">0.5×</option>
-        <option value="0.75">0.75×</option>
-        <option value="1" selected>1×</option>
-        <option value="1.25">1.25×</option>
-        <option value="1.5">1.5×</option>
-        <option value="2">2×</option>
-      </select>
-      <span class="spacer"></span>
-      <button id="recenter" type="button">Recenter</button>
-      <button id="stop" type="button">Stop</button>
+
+    <div class="volume">
+      <button id="mute" type="button" class="icon-button plain" aria-label="{{remote-mute:Mute}}">
+        <svg id="icon-sound" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9.5h3.5L12 6v12l-4.5-3.5H4z"/><path d="M15.5 9.2a4 4 0 0 1 0 5.6"/><path d="M18.2 6.6a7.6 7.6 0 0 1 0 10.8"/></svg>
+        <svg id="icon-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" hidden><path d="M4 9.5h3.5L12 6v12l-4.5-3.5H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></svg>
+      </button>
+      <div class="track">
+        <div class="rail" aria-hidden="true"><span id="volume-fill" class="fill"></span></div>
+        <input id="volume" type="range" min="0" max="150" step="1" value="100" aria-label="{{remote-volume:Volume}}">
+        <span id="volume-knob" class="knob small" aria-hidden="true"></span>
+      </div>
+      <span id="volume-text" class="volume-text">100%</span>
     </div>
-  </section>
 
-  <section class="card" aria-labelledby="type-h">
-    <h2 id="type-h" class="eyebrow">Type into headset</h2>
-    <form id="type-form" class="row" autocomplete="off">
-      <label for="type-text" class="sr-only">Text to send to the headset</label>
-      <input id="type-text" type="text" autocapitalize="off" spellcheck="false" maxlength="4096" placeholder="Search terms or URL">
-      <button type="submit" class="primary">Send</button>
-    </form>
-    <p id="type-status" class="hint" role="status" aria-live="polite"></p>
-  </section>
-
-  <section class="card" aria-labelledby="lib-h">
-    <h2 id="lib-h" class="eyebrow">Library</h2>
-    <form id="search-form" class="row" role="search" autocomplete="off">
-      <label for="q" class="sr-only">Search library</label>
-      <input id="q" type="search" placeholder="Search library" maxlength="256">
-      <button type="submit">Search</button>
-    </form>
-    <p id="lib-status" class="hint" role="status" aria-live="polite"></p>
-    <ul id="results" class="results"></ul>
-    <button id="more" type="button" class="wide" hidden>Load more</button>
+    <div class="chips">
+      <button id="audio" type="button" class="chip">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 11v2"/></svg>
+        <span class="chip-text"><span class="chip-label">{{remote-audio:Audio}}</span><span id="audio-value" class="chip-value"></span></span>
+      </button>
+      <button id="subtitles" type="button" class="chip">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M7 12.5h4M13 12.5h4M7 15.5h7"/></svg>
+        <span class="chip-text"><span class="chip-label">{{remote-subtitles:Subtitles}}</span><span id="subtitles-value" class="chip-value"></span></span>
+      </button>
+      <button id="speed" type="button" class="chip">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.6 17.5a8 8 0 1 1 14.8 0"/><path d="M12 13.5l3.8-4"/></svg>
+        <span class="chip-text"><span class="chip-label">{{remote-speed:Speed}}</span><span id="speed-value" class="chip-value">1×</span></span>
+      </button>
+      <button id="recenter" type="button" class="chip">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="6.5"/><path d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4"/></svg>
+        <span class="chip-value">{{remote-recenter:Recenter}}</span>
+      </button>
+    </div>
   </section>
 </main>
+
+<div id="backdrop" class="backdrop" hidden></div>
+<section id="sheet" class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" hidden>
+  <span class="handle" aria-hidden="true"></span>
+  <div class="sheet-head">
+    <h2 id="sheet-title"></h2>
+    <button id="sheet-close" type="button" class="icon-button" aria-label="{{remote-close:Close}}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
+  <div id="sheet-body" class="sheet-body"></div>
+</section>
+<template id="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></template>
+
+<form id="type-form" class="dock" autocomplete="off">
+  <p id="type-status" class="dock-status" role="status" aria-live="polite"></p>
+  <label class="field">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M6.5 10h.01M10 10h.01M13.5 10h.01M17 10h.01M7.5 14h9"/></svg>
+    <span class="sr-only">{{remote-type-label:Text to send to the headset}}</span>
+    <input id="type-text" type="text" autocapitalize="off" spellcheck="false" maxlength="4096" enterkeyhint="send" placeholder="{{remote-type:Type into headset}}">
+  </label>
+  <button type="submit" class="send" aria-label="{{remote-send:Send}}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12l16-8-6 16-2.6-6.4z"/><path d="M11.4 13.6L20 4"/></svg>
+  </button>
+</form>
 </body>
 </html>

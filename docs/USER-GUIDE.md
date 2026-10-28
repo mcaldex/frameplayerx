@@ -14,6 +14,7 @@ or your network.
 - [Passthrough videos](#passthrough-videos)
 - [Haptics](#haptics)
 - [Remote control](#remote-control)
+- [Language](#language)
 - [Troubleshooting](#troubleshooting)
 
 ## Install
@@ -153,7 +154,7 @@ rm -rf ~/.config/frameplayerx ~/.local/share/frameplayerx ~/.cache/frameplayerx
 |---|---|
 | `~/.config/frameplayerx` | Settings, your sources and their passwords |
 | `~/.local/share/frameplayerx` | The watch history, ratings, adjustments, the log, and the `Interactive` folder, including any haptic scripts you put there |
-| `~/.cache/frameplayerx` | Thumbnails |
+| `~/.cache/frameplayerx` | Thumbnails, and pictures from your servers |
 
 If you paired a PC with `frameplayerx-install pair` and nothing else uses
 that pairing, you can also delete `~/.ssh/id_rsa_frame_devkit` and
@@ -198,17 +199,39 @@ from history*, or everything with *Clear history*; favorites and ratings
 stay. Browsing a network source never adds anything here. Removing a source
 forgets its videos, except those you watched, marked or put in a playlist.
 
+A video you stopped part way shows the frame where you left off, made
+shortly after it stops. Past 90 % it counts as watched: its card gets a ✓,
+it starts from the beginning next time and shows its usual picture again.
+A video from Jellyfin, Emby, DLNA or a DeoVR or HereSphere server shows the
+server's picture; any other gets a thumbnail made on the headset. Pictures
+from servers are kept on the headset so they aren't downloaded each time.
+
+**Settings › General › Thumbnails** holds these:
+
+- **Make thumbnails**: off, no new thumbnails are made (the ones made stay).
+- **Show where you left off**: off, videos show their usual picture, and the
+  frames already made are deleted.
+- **Image cache**: how much room server pictures take (500 MB unless you
+  pick another size); the ones used longest ago make room for new ones.
+  **Clear** deletes them all, so each is downloaded again.
+
+Thumbnails of videos that leave the library, say when you remove a source,
+are deleted too.
+
 ### Up next and playlists
 
 **Up next** is the list of videos playing in turn; the button beside
 Browse on the control bar shows it over the video. Opening a video from a
-folder, grid or season makes that list Up next, and X and Y step through
-it. *Play all*, a playlist and what you queue yourself also play through:
-the next video starts when one ends. *Play next* (after the video playing)
-and *Add to queue* (at the end) are on a video's details, a Jellyfin or
-scene page and a folder row's ⋯; with nothing playing, either plays it. On
-the Up next page, pick a video to play it, move videos up or down, take
-them out, *Clear* everything but the video playing, or *Save as playlist*.
+folder, grid or season makes that list Up next, and **⏮** and **⏭** either
+side of the play button (or X and Y) step through it; pointing at one names
+the video it goes to, and it dims at either end of the list or when the
+video was opened on its own. *Play all*, a playlist and what you queue
+yourself also play through: the next video starts when one ends. *Play
+next* (after the video playing) and *Add to queue* (at the end) are on a
+video's details, a Jellyfin or scene page and a folder row's ⋯; with
+nothing playing, either plays it. On the Up next page, pick a video to play
+it, move videos up or down, take them out, *Clear* everything but the video
+playing, or *Save as playlist*.
 
 **Playlists**, a tab beside Watch history, holds your playlists: make one
 there or with *Add to playlist*, which offers your playlists and a name
@@ -221,9 +244,17 @@ Videos of a source locked with a PIN are left out until it is unlocked.
 |---|---|
 | On this device | The home folder and the inserted microSD card and USB drives, as folders: play any video, or *Play all* in a folder |
 | Library | **Videos**: every video in its folder, with thumbnails, search, format filters and sorting (newest, title, length, rating, shuffle). **Folders**: its folder as folders. **Scan now** looks for new and removed videos |
-| Jellyfin / Emby | Your libraries, *Continue watching*, *Next up* and the latest additions; a search of the whole server by title, as Jellyfin's own search shows it: a row each of movies, shows, collections and other videos, best matches first (episodes are found through their show), and a *Tagged* row of what carries a tag with your words in it; poster grids searched, sorted and filtered by the server (unwatched, in progress, favorites); series by season and episode; details with the story, cast, genres and tags (tap a tag to see everything that has it), and a *Version* row when the server keeps more than one version of a video (4K and 1080p, a director's cut): *Automatic* plays the tallest that fits the source's maximum height; pick another and the video plays from it wherever you open it (subtitles included) until the app closes. Each version keeps its own format and adjustments, as a separate video in your history. Watched marks, favorites and resume points are the server's (see [Watch sync](#watch-sync-with-jellyfin-emby-and-heresphere)) |
-| DeoVR feed / HereSphere API | The server's scene groups as chips over a grid of scenes; search the chosen group (or *All*) across titles, studios, performers and tags (a DeoVR feed's tags and performers come with each scene's details, fetched while you search and kept for next time); order by title, date, rating or length; a *Favorites* filter (and *Scripted*, with haptics on). ⋯ opens a scene's details: description, performers and tags (tap one to see all their scenes), chapters to start from, and ♡ to make it a favourite on a HereSphere API that takes favourites. The page opens with the scenes from last time while the server sends the current list ("updating…" under the title). A HereSphere API can also follow what you watch (see [Watch sync](#watch-sync-with-jellyfin-emby-and-heresphere)) |
+| Jellyfin / Emby | Your libraries, *Continue watching*, *Next up* and the latest additions; a search of the whole server by title, as Jellyfin's own search shows it: a row each of movies, shows, collections and other videos, best matches first (episodes are found through their show), a *People* row of the cast and crew whose names match (tap one to see what they are in), and a *Tagged* row of what carries a tag with your words in it; poster grids searched, sorted (title, date added, release date, rating, length, last watched, shuffle) and filtered by the server: unwatched, in progress, favorites, and **Filters** for genres, decades, resolution, studios and tags; series by season and episode; details with the story, cast, genres and tags (tap a tag to see everything that has it), and a *Version* row when the server keeps more than one version of a video (4K and 1080p, a director's cut): *Automatic* plays the tallest that fits the source's maximum height; pick another and the video plays from it wherever you open it (subtitles included) until the app closes. Each version keeps its own format and adjustments, as a separate video in your history. Watched marks, favorites and resume points are the server's (see [Watch sync](#watch-sync-with-jellyfin-emby-and-heresphere)) |
+| DeoVR feed / HereSphere API | The server's scene groups as chips over a grid of scenes; search the chosen group (or *All*) across titles, studios, performers and tags; order by title, date, rating or length, either way, or shuffle; *Favorites* (and *Scripted*, with haptics on), and **Filters** for studio, people, tags, length, format and rating, each with how many scenes have it (a DeoVR feed's studios, tags and performers come with each scene's details, fetched while you search or filter and kept for next time). ⋯ opens a scene's details: description, performers and tags (tap one to see all their scenes), chapters to start from, and ♡ to make it a favourite on a HereSphere API that takes favourites. The page opens with the scenes from last time while the server sends the current list ("updating…" under the title). A HereSphere API can also follow what you watch (see [Watch sync](#watch-sync-with-jellyfin-emby-and-heresphere)) |
 | SMB, WebDAV, HTTP folders, DLNA, local folders | Folders and files: search the folder you are in, order by name, date or size, *Play all* |
+
+**Filters** opens a drawer on the right: what you pick there applies at
+once, any of the choices in a section and all of the sections together,
+and each shows as a chip under the sorts; press a chip to take it off, or
+*Clear all*. A long section (people, tags, studios, genres) has a box to
+find one and shows a few, with **Show all** for the rest. **Shuffle** puts a list in a new random order each time you
+pick it or press **Shuffle again**; opening a video's page and coming back
+keeps the order. Grids load more as you scroll to their end.
 
 ### Locking a source with a PIN
 
@@ -353,11 +384,16 @@ The same at the bottom of the adjust panel's Position tab changes it for
 the video that is playing, and **Save for this video** keeps it with the
 rest of its adjustments. Your room replaces it while it shows.
 
-3D Blu-ray rips (MKV from MakeMKV, the disc's H.264 MVC video) play as full
-3D, each eye at full 1080p, on the Frame's hardware decoder. The few
-streams it can't take that way (none of the discs tried) play their left
-eye in 2D; the decoder line in the video's info says "3D Blu-ray as 2D".
-Disc images (`.iso`) and BDMV folders don't play yet: rip them to MKV.
+3D Blu-rays play as full 3D, each eye at full 1080p, on the Frame's
+hardware decoder: disc images (`.iso`), MKV rips (MakeMKV), and from a
+BDMV folder the film's `.ssif` file in `BDMV/STREAM/SSIF` (the `.m2ts` of
+the same name holds the left eye alone). The few streams it can't take
+that way (none of the discs tried) play their left eye in 2D; the decoder
+line in the video's info says "3D Blu-ray as 2D".
+
+A disc image, 2D or 3D, plays its main title (its longest playlist) with
+its chapters (under **⚙ › Chapters**) and its audio and subtitle languages.
+Menus, extras and other titles aren't offered.
 
 To change it: open the video, press **⚙** on the control bar, **Format**.
 Overrides are remembered per video. The same panel has position, zoom,
@@ -413,7 +449,9 @@ lining up towards the edges, open **⚙ › Format** and use the sliders under
   middle of its half of the frame. This is common in footage straight from
   a camera. In 3D, each image has its own.
 
-To fine-tune a slider, point at it and push the thumbstick left or right.
+Pull the trigger on a slider's knob and move the pointer to drag it; pulled
+elsewhere on the slider, the knob jumps there first. To fine-tune a slider,
+point at it and push the thumbstick left or right.
 Each push is one step, and holding repeats. **Save for this video** keeps
 the settings for that file.
 
@@ -433,11 +471,24 @@ Settings › Sound and subtitles › **Subtitles** sets what a video starts with
 - **Always**: subtitles in your language whenever the video has them.
 - **Off**: none.
 
-**Your language** starts as the system's (English when it has none). While
-a video plays, **⚙** › **Audio & subs** lists its subtitles, those in your
+**Your language** starts as the one Steam is set to. While
+a video plays, the pill beside its format on the control bar names the
+subtitles showing, and the audio track when there is more than one. Press
+it for the audio tracks and subtitles side by side, subtitles in your
 language first, each with what tells it apart: forced, SDH, its title or
-file name, and its format. A video with many keeps those in other
-languages under **Other languages**.
+file name, and its format. Pick one and it plays at once; a long list
+scrolls. Press the pill again, or point off the lists and press, to close
+it. A video with one audio track and no subtitles has no pill.
+
+What you pick there is kept with the video: it opens with the same audio
+track or subtitles next time, while they are still there. Only what you
+picked is kept, so a video whose subtitles you never changed follows
+**Subtitles** above, even after you change it.
+
+**⚙ › Chapters** lists the video's chapters and your bookmarks (**Bookmark**
+on the control bar, or grip + A on the right controller, adds one where you
+are), each with a button to go there; grip + X and grip + Y step through
+them.
 
 Subtitles show in any script, with the fonts on the headset: Arabic and
 Hebrew read right to left, and Chinese, Japanese or Korean need a font
@@ -519,6 +570,9 @@ picture. Play/pause and seeking are under either thumb.
 | Menu / View | Browse | Recenter |
 | Bumper | Forward 1 minute | Back 1 minute |
 | Grip + thumbstick | Up / down raises or lowers you | Left / right turns the picture, up / down zooms in / out |
+| Grip + X / Y | Previous / next chapter or bookmark (back within 3 s of one's start goes to the one before) | As without the grip |
+| Grip + A | Bookmark where you are | As without the grip |
+| Grip + thumbstick press | Subtitles off, or back on: the ones you had, else those in your language | As without the grip |
 | Hold grip + trigger, move | Drag the picture (a flat screen or the dome follows your hand) | The same |
 | Trigger | Click; on empty space, show or hide the controls | The same |
 
@@ -555,8 +609,11 @@ lie back or roll onto your side. 180° and 360° videos don't follow, since
 you look around those.
 
 Every button and thumbstick direction above can be changed in Settings ›
-Controller (tap a row, pick an action; Reset to defaults puts this layout
-back). For example, to zoom with the right thumbstick, set the right controller's
+Controller: point at a button, pull the trigger and pick an action.
+**Grip + press** above the controllers shows what each does with that
+controller's grip held, and changes it there; one left at **Same as press**
+does what it does without the grip. **Reset to defaults** puts this layout
+back. For example, to zoom with the right thumbstick, set the right controller's
 thumbstick **↑↓ Up / down** (or **Grip + ↑↓**) to Zoom. The trigger,
 grip + trigger drags, both grips, menu paging and slider steps are fixed.
 
@@ -614,10 +671,32 @@ seek bar shows the script's intensity.
 
 ## Remote control
 
-**Settings › Remote control › Phone / browser remote** shows a QR code; scan
-it to control playback, find videos and type from your phone. The
-**DeoVR remote API** (port 23554) works with apps that speak DeoVR's
-protocol. Both only answer devices on your local network.
+With **Settings › Remote control › Phone and browser remote** on, your
+phone controls the video playing in the headset: play and pause, skipping,
+seeking (the bar splits at chapters and bookmarks), previous and next in Up
+next, volume and mute, audio and subtitles, speed, Recenter and closing the
+video. The field at the bottom types into the headset, into whichever field
+is open there. To pair a phone,
+open the address that tab shows (such as `192.168.1.20:8790`) in the phone's
+browser and enter the 6-digit code under it; the phone stays paired. A code
+pairs one phone, and stops working ten minutes after the tab last showed it.
+After five wrong codes pairing stops until you press **New pairing code**.
+**Unpair all phones** makes every paired phone pair again.
+
+The **DeoVR remote API** (port 23554) works with apps that speak DeoVR's
+protocol, without pairing. Both only answer devices on your local network.
+The phone's page is in the headset's language, and changes with it.
+
+## Language
+
+FramePlayerX comes in English, German, Spanish, French, Japanese and
+Simplified Chinese. **Settings › General › Language** starts on
+**Automatic**, which follows the language Steam is set to (English when
+Steam's isn't one of these); choose one to keep it whatever Steam's is.
+Server names, titles and other text from your servers show as they come.
+
+The translations started as machine drafts. If one reads wrong, the
+[README](../README.md#help-translate) says how to correct it or report it.
 
 ## Troubleshooting
 
@@ -634,6 +713,10 @@ protocol. Both only answer devices on your local network.
   your servers' addresses and any password replaced by placeholders such as
   `<video 1>`. **Show the report** shows exactly what would be sent;
   nothing is sent unless you choose **Send report**.
+- To report a problem yourself, **Settings › About** links to FramePlayerX's
+  GitHub page, its issue form (choose Bug report and attach the log below)
+  and its GitHub Sponsors page. A link opens in Steam's browser; the
+  address beside it works on a phone or a computer too.
 - Log: `~/.local/share/frameplayerx/frameplayerx.log`; the run before is kept
   as `frameplayerx.log.old` (the one to send after a freeze or crash, once
   FramePlayerX has been started again)

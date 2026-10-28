@@ -6,7 +6,7 @@ use super::theme::{self, Weight};
 use super::widgets::{self, Kind};
 use super::{Action, View, icons};
 use egui::RichText;
-use fp_library::{Playlist, PlaylistId};
+use fp_library::{MediaRecord, Playlist, PlaylistId};
 
 /// The Playlists tab: your playlists, or the one open.
 pub fn page(ui: &mut egui::Ui, v: &mut View) {
@@ -16,7 +16,7 @@ pub fn page(ui: &mut egui::Ui, v: &mut View) {
     }
     ui.add_space(12.0);
     ui.label(
-        RichText::new("Playlists")
+        RichText::new(tr!("nav-playlists"))
             .font(theme::font(Weight::Bold, 30.0))
             .color(theme::TEXT),
     );
@@ -28,9 +28,8 @@ pub fn page(ui: &mut egui::Ui, v: &mut View) {
         page::empty_state(
             ui,
             icons::PLAYLIST,
-            "No playlists yet",
-            "Name one above, or add videos from their details with Add to playlist. \
-             Up next can be saved as one too.",
+            tr!("playlists-none"),
+            tr!("playlists-none-desc"),
             |_| {},
         );
         return;
@@ -55,8 +54,8 @@ fn cards(ui: &mut egui::Ui, v: &mut View, lists: &[Playlist]) -> Option<Playlist
     page::scroll(ui, |ui| {
         page::grid(ui, lists.len(), page::LANDSCAPE.x, |ui, i| {
             let p = &lists[i];
-            let thumb = p.first.as_ref().and_then(super::library::thumb_key);
-            let facts = page::plural(p.item_count, "video", "videos");
+            let thumb = p.first.as_ref().and_then(MediaRecord::picture);
+            let facts = tr!("count-videos", count = p.item_count);
             let c = page::card(
                 ui,
                 v.thumbs,
@@ -84,15 +83,15 @@ fn new_playlist(ui: &mut egui::Ui, v: &mut View, reqs: &[crate::playback::OpenRe
         ui.add(
             egui::TextEdit::singleline(&mut v.state.playlist_name)
                 .margin(egui::Margin::symmetric(12, 9))
-                .hint_text("New playlist")
+                .hint_text(tr!("playlists-new"))
                 .font(theme::font(Weight::Regular, 17.0))
                 .desired_width(360.0),
         );
         let name = v.state.playlist_name.trim().to_string();
         let label = if reqs.is_empty() {
-            "Make playlist"
+            tr!("playlists-make")
         } else {
-            "Make it and add"
+            tr!("playlists-make-and-add")
         };
         if ui
             .add_enabled_ui(!name.is_empty(), |ui| {
@@ -139,12 +138,12 @@ fn playlist(ui: &mut egui::Ui, v: &mut View, id: PlaylistId) {
         .state
         .delete_armed
         .is_some_and(|t| t.elapsed().as_secs_f32() < 4.0);
-    let facts = page::plural(entries.len(), "video", "videos");
+    let facts = tr!("count-videos", count = entries.len());
     let back = page::header(ui, &p.name, Some(&facts), |ui| {
         let (label, kind) = if armed {
-            ("Delete it?", Kind::Danger)
+            (tr!("playlists-delete-confirm"), Kind::Danger)
         } else {
-            ("Delete", Kind::Secondary)
+            (tr!("playlists-delete"), Kind::Secondary)
         };
         if widgets::button_sized(ui, Some(icons::TRASH), label, kind, 44.0).clicked() {
             if armed {
@@ -161,7 +160,7 @@ fn playlist(ui: &mut egui::Ui, v: &mut View, id: PlaylistId) {
         if widgets::button_sized(
             ui,
             Some(icons::PENCIL_SIMPLE),
-            "Rename",
+            tr!("playlists-rename"),
             Kind::Secondary,
             44.0,
         )
@@ -171,8 +170,14 @@ fn playlist(ui: &mut egui::Ui, v: &mut View, id: PlaylistId) {
             v.state.playlist_name = p.name.clone();
         }
         if !reqs.is_empty()
-            && widgets::button_sized(ui, Some(icons::PLAY), "Play all", Kind::Primary, 44.0)
-                .clicked()
+            && widgets::button_sized(
+                ui,
+                Some(icons::PLAY),
+                tr!("common-play-all"),
+                Kind::Primary,
+                44.0,
+            )
+            .clicked()
         {
             v.actions.push(Action::PlayAll(reqs.clone(), 0));
         }
@@ -193,7 +198,13 @@ fn playlist(ui: &mut egui::Ui, v: &mut View, id: PlaylistId) {
             let name = v.state.playlist_name.trim().to_string();
             if ui
                 .add_enabled_ui(!name.is_empty(), |ui| {
-                    widgets::button_sized(ui, Some(icons::CHECK), "Save", Kind::Primary, 44.0)
+                    widgets::button_sized(
+                        ui,
+                        Some(icons::CHECK),
+                        tr!("common-save"),
+                        Kind::Primary,
+                        44.0,
+                    )
                 })
                 .inner
                 .clicked()
@@ -202,7 +213,7 @@ fn playlist(ui: &mut egui::Ui, v: &mut View, id: PlaylistId) {
                 v.state.renaming = false;
                 v.state.playlist_name.clear();
             }
-            if widgets::button_sized(ui, None, "Cancel", Kind::Ghost, 44.0).clicked() {
+            if widgets::button_sized(ui, None, tr!("common-cancel"), Kind::Ghost, 44.0).clicked() {
                 v.state.renaming = false;
                 v.state.playlist_name.clear();
             }
@@ -213,8 +224,8 @@ fn playlist(ui: &mut egui::Ui, v: &mut View, id: PlaylistId) {
         page::empty_state(
             ui,
             icons::PLAYLIST,
-            "Nothing in it yet",
-            "Add videos from their details with Add to playlist.",
+            tr!("playlists-empty"),
+            tr!("playlists-empty-desc"),
             |_| {},
         );
         return;
@@ -223,7 +234,7 @@ fn playlist(ui: &mut egui::Ui, v: &mut View, id: PlaylistId) {
     page::scroll(ui, |ui| {
         ui.add_space(4.0);
         for (i, e) in entries.iter().enumerate() {
-            let thumb = super::library::thumb_key(&e.record);
+            let thumb = e.record.picture();
             let facts = super::library::facts(&e.record, v.settings.default_format);
             let resp = page::list_row(
                 ui,
@@ -266,9 +277,9 @@ pub fn picker(ui: &mut egui::Ui, v: &mut View) {
     };
     let subtitle = match picking.reqs.len() {
         1 => widgets::display_title(&picking.title),
-        n => format!("{}: {}", picking.title, page::plural(n, "video", "videos")),
+        n => format!("{}: {}", picking.title, tr!("count-videos", count = n)),
     };
-    let back = page::header(ui, "Add to a playlist", Some(&subtitle), |_| {});
+    let back = page::header(ui, tr!("playlists-picker-title"), Some(&subtitle), |_| {});
     if back {
         return;
     }
@@ -282,12 +293,17 @@ pub fn picker(ui: &mut egui::Ui, v: &mut View) {
     if let [req] = reqs.as_slice() {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 12.0;
-            if widgets::button(ui, Some(icons::PLAY), "Play", Kind::Primary).clicked() {
+            if widgets::button(ui, Some(icons::PLAY), tr!("player-play"), Kind::Primary).clicked() {
                 v.actions.push(Action::Open(req.clone()));
                 v.state.picking = None;
             }
-            if widgets::button(ui, Some(icons::SKIP_FORWARD), "Play next", Kind::Secondary)
-                .clicked()
+            if widgets::button(
+                ui,
+                Some(icons::SKIP_FORWARD),
+                tr!("jf-play-next"),
+                Kind::Secondary,
+            )
+            .clicked()
             {
                 v.actions.push(Action::Queue {
                     req: req.clone(),
@@ -295,7 +311,14 @@ pub fn picker(ui: &mut egui::Ui, v: &mut View) {
                 });
                 v.state.picking = None;
             }
-            if widgets::button(ui, Some(icons::QUEUE), "Add to queue", Kind::Secondary).clicked() {
+            if widgets::button(
+                ui,
+                Some(icons::QUEUE),
+                tr!("jf-add-to-queue"),
+                Kind::Secondary,
+            )
+            .clicked()
+            {
                 v.actions.push(Action::Queue {
                     req: req.clone(),
                     next: false,
@@ -309,7 +332,7 @@ pub fn picker(ui: &mut egui::Ui, v: &mut View) {
     ui.add_space(14.0);
     let lists = playlists(v);
     if !lists.is_empty() {
-        widgets::section_label(ui, "Or add to");
+        widgets::section_label(ui, tr!("playlists-or-add-to"));
         ui.add_space(6.0);
         if let Some(id) = cards(ui, v, &lists) {
             v.actions.push(Action::AddToPlaylist {

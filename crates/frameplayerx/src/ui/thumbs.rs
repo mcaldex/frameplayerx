@@ -1,6 +1,8 @@
 //! Thumbnail textures: decoded on worker threads, uploaded into one egui
-//! context, kept in a small LRU.
+//! context, kept in a small LRU. Server pictures come through the
+//! [`ImageCache`].
 
+use crate::image_cache::ImageCache;
 use crate::services::Opener;
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use egui::{ColorImage, TextureHandle, TextureOptions};
@@ -40,22 +42,42 @@ pub fn decode(bytes: &[u8], max_width: u32) -> Option<ColorImage> {
 
 impl Thumbs {
     /// `key`s are local paths or URLs.
-    pub fn new(opener: Arc<Opener>) -> Thumbs {
+    pub fn new(opener: Arc<Opener>, images: Arc<ImageCache>) -> Thumbs {
         let (req, rx) = unbounded::<(String, String, u32)>();
         let (tx, done) = unbounded();
         for i in 0..3 {
             let rx = rx.clone();
             let tx = tx.clone();
             let opener = opener.clone();
+            let images = images.clone();
             let _ = std::thread::Builder::new()
                 .name(format!("fp-thumbs-{i}"))
                 .spawn(move || {
                     for (key, url, width) in rx.iter() {
-                        let img = opener
-                            .fetch(&url, 16 << 20)
-                            .ok()
-                            .and_then(|b| decode(&b, width));
-                        if tx.send((key, img)).is_err() {
+                        if !fp_sources::urlutil::is_http_url(&url) {
+                            let img = opener
+                                .fetch(&url, 16 << 20)
+                                .ok()
+                                .and_then(|b| decode(&b, width));
+                            if tx.send((key, img)).is_err() {
+                                break;
+                            }
+                            continue;
+                        }
+                        let (img, due) = match images.get(&url) {
+                            Ok((bytes, due)) => (decode(&bytes, width), due),
+                            Err(_) => (None, false),
+                        };
+                        if tx.send((key.clone(), img)).is_err() {
+                            break;
+                        }
+                        // Shown from the cache first; a changed picture
+                        // replaces it.
+                        if due
+                            && let Ok(Some(bytes)) = images.refresh(&url)
+                            && let Some(img) = decode(&bytes, width)
+                            && tx.send((key, Some(img))).is_err()
+                        {
                             break;
                         }
                     }
@@ -79,8 +101,9 @@ impl Thumbs {
             match img {
                 Some(img) => {
                     let tex = ctx.load_texture(&key, img, TextureOptions::LINEAR);
-                    self.textures.insert(key.clone(), tex);
-                    self.order.push_back(key);
+                    if self.textures.insert(key.clone(), tex).is_none() {
+                        self.order.push_back(key);
+                    }
                     any = true;
                 }
                 None => {
@@ -130,6 +153,25 @@ impl Thumbs {
     /// Forget failures (e.g. after the library re-thumbnailed).
     pub fn retry_failed(&mut self) {
         self.failed.clear();
+    }
+
+    /// Drops what was decoded of `key`, so it is read again: the file was
+    /// written anew under the same name.
+    pub fn forget(&mut self, key: &str) {
+        let wide = format!("{key}#wide");
+        for k in [key, wide.as_str()] {
+            self.textures.remove(k);
+            self.failed.remove(k);
+        }
+        self.order.retain(|k| k != key && *k != wide);
+    }
+
+    /// Drops every server picture, so each is fetched again.
+    pub fn forget_remote(&mut self) {
+        let remote = |k: &String| fp_sources::urlutil::is_http_url(k);
+        self.textures.retain(|k, _| !remote(k));
+        self.failed.retain(|k| !remote(k));
+        self.order.retain(|k| !remote(k));
     }
 }
 

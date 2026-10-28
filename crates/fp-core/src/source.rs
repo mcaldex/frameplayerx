@@ -163,8 +163,8 @@ impl Entry {
 
 /// File extensions treated as video.
 pub const VIDEO_EXTENSIONS: &[&str] = &[
-    "mp4", "m4v", "mkv", "webm", "mov", "avi", "ts", "m2ts", "mts", "flv", "wmv", "mpg", "mpeg",
-    "ogv",
+    "mp4", "m4v", "mkv", "webm", "mov", "avi", "ts", "m2ts", "mts", "ssif", "iso", "flv", "wmv",
+    "mpg", "mpeg", "ogv",
 ];
 
 /// File extensions treated as subtitles.

@@ -2,10 +2,11 @@
 //!
 //! The library does not decode video itself. The app implements
 //! [`MediaProber`] (with FFmpeg); the [`MetadataWorker`] takes videos that
-//! lack metadata or a thumbnail from the database, asks the prober, refines
+//! lack metadata or a picture from the database, asks the prober, refines
 //! the detected format with container metadata and the frame size, and
-//! writes `<id>.jpg` thumbnails and `<id>_strip.jpg` scrub-preview sheets to
-//! a cache folder.
+//! writes `<id>.jpg` thumbnails to a cache folder for videos whose server
+//! offers no picture. For partly watched videos it also makes the frame
+//! where they were left off, `<id>_at<seconds>.jpg`.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,9 +18,9 @@ use fp_core::format::{ContainerHints, resolve};
 use fp_core::{StereoLayout, VideoFormat};
 
 use crate::error::{Error, Result};
-use crate::image::{RgbaImage, tile};
+use crate::image::RgbaImage;
 use crate::library::{Library, StoredProbe};
-use crate::record::{MediaId, MediaRecord, PreviewStrip};
+use crate::record::{MediaId, MediaRecord};
 
 /// What a prober learned about a video's container and stream.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -66,17 +67,6 @@ impl ThumbnailCrop {
     }
 }
 
-/// One frame asked of [`MediaProber::thumbnails`].
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct FrameRequest {
-    /// Seconds into the video.
-    pub at_seconds: f64,
-    /// Bounding box.
-    pub max_width: u32,
-    /// Bounding box.
-    pub max_height: u32,
-}
-
 /// Reads metadata and frames from media. Implemented by the app on top of
 /// FFmpeg; the library only calls it from the worker thread. Any call may
 /// return [`Error::Cancelled`] to stop the pass and leave the video pending
@@ -87,7 +77,8 @@ pub trait MediaProber: Send + Sync {
 
     /// One frame near `at_seconds`, cropped as asked, scaled to fit within
     /// `max_width` × `max_height` keeping its aspect ratio. Larger results
-    /// are scaled down by the worker.
+    /// are scaled down by the worker. A video's thumbnail is asked for
+    /// right after its [`probe`](Self::probe).
     fn thumbnail(
         &self,
         location: &str,
@@ -96,31 +87,12 @@ pub trait MediaProber: Send + Sync {
         max_height: u32,
         crop: ThumbnailCrop,
     ) -> Result<RgbaImage>;
-
-    /// The frames `requests` ask for, one by one to `each` with their place
-    /// in `requests`, stopping at the first error (`each`'s too). A prober
-    /// can make them all from one opening of the file (the worker asks for
-    /// a video's thumbnail and preview frames together, after its
-    /// [`probe`](Self::probe)); by default each is a [`thumbnail`](Self::thumbnail).
-    fn thumbnails(
-        &self,
-        location: &str,
-        crop: ThumbnailCrop,
-        requests: &[FrameRequest],
-        each: &mut dyn FnMut(usize, RgbaImage) -> Result<()>,
-    ) -> Result<()> {
-        for (i, r) in requests.iter().enumerate() {
-            let img = self.thumbnail(location, r.at_seconds, r.max_width, r.max_height, crop)?;
-            each(i, img)?;
-        }
-        Ok(())
-    }
 }
 
 /// Tuning for the metadata worker.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkerOptions {
-    /// Where `<id>.jpg` and `<id>_strip.jpg` go. Created when needed.
+    /// Where the JPEGs go. Created when needed.
     pub cache_dir: PathBuf,
     /// Thumbnail bounding box.
     pub thumbnail_max_width: u32,
@@ -129,15 +101,17 @@ pub struct WorkerOptions {
     /// Where to take the thumbnail, as a fraction of the duration (the
     /// first frame when the duration is unknown).
     pub thumbnail_position: f64,
-    /// Frames in the scrub preview sheet; 0 disables it.
-    pub strip_frames: u32,
-    /// Bounding box of one preview frame.
-    pub strip_frame_max_width: u32,
-    /// Bounding box of one preview frame.
-    pub strip_frame_max_height: u32,
-    /// Frames per row in the sheet; `None` puts them all in one row
-    /// (wrapped if the row would exceed the JPEG size limit).
-    pub strip_columns: Option<u32>,
+    /// Bounding box of the frame where a video was left off: large enough
+    /// for the banner across Home.
+    pub resume_max_width: u32,
+    /// Bounding box of the frame where a video was left off.
+    pub resume_max_height: u32,
+    /// Make thumbnails for videos whose server offers no picture; those
+    /// made stay when off.
+    pub thumbnails: bool,
+    /// Make the frames where partly watched videos were left off; off,
+    /// those made are deleted.
+    pub resume_thumbnails: bool,
     /// JPEG quality, 1–100.
     pub jpeg_quality: u8,
     /// Rows fetched from the database at a time.
@@ -155,10 +129,10 @@ impl WorkerOptions {
             thumbnail_max_width: 640,
             thumbnail_max_height: 640,
             thumbnail_position: 0.2,
-            strip_frames: 20,
-            strip_frame_max_width: 160,
-            strip_frame_max_height: 160,
-            strip_columns: None,
+            resume_max_width: 1280,
+            resume_max_height: 1280,
+            thumbnails: true,
+            resume_thumbnails: true,
             jpeg_quality: 82,
             batch_size: 16,
             poll_interval: None,
@@ -178,11 +152,10 @@ impl Default for WorkerOptions {
 pub enum WorkerEvent {
     /// A pass over pending videos began.
     Started {
-        /// Videos waiting.
+        /// Videos waiting to be probed.
         pending: usize,
     },
-    /// A video was probed. `warning` explains a missing thumbnail or
-    /// preview sheet.
+    /// A video was probed. `warning` explains a missing thumbnail.
     Processed {
         id: MediaId,
         /// Videos handled in this pass, this one included.
@@ -191,8 +164,6 @@ pub enum WorkerEvent {
         total: usize,
         /// A thumbnail was written.
         thumbnail: bool,
-        /// A preview sheet was written.
-        preview_strip: bool,
         warning: Option<String>,
     },
     /// Probing failed; the error is stored on the row and the video is not
@@ -205,6 +176,12 @@ pub enum WorkerEvent {
         total: usize,
         error: String,
     },
+    /// The frame where a partly watched video was left off was made, or
+    /// could not be (`error`; not tried again for that position).
+    ResumeThumbnail { id: MediaId, error: Option<String> },
+    /// Frames where videos were left off were deleted: the videos were
+    /// watched since, or the frames were turned off.
+    ResumeThumbnailsDeleted(usize),
     /// Nothing left to do for now.
     Idle {
         /// Videos probed successfully in this pass.
@@ -239,47 +216,31 @@ fn thumbnail_path(dir: &Path, id: MediaId) -> PathBuf {
     dir.join(format!("{id}.jpg"))
 }
 
-fn strip_path(dir: &Path, id: MediaId) -> PathBuf {
-    dir.join(format!("{id}_strip.jpg"))
-}
-
-/// Writes the preview sheet of `frames`, taken `interval` seconds apart.
-fn write_strip(
+/// Grabs a frame of `rec` and writes it to `path` as a JPEG.
+fn write_frame(
+    prober: &dyn MediaProber,
     options: &WorkerOptions,
     rec: &MediaRecord,
-    frames: &[RgbaImage],
-    interval: f64,
-) -> Result<PreviewStrip> {
-    let n = frames.len() as u32;
-    let widest = frames.iter().map(|f| f.width).max().unwrap_or(1).max(1);
-    let max_columns = (u16::MAX as u32 / widest).max(1);
-    let columns = options
-        .strip_columns
-        .unwrap_or(n)
-        .clamp(1, n)
-        .min(max_columns);
-    let (sheet, cell_width, cell_height) = tile(frames, columns)?;
-    let path = strip_path(&options.cache_dir, rec.id);
-    write_atomic(&path, &sheet.to_jpeg(options.jpeg_quality)?)?;
-    Ok(PreviewStrip {
-        path,
-        frames: n,
-        columns,
-        cell_width,
-        cell_height,
-        interval,
-    })
+    at: f64,
+    (width, height): (u32, u32),
+    path: PathBuf,
+) -> Result<PathBuf> {
+    let (w, h) = (width.max(1), height.max(1));
+    let crop = ThumbnailCrop::for_format(&rec.effective_format().format);
+    let img = prober.thumbnail(&rec.location, at, w, h, crop)?;
+    write_atomic(&path, &img.fit_within(w, h)?.to_jpeg(options.jpeg_quality)?)?;
+    Ok(path)
 }
 
 /// Probes one video and stores the result. `Err` means the probe itself
-/// failed; thumbnail problems come back as a warning. `None`: the video
+/// failed; a thumbnail problem comes back as a warning. `None`: the video
 /// changed while it was probed, and is still pending.
 fn process_one(
     library: &Library,
     prober: &dyn MediaProber,
     options: &WorkerOptions,
     rec: &MediaRecord,
-) -> Result<Option<(bool, bool, Option<String>)>> {
+) -> Result<Option<(bool, Option<String>)>> {
     let info = prober.probe(&rec.location)?;
     // Detect from the file name only, so a URL's query string cannot add
     // format tokens.
@@ -291,70 +252,33 @@ fn process_one(
     } else {
         rec.detected
     };
-    let effective = rec.user_format.unwrap_or(detected.format);
-    let crop = ThumbnailCrop::for_format(&effective);
     let duration = info
         .duration
         .filter(|d| d.is_finite() && *d > 0.0)
         .or(rec.duration);
 
-    // The thumbnail, then the preview frames (at the middle of each of
-    // `strip_frames` stretches), from one opening of the file.
-    let at = duration.map_or(0.0, |d| d * options.thumbnail_position.clamp(0.0, 1.0));
-    let (tw, th) = (
-        options.thumbnail_max_width.max(1),
-        options.thumbnail_max_height.max(1),
-    );
-    let (sw, sh) = (
-        options.strip_frame_max_width.max(1),
-        options.strip_frame_max_height.max(1),
-    );
-    let interval = duration
-        .filter(|_| options.strip_frames > 0)
-        .map(|d| d / options.strip_frames as f64);
-    let mut requests = vec![FrameRequest {
-        at_seconds: at,
-        max_width: tw,
-        max_height: th,
-    }];
-    if let Some(interval) = interval {
-        requests.extend((0..options.strip_frames).map(|i| FrameRequest {
-            at_seconds: (i as f64 + 0.5) * interval,
-            max_width: sw,
-            max_height: sh,
-        }));
-    }
+    // A server's picture is shown as it is (one made before goes); with
+    // thumbnails off, the one made before stays.
     let mut thumbnail = None;
-    let mut frames = Vec::new();
-    let made = prober.thumbnails(&rec.location, crop, &requests, &mut |i, img| {
-        if i == 0 {
-            let jpg = img.fit_within(tw, th)?.to_jpeg(options.jpeg_quality)?;
-            let path = thumbnail_path(&options.cache_dir, rec.id);
-            write_atomic(&path, &jpg)?;
-            thumbnail = Some(path);
-        } else {
-            frames.push(img.fit_within(sw, sh)?);
-        }
-        Ok(())
-    });
-    let mut warnings: Vec<String> = Vec::new();
+    let mut written = false;
     let mut thumb_error = None;
-    let mut preview_strip = None;
-    match made {
-        Err(Error::Cancelled) => return Err(Error::Cancelled),
-        Err(e) if thumbnail.is_none() => {
-            let msg = format!("thumbnail: {e}");
-            warnings.push(msg.clone());
-            thumb_error = Some(msg);
-        }
-        Err(e) => warnings.push(format!("preview strip: {e}")),
-        Ok(()) => {
-            if let Some(interval) = interval {
-                match write_strip(options, rec, &frames, interval) {
-                    Ok(s) => preview_strip = Some(s),
-                    Err(e) => warnings.push(format!("preview strip: {e}")),
-                }
+    if rec.thumbnail_url.is_none() && !options.thumbnails {
+        thumbnail = rec.thumbnail.clone();
+    } else if rec.thumbnail_url.is_none() {
+        let probed = MediaRecord {
+            detected,
+            ..rec.clone()
+        };
+        let at = duration.map_or(0.0, |d| d * options.thumbnail_position.clamp(0.0, 1.0));
+        let size = (options.thumbnail_max_width, options.thumbnail_max_height);
+        let path = thumbnail_path(&options.cache_dir, rec.id);
+        match write_frame(prober, options, &probed, at, size, path) {
+            Ok(p) => {
+                thumbnail = Some(p);
+                written = true;
             }
+            Err(Error::Cancelled) => return Err(Error::Cancelled),
+            Err(e) => thumb_error = Some(format!("thumbnail: {e}")),
         }
     }
 
@@ -368,24 +292,97 @@ fn process_one(
             video_codec: info.video_codec.clone(),
             detected,
             thumbnail: thumbnail.clone(),
-            preview_strip: preview_strip.clone(),
-            error: thumb_error,
+            error: thumb_error.clone(),
         },
     )?;
     if !stored {
         return Ok(None);
     }
-    let warning = (!warnings.is_empty()).then(|| warnings.join("; "));
-    Ok(Some((
-        thumbnail.is_some(),
-        preview_strip.is_some(),
-        warning,
-    )))
+    Ok(Some((written, thumb_error)))
+}
+
+/// Deletes the files in the cache folder no video uses: thumbnails of
+/// videos since removed from the library, and leftovers of interrupted
+/// writes.
+fn sweep(library: &Library, options: &WorkerOptions) -> Result<()> {
+    let Ok(dir) = std::fs::read_dir(&options.cache_dir) else {
+        return Ok(());
+    };
+    let used = library.picture_files()?;
+    for e in dir.flatten() {
+        let path = e.path();
+        let ours = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(".jpg") || n.ends_with(".jpg.tmp"));
+        if ours && !used.contains(&path) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    Ok(())
+}
+
+/// Deletes the frames of videos no longer partly watched (all of them when
+/// turned off) and makes the missing ones. True when `stop` was set or the
+/// prober cancelled.
+fn resume_thumbnails(
+    library: &Library,
+    prober: &dyn MediaProber,
+    options: &WorkerOptions,
+    stop: &AtomicBool,
+    on_event: &mut dyn FnMut(WorkerEvent),
+) -> Result<bool> {
+    let stale = library.take_resume_thumbnails(!options.resume_thumbnails)?;
+    if !stale.is_empty() {
+        for path in &stale {
+            // Already gone is as good.
+            let _ = std::fs::remove_file(path);
+        }
+        on_event(WorkerEvent::ResumeThumbnailsDeleted(stale.len()));
+    }
+    if !options.resume_thumbnails {
+        return Ok(false);
+    }
+    loop {
+        let batch = library.pending_resume_thumbnails(options.batch_size.max(1))?;
+        if batch.is_empty() {
+            return Ok(false);
+        }
+        std::fs::create_dir_all(&options.cache_dir)
+            .map_err(|e| Error::io(&options.cache_dir, e))?;
+        for rec in &batch {
+            if stop.load(Ordering::Relaxed) {
+                return Ok(true);
+            }
+            let at = rec.resume_position;
+            // A new name for each position, so the app shows the new frame
+            // rather than the one it decoded before.
+            let path = options
+                .cache_dir
+                .join(format!("{}_at{}.jpg", rec.id, at as u64));
+            let size = (options.resume_max_width, options.resume_max_height);
+            let (made, error) = match write_frame(prober, options, rec, at, size, path) {
+                Ok(p) => (Some(p), None),
+                Err(Error::Cancelled) => return Ok(true),
+                Err(e) => (None, Some(e.to_string())),
+            };
+            library.store_resume_thumbnail(rec, made.as_deref())?;
+            if let Some(old) = &rec.resume_thumbnail
+                && made.as_ref() != Some(old)
+            {
+                let _ = std::fs::remove_file(old);
+            }
+            on_event(WorkerEvent::ResumeThumbnail { id: rec.id, error });
+        }
+    }
 }
 
 /// Processes every pending video once, on the calling thread, until none is
-/// left, `stop` becomes true or the prober cancels. [`MetadataWorker`] runs this in the
-/// background; call it directly for synchronous use (tools, tests).
+/// left, `stop` becomes true or the prober cancels: first the files no
+/// video uses go, then the frames where partly watched videos were left off
+/// are made (few, and what Home shows first), then the probes.
+/// [`MetadataWorker`] runs this in the background; call it directly for
+/// synchronous use (tools, tests).
 pub fn process_pending(
     library: &Library,
     prober: &dyn MediaProber,
@@ -394,15 +391,17 @@ pub fn process_pending(
     on_event: &mut dyn FnMut(WorkerEvent),
 ) -> Result<WorkerStats> {
     let mut stats = WorkerStats::default();
-    let mut total = library.pending_metadata_count()?;
+    let mut total = library.pending_metadata_count(options.thumbnails)?;
     on_event(WorkerEvent::Started { pending: total });
+    sweep(library, options)?;
+    let cancelled = resume_thumbnails(library, prober, options, stop, on_event)?;
     if total > 0 {
         std::fs::create_dir_all(&options.cache_dir)
             .map_err(|e| Error::io(&options.cache_dir, e))?;
     }
     let mut done = 0;
-    'outer: while !stop.load(Ordering::Relaxed) {
-        let batch = library.pending_metadata(options.batch_size.max(1))?;
+    'outer: while !cancelled && !stop.load(Ordering::Relaxed) {
+        let batch = library.pending_metadata(options.batch_size.max(1), options.thumbnails)?;
         if batch.is_empty() {
             break;
         }
@@ -422,7 +421,7 @@ pub fn process_pending(
             total = total.max(done);
             report(library, rec, done, total, r, &mut stats, on_event)?;
         }
-        total = total.max(done + library.pending_metadata_count()?);
+        total = total.max(done + library.pending_metadata_count(options.thumbnails)?);
     }
     on_event(WorkerEvent::Idle {
         processed: stats.processed,
@@ -437,19 +436,18 @@ fn report(
     rec: &MediaRecord,
     done: usize,
     total: usize,
-    result: Result<(bool, bool, Option<String>)>,
+    result: Result<(bool, Option<String>)>,
     stats: &mut WorkerStats,
     on_event: &mut dyn FnMut(WorkerEvent),
 ) -> Result<()> {
     match result {
-        Ok((thumbnail, preview_strip, warning)) => {
+        Ok((thumbnail, warning)) => {
             stats.processed += 1;
             on_event(WorkerEvent::Processed {
                 id: rec.id,
                 done,
                 total,
                 thumbnail,
-                preview_strip,
                 warning,
             });
         }
@@ -471,13 +469,18 @@ fn report(
 /// A background thread that keeps metadata and thumbnails up to date.
 ///
 /// It makes a pass when spawned, then sleeps until [`wake`](Self::wake)
-/// (call it after a scan or upsert) or the poll interval. Dropping it (or
-/// calling [`stop`](Self::stop)) stops it after the current video and joins
-/// the thread.
+/// (call it after a scan, an upsert or playback), [`set_options`](Self::set_options)
+/// or the poll interval. Dropping it (or calling [`stop`](Self::stop)) stops
+/// it after the current video and joins the thread.
 pub struct MetadataWorker {
-    control: Option<mpsc::Sender<()>>,
+    control: Option<mpsc::Sender<Control>>,
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
+}
+
+enum Control {
+    Wake,
+    Options(Box<WorkerOptions>),
 }
 
 impl std::fmt::Debug for MetadataWorker {
@@ -497,7 +500,7 @@ impl MetadataWorker {
         options: WorkerOptions,
     ) -> Result<(MetadataWorker, mpsc::Receiver<WorkerEvent>)> {
         let (event_tx, event_rx) = mpsc::channel();
-        let (control_tx, control_rx) = mpsc::channel::<()>();
+        let (control_tx, control_rx) = mpsc::channel::<Control>();
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let handle = std::thread::Builder::new()
@@ -507,6 +510,7 @@ impl MetadataWorker {
                     // A dropped receiver only means nobody listens.
                     let _ = event_tx.send(e);
                 };
+                let mut options = options;
                 loop {
                     let mut forward = |e: WorkerEvent| send(e);
                     if let Err(e) =
@@ -517,18 +521,24 @@ impl MetadataWorker {
                     if thread_stop.load(Ordering::Relaxed) {
                         break;
                     }
-                    let woke = match options.poll_interval {
+                    let next = match options.poll_interval {
                         Some(every) => match control_rx.recv_timeout(every) {
-                            Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => true,
-                            Err(mpsc::RecvTimeoutError::Disconnected) => false,
+                            Ok(c) => Some(c),
+                            Err(mpsc::RecvTimeoutError::Timeout) => Some(Control::Wake),
+                            Err(mpsc::RecvTimeoutError::Disconnected) => None,
                         },
-                        None => control_rx.recv().is_ok(),
+                        None => control_rx.recv().ok(),
                     };
-                    if !woke || thread_stop.load(Ordering::Relaxed) {
+                    let Some(first) = next else { break };
+                    if thread_stop.load(Ordering::Relaxed) {
                         break;
                     }
-                    // Coalesce wake-ups that arrived meanwhile.
-                    while control_rx.try_recv().is_ok() {}
+                    // Coalesce what arrived meanwhile; the newest options win.
+                    for c in std::iter::once(first).chain(control_rx.try_iter()) {
+                        if let Control::Options(o) = c {
+                            options = *o;
+                        }
+                    }
                 }
                 send(WorkerEvent::Stopped);
             })
@@ -545,9 +555,18 @@ impl MetadataWorker {
 
     /// Asks the worker to look for new pending videos.
     pub fn wake(&self) {
+        self.send(Control::Wake);
+    }
+
+    /// Changes the options from the next pass on, and starts one.
+    pub fn set_options(&self, options: WorkerOptions) {
+        self.send(Control::Options(Box::new(options)));
+    }
+
+    fn send(&self, c: Control) {
         if let Some(tx) = &self.control {
             // Fails only when the thread has exited, which `is_running` shows.
-            let _ = tx.send(());
+            let _ = tx.send(c);
         }
     }
 
@@ -586,6 +605,7 @@ mod tests {
     use crate::library::MediaUpsert;
     use fp_core::Projection;
     use fp_core::format::{DetectedFormat, Evidence};
+    use fp_core::source::{Entry, EntryKind};
     use std::collections::{HashMap, HashSet};
     use std::sync::Mutex;
 
@@ -615,14 +635,18 @@ mod tests {
             self
         }
 
-        fn crops_for(&self, loc: &str) -> Vec<ThumbnailCrop> {
+        fn calls_for(&self, loc: &str) -> Vec<(f64, ThumbnailCrop)> {
             self.calls
                 .lock()
                 .unwrap()
                 .iter()
                 .filter(|c| c.0 == loc)
-                .map(|c| c.2)
+                .map(|c| (c.1, c.2))
                 .collect()
+        }
+
+        fn crops_for(&self, loc: &str) -> Vec<ThumbnailCrop> {
+            self.calls_for(loc).into_iter().map(|c| c.1).collect()
         }
     }
 
@@ -664,97 +688,8 @@ mod tests {
         }
     }
 
-    /// A call for frames: the video, and each frame's time and width.
-    type Asked = (String, Vec<(f64, u32)>);
-
-    /// Records how frames are asked for: all of a video's together.
-    #[derive(Default)]
-    struct Batches {
-        inner: FakeProber,
-        asked: Mutex<Vec<Asked>>,
-    }
-
-    impl MediaProber for Batches {
-        fn probe(&self, location: &str) -> Result<ProbeInfo> {
-            self.inner.probe(location)
-        }
-
-        fn thumbnail(
-            &self,
-            location: &str,
-            at: f64,
-            max_w: u32,
-            max_h: u32,
-            crop: ThumbnailCrop,
-        ) -> Result<RgbaImage> {
-            self.inner.thumbnail(location, at, max_w, max_h, crop)
-        }
-
-        fn thumbnails(
-            &self,
-            location: &str,
-            crop: ThumbnailCrop,
-            requests: &[FrameRequest],
-            each: &mut dyn FnMut(usize, RgbaImage) -> Result<()>,
-        ) -> Result<()> {
-            self.asked.lock().unwrap().push((
-                location.into(),
-                requests
-                    .iter()
-                    .map(|r| (r.at_seconds, r.max_width))
-                    .collect(),
-            ));
-            for (i, r) in requests.iter().enumerate() {
-                each(
-                    i,
-                    self.inner.thumbnail(
-                        location,
-                        r.at_seconds,
-                        r.max_width,
-                        r.max_height,
-                        crop,
-                    )?,
-                )?;
-            }
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn a_videos_thumbnail_and_preview_frames_are_asked_for_together() {
-        let dir = tempfile::tempdir().unwrap();
-        let lib = Library::open_in_memory().unwrap();
-        let o = opts(dir.path());
-        lib.upsert(&MediaUpsert::new("/v/a.mp4", "a.mp4")).unwrap();
-        let prober = Batches {
-            inner: FakeProber::default().with(
-                "/v/a.mp4",
-                1920,
-                1080,
-                100.0,
-                ContainerHints::default(),
-            ),
-            ..Default::default()
-        };
-        let stats =
-            process_pending(&lib, &prober, &o, &AtomicBool::new(false), &mut |_| {}).unwrap();
-        assert_eq!(stats.processed, 1);
-        let asked = prober.asked.lock().unwrap();
-        assert_eq!(
-            *asked,
-            vec![(
-                "/v/a.mp4".to_string(),
-                vec![(20.0, 640), (12.5, 64), (37.5, 64), (62.5, 64), (87.5, 64)]
-            )],
-            "one call, the thumbnail first"
-        );
-    }
-
     fn opts(dir: &Path) -> WorkerOptions {
         WorkerOptions {
-            strip_frames: 4,
-            strip_frame_max_width: 64,
-            strip_frame_max_height: 64,
             batch_size: 2,
             ..WorkerOptions::with_cache_dir(dir)
         }
@@ -771,6 +706,12 @@ mod tests {
         })
         .unwrap();
         (stats, events)
+    }
+
+    /// Plays `id` up to `at` seconds and stops.
+    fn watch(lib: &Library, id: MediaId, at: f64) {
+        let s = lib.start_playback(id).unwrap();
+        lib.update_playback(s, at, false).unwrap();
     }
 
     #[test]
@@ -834,7 +775,7 @@ mod tests {
             )
             .with("/v/c.mp4", 5760, 2880, 30.0, ContainerHints::default());
         let o = opts(&cache);
-        assert_eq!(lib.pending_metadata_count().unwrap(), 4);
+        assert_eq!(lib.pending_metadata_count(true).unwrap(), 4);
 
         let (stats, events) = run(&lib, &prober, &o);
         assert_eq!(
@@ -869,7 +810,7 @@ mod tests {
             WorkerEvent::Failed { id, .. } if *id == broken
         )));
 
-        // SBS from the name: left-eye crop, square-ish thumbnail.
+        // SBS from the name: left-eye crop, square-ish thumbnail at 20 %.
         let a = lib.get(sbs).unwrap().unwrap();
         assert!(a.probed && a.probe_error.is_none());
         assert_eq!(
@@ -878,44 +819,21 @@ mod tests {
         );
         assert_eq!(a.video_codec.as_deref(), Some("hevc"));
         assert_eq!(a.detected.evidence, Evidence::FileName);
-        assert!(
-            prober
-                .crops_for("/v/a_LR.mp4")
-                .iter()
-                .all(|c| *c == ThumbnailCrop::LeftEye)
+        assert_eq!(
+            prober.calls_for("/v/a_LR.mp4"),
+            vec![(20.0, ThumbnailCrop::LeftEye)]
         );
         let thumb = a.thumbnail.clone().unwrap();
         assert_eq!(thumb, cache.join(format!("{sbs}.jpg")));
         let jpg = std::fs::read(&thumb).unwrap();
         assert_eq!(jpeg_size(&jpg), Some((640, 360)));
-        let strip = a.preview_strip.clone().unwrap();
-        assert_eq!(strip.path, cache.join(format!("{sbs}_strip.jpg")));
-        assert_eq!((strip.frames, strip.columns), (4, 4));
-        assert_eq!((strip.cell_width, strip.cell_height), (64, 36));
-        assert_eq!(strip.interval, 25.0);
-        let sheet = std::fs::read(&strip.path).unwrap();
-        assert_eq!(jpeg_size(&sheet), Some((256, 36)));
-        // Thumbnail at 20 %, strip frames at the middle of each quarter.
-        let times: Vec<f64> = prober
-            .calls
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|c| c.0 == "/v/a_LR.mp4")
-            .map(|c| c.1)
-            .collect();
-        assert_eq!(times, vec![20.0, 12.5, 37.5, 62.5, 87.5]);
+        assert_eq!(a.picture(), Some(thumb.display().to_string()));
 
         // Container metadata wins over the name.
         let b = lib.get(meta).unwrap().unwrap();
         assert_eq!(b.detected.evidence, Evidence::Metadata);
         assert_eq!(b.detected.format.projection, Projection::EQUIRECT_360);
-        assert!(
-            prober
-                .crops_for("/v/b.mp4")
-                .iter()
-                .all(|c| *c == ThumbnailCrop::Full)
-        );
+        assert_eq!(prober.crops_for("/v/b.mp4"), vec![ThumbnailCrop::Full]);
 
         // Aspect ratio: 2:1 at 5760 wide is SBS 180, so the filter finds it,
         // along with the unreadable file, which plays as the 180 SBS fallback.
@@ -935,13 +853,174 @@ mod tests {
         // The failure is recorded and not retried...
         let x = lib.get(broken).unwrap().unwrap();
         assert!(x.probe_error.unwrap().contains("cannot open"));
-        assert_eq!(lib.pending_metadata_count().unwrap(), 0);
+        assert_eq!(lib.pending_metadata_count(true).unwrap(), 0);
         let (stats, _) = run(&lib, &prober, &o);
         assert_eq!(stats, WorkerStats::default());
         // ...until asked.
         assert_eq!(lib.retry_failed_probes(Some("other")).unwrap(), 0);
         assert_eq!(lib.retry_failed_probes(None).unwrap(), 1);
-        assert_eq!(lib.pending_metadata_count().unwrap(), 1);
+        assert_eq!(lib.pending_metadata_count(true).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_servers_picture_is_used_rather_than_a_grab() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open_in_memory().unwrap();
+        let mut e = Entry::new("Beach", "http://jf/item/1", EntryKind::Video);
+        e.thumbnail_url = Some("http://jf/Items/1/Images/Thumb?tag=t1".into());
+        let id = lib.upsert_entry("jellyfin", &e).unwrap().id;
+        let prober = FakeProber::default().with(
+            "http://jf/item/1",
+            1920,
+            1080,
+            600.0,
+            ContainerHints::default(),
+        );
+        let (stats, events) = run(&lib, &prober, &opts(tmp.path()));
+        assert_eq!(stats.processed, 1);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            WorkerEvent::Processed {
+                thumbnail: false,
+                warning: None,
+                ..
+            }
+        )));
+        assert!(prober.calls_for("http://jf/item/1").is_empty(), "no grab");
+        let r = lib.get(id).unwrap().unwrap();
+        assert_eq!((r.probed, r.duration), (true, Some(600.0)));
+        assert!(r.thumbnail.is_none());
+        assert_eq!(
+            r.picture().as_deref(),
+            Some("http://jf/Items/1/Images/Thumb?tag=t1")
+        );
+        assert_eq!(lib.pending_metadata_count(true).unwrap(), 0);
+
+        // A browse entry carrying the library's own thumbnail file brings no
+        // server picture with it.
+        let mut e = Entry::new("Local", "smb://nas/v/a.mp4", EntryKind::Video);
+        e.thumbnail_url = Some(tmp.path().join("7.jpg").display().to_string());
+        let id = lib.upsert_entry("nas", &e).unwrap().id;
+        assert_eq!(lib.get(id).unwrap().unwrap().thumbnail_url, None);
+    }
+
+    #[test]
+    fn partly_watched_videos_show_where_they_were_left_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().to_path_buf();
+        let lib = Library::open_in_memory().unwrap();
+        let id = lib
+            .upsert(&MediaUpsert::new("/v/a_180_LR.mp4", "local"))
+            .unwrap()
+            .id;
+        let prober = FakeProber::default().with(
+            "/v/a_180_LR.mp4",
+            7680,
+            3840,
+            100.0,
+            ContainerHints::default(),
+        );
+        let o = opts(&cache);
+        run(&lib, &prober, &o);
+        let thumb = lib.get(id).unwrap().unwrap().thumbnail.unwrap();
+
+        watch(&lib, id, 40.5);
+        let (_, events) = run(&lib, &prober, &o);
+        assert!(events.contains(&WorkerEvent::ResumeThumbnail { id, error: None }));
+        let r = lib.get(id).unwrap().unwrap();
+        let first = cache.join(format!("{id}_at40.jpg"));
+        assert_eq!(r.resume_thumbnail.as_ref(), Some(&first));
+        assert_eq!(r.picture(), Some(first.display().to_string()));
+        assert_eq!(
+            jpeg_size(&std::fs::read(&first).unwrap()),
+            Some((1280, 1280)),
+            "one eye, banner sized"
+        );
+        assert_eq!(
+            prober.calls_for("/v/a_180_LR.mp4").last(),
+            Some(&(40.5, ThumbnailCrop::LeftEye))
+        );
+        // Nothing more to do until it is played again.
+        let calls = prober.calls.lock().unwrap().len();
+        run(&lib, &prober, &o);
+        assert_eq!(prober.calls.lock().unwrap().len(), calls);
+
+        // Watched further: a new frame under a new name, the old one goes.
+        watch(&lib, id, 70.0);
+        run(&lib, &prober, &o);
+        let second = cache.join(format!("{id}_at70.jpg"));
+        assert_eq!(
+            lib.get(id).unwrap().unwrap().resume_thumbnail,
+            Some(second.clone())
+        );
+        assert!(second.exists() && !first.exists());
+
+        // Watched: back to the thumbnail, the frame deleted.
+        watch(&lib, id, 95.0);
+        let r = lib.get(id).unwrap().unwrap();
+        assert_eq!(r.picture(), Some(thumb.display().to_string()));
+        run(&lib, &prober, &o);
+        assert_eq!(lib.get(id).unwrap().unwrap().resume_thumbnail, None);
+        assert!(!second.exists() && thumb.exists());
+    }
+
+    #[test]
+    fn a_frame_that_cannot_be_made_is_not_tried_again_for_that_position() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open_in_memory().unwrap();
+        let mut u = MediaUpsert::new("/v/x.mp4", "local");
+        u.duration = Some(100.0);
+        let id = lib.upsert(&u).unwrap().id;
+        let mut prober =
+            FakeProber::default().with("/v/x.mp4", 1920, 1080, 100.0, ContainerHints::default());
+        prober.broken_thumbnails.insert("/v/x.mp4".into());
+        watch(&lib, id, 30.0);
+        let (_, events) = run(&lib, &prober, &opts(tmp.path()));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, WorkerEvent::ResumeThumbnail { error: Some(_), .. }))
+        );
+        assert!(lib.pending_resume_thumbnails(10).unwrap().is_empty());
+        let r = lib.get(id).unwrap().unwrap();
+        assert!(r.resume_thumbnail.is_none());
+        assert_eq!(r.picture(), None);
+    }
+
+    #[test]
+    fn changing_what_the_format_shows_makes_the_pictures_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open_in_memory().unwrap();
+        let id = lib
+            .upsert(&MediaUpsert::new("/v/wide.mp4", "local"))
+            .unwrap()
+            .id;
+        let prober =
+            FakeProber::default().with("/v/wide.mp4", 5760, 2880, 100.0, ContainerHints::default());
+        let o = opts(tmp.path());
+        run(&lib, &prober, &o);
+        watch(&lib, id, 50.0);
+        run(&lib, &prober, &o);
+        assert_eq!(
+            prober.crops_for("/v/wide.mp4"),
+            vec![ThumbnailCrop::LeftEye; 2],
+            "guessed SBS from its shape"
+        );
+        // Another projection, the same half of the frame: nothing to redo.
+        let sbs360 = VideoFormat::new(Projection::EQUIRECT_360, StereoLayout::SideBySide);
+        lib.set_user_format(id, Some(sbs360)).unwrap();
+        run(&lib, &prober, &o);
+        assert_eq!(prober.crops_for("/v/wide.mp4").len(), 2);
+        // 2D: the whole frame, thumbnail and resume frame alike.
+        let mono = VideoFormat::new(Projection::EQUIRECT_360, StereoLayout::Mono);
+        lib.set_user_format(id, Some(mono)).unwrap();
+        let r = lib.get(id).unwrap().unwrap();
+        assert!(r.thumbnail.is_some(), "the old one shows until replaced");
+        run(&lib, &prober, &o);
+        assert_eq!(
+            prober.crops_for("/v/wide.mp4")[2..],
+            [ThumbnailCrop::Full; 2]
+        );
     }
 
     #[test]
@@ -978,17 +1057,13 @@ mod tests {
         run(&lib, &prober, &opts(tmp.path()));
 
         assert_eq!(lib.get(declared).unwrap().unwrap().detected, u.detected);
-        assert!(
-            prober
-                .crops_for("http://srv/feed1.mp4")
-                .iter()
-                .all(|c| *c == ThumbnailCrop::LeftEye)
+        assert_eq!(
+            prober.crops_for("http://srv/feed1.mp4"),
+            vec![ThumbnailCrop::LeftEye]
         );
-        assert!(
-            prober
-                .crops_for("/v/plain.mp4")
-                .iter()
-                .all(|c| *c == ThumbnailCrop::TopEye)
+        assert_eq!(
+            prober.crops_for("/v/plain.mp4"),
+            vec![ThumbnailCrop::TopEye]
         );
         let r = lib.get(user).unwrap().unwrap();
         assert_eq!(r.effective_format().evidence, Evidence::User);
@@ -1010,14 +1085,14 @@ mod tests {
         assert_eq!(stats.processed, 1);
         assert!(events.iter().any(|e| matches!(
             e,
-            WorkerEvent::Processed { thumbnail: false, preview_strip: false, warning: Some(w), .. }
+            WorkerEvent::Processed { thumbnail: false, warning: Some(w), .. }
                 if w.contains("thumbnail")
         )));
         let r = lib.get(id).unwrap().unwrap();
         assert_eq!(r.duration, Some(10.0));
         assert!(r.thumbnail.is_none());
         assert!(r.probe_error.is_some());
-        assert_eq!(lib.pending_metadata_count().unwrap(), 0);
+        assert_eq!(lib.pending_metadata_count(true).unwrap(), 0);
     }
 
     /// Probes like `inner`, but a rescan finds a new file while the first
@@ -1079,7 +1154,7 @@ mod tests {
         assert_eq!(stats.processed, 1);
         let r = lib.get(id).unwrap().unwrap();
         assert_eq!((r.size, r.duration, r.probed), (Some(2), Some(120.0), true));
-        assert_eq!(lib.pending_metadata_count().unwrap(), 0);
+        assert_eq!(lib.pending_metadata_count(true).unwrap(), 0);
     }
 
     #[test]
@@ -1092,14 +1167,13 @@ mod tests {
         let mut prober = FakeProber::default()
             .with("/v/a.mp4", 1920, 1080, 10.0, ContainerHints::default())
             .with("/v/b.mp4", 1920, 1080, 10.0, ContainerHints::default());
-        // One video takes a thumbnail and 4 strip frames; cancel in the
-        // second one's strip.
-        prober.cancel_from_call = Some(6);
+        // Cancel the second video's thumbnail.
+        prober.cancel_from_call = Some(1);
         let (stats, events) = run(&lib, &prober, &opts(tmp.path()));
         assert_eq!((stats.processed, stats.failed), (1, 0));
         assert!(matches!(events.last(), Some(WorkerEvent::Idle { .. })));
-        assert_eq!(lib.pending_metadata_count().unwrap(), 1);
-        let pending = lib.pending_metadata(10).unwrap();
+        assert_eq!(lib.pending_metadata_count(true).unwrap(), 1);
+        let pending = lib.pending_metadata(10, true).unwrap();
         assert!(pending[0].probe_error.is_none());
         assert!(pending[0].thumbnail.is_none());
 
@@ -1107,7 +1181,7 @@ mod tests {
         prober.cancel_from_call = None;
         let (stats, _) = run(&lib, &prober, &opts(tmp.path()));
         assert_eq!(stats.processed, 1);
-        assert_eq!(lib.pending_metadata_count().unwrap(), 0);
+        assert_eq!(lib.pending_metadata_count(true).unwrap(), 0);
     }
 
     #[test]
@@ -1120,10 +1194,109 @@ mod tests {
         let prober =
             FakeProber::default().with("/v/x.mp4", 1920, 1080, 10.0, ContainerHints::default());
         run(&lib, &prober, &opts(tmp.path()));
-        assert_eq!(lib.pending_metadata_count().unwrap(), 0);
+        assert_eq!(lib.pending_metadata_count(true).unwrap(), 0);
         u.size = Some(2);
         lib.upsert(&u).unwrap();
-        assert_eq!(lib.pending_metadata_count().unwrap(), 1);
+        assert_eq!(lib.pending_metadata_count(true).unwrap(), 1);
+    }
+
+    #[test]
+    fn files_no_video_uses_are_deleted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().to_path_buf();
+        let lib = Library::open_in_memory().unwrap();
+        let kept = lib
+            .upsert(&MediaUpsert::new("/v/kept.mp4", "a"))
+            .unwrap()
+            .id;
+        let gone = lib
+            .upsert(&MediaUpsert::new("/v/gone.mp4", "b"))
+            .unwrap()
+            .id;
+        let prober = FakeProber::default()
+            .with("/v/kept.mp4", 1920, 1080, 10.0, ContainerHints::default())
+            .with("/v/gone.mp4", 1920, 1080, 10.0, ContainerHints::default());
+        let o = opts(&cache);
+        run(&lib, &prober, &o);
+        let kept_jpg = cache.join(format!("{kept}.jpg"));
+        let gone_jpg = cache.join(format!("{gone}.jpg"));
+        assert!(kept_jpg.exists() && gone_jpg.exists());
+        // Source `b` removed: its unwatched video leaves the library. Beside
+        // it, an old preview strip, an interrupted write and a stranger.
+        assert_eq!(lib.forget_unwatched("b").unwrap(), 1);
+        let strip = cache.join(format!("{kept}_strip.jpg"));
+        let partial = cache.join("9.jpg.tmp");
+        let stranger = cache.join("notes.txt");
+        for p in [&strip, &partial, &stranger] {
+            std::fs::write(p, b"x").unwrap();
+        }
+        run(&lib, &prober, &o);
+        assert!(kept_jpg.exists() && stranger.exists());
+        assert!(!gone_jpg.exists() && !strip.exists() && !partial.exists());
+    }
+
+    #[test]
+    fn thumbnails_can_be_turned_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open_in_memory().unwrap();
+        let id = lib
+            .upsert(&MediaUpsert::new("/v/x.mp4", "local"))
+            .unwrap()
+            .id;
+        let prober =
+            FakeProber::default().with("/v/x.mp4", 1920, 1080, 100.0, ContainerHints::default());
+        let on = opts(tmp.path());
+        let off = WorkerOptions {
+            thumbnails: false,
+            ..on.clone()
+        };
+        let (stats, _) = run(&lib, &prober, &off);
+        assert_eq!(stats.processed, 1, "probed all the same");
+        assert!(prober.calls_for("/v/x.mp4").is_empty());
+        let r = lib.get(id).unwrap().unwrap();
+        assert!(r.probed && r.thumbnail.is_none());
+        // Nothing to do while off; turned on, it is made.
+        assert_eq!(lib.pending_metadata_count(false).unwrap(), 0);
+        assert_eq!(lib.pending_metadata_count(true).unwrap(), 1);
+        run(&lib, &prober, &on);
+        let thumb = lib.get(id).unwrap().unwrap().thumbnail;
+        assert!(thumb.is_some());
+        // Off again, a video probed anew keeps the one it has.
+        let sbs = VideoFormat::new(Projection::Flat, StereoLayout::SideBySide);
+        lib.set_user_format(id, Some(sbs)).unwrap();
+        run(&lib, &prober, &off);
+        assert_eq!(prober.calls_for("/v/x.mp4").len(), 1);
+        assert_eq!(lib.get(id).unwrap().unwrap().thumbnail, thumb);
+    }
+
+    #[test]
+    fn frames_where_videos_were_left_off_can_be_turned_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open_in_memory().unwrap();
+        let mut u = MediaUpsert::new("/v/x.mp4", "local");
+        u.duration = Some(100.0);
+        let id = lib.upsert(&u).unwrap().id;
+        let prober =
+            FakeProber::default().with("/v/x.mp4", 1920, 1080, 100.0, ContainerHints::default());
+        let on = opts(tmp.path());
+        watch(&lib, id, 40.0);
+        run(&lib, &prober, &on);
+        let frame = lib.get(id).unwrap().unwrap().resume_thumbnail.unwrap();
+        assert!(frame.exists());
+        let off = WorkerOptions {
+            resume_thumbnails: false,
+            ..on
+        };
+        let (_, events) = run(&lib, &prober, &off);
+        assert!(events.contains(&WorkerEvent::ResumeThumbnailsDeleted(1)));
+        assert!(!frame.exists());
+        let r = lib.get(id).unwrap().unwrap();
+        assert!(r.resume_thumbnail.is_none());
+        assert_eq!(r.picture(), r.thumbnail.map(|p| p.display().to_string()));
+        // Played on, still none.
+        watch(&lib, id, 60.0);
+        run(&lib, &prober, &off);
+        assert!(!prober.calls_for("/v/x.mp4").iter().any(|c| c.0 == 60.0));
     }
 
     fn wait_for_idle(rx: &mpsc::Receiver<WorkerEvent>) -> Vec<WorkerEvent> {
@@ -1157,14 +1330,15 @@ mod tests {
                     2000,
                     10.0,
                     ContainerHints::default(),
-                ),
+                )
+                .with("/v/3.mp4", 1920, 1080, 10.0, ContainerHints::default()),
         );
         let (worker, rx) =
             MetadataWorker::spawn(lib.clone(), prober.clone(), opts(tmp.path())).unwrap();
         let events = wait_for_idle(&rx);
         assert!(events.iter().any(|e| matches!(
             e,
-            WorkerEvent::Processed { id, thumbnail: true, preview_strip: true, .. } if *id == first
+            WorkerEvent::Processed { id, thumbnail: true, .. } if *id == first
         )));
         assert!(worker.is_running());
 
@@ -1179,6 +1353,21 @@ mod tests {
             WorkerEvent::Processed { id, .. } if *id == second
         )));
         assert!(lib.get(second).unwrap().unwrap().thumbnail.is_some());
+
+        // New options start a pass of their own and hold for the next.
+        worker.set_options(WorkerOptions {
+            thumbnails: false,
+            ..opts(tmp.path())
+        });
+        wait_for_idle(&rx);
+        let third = lib
+            .upsert(&MediaUpsert::new("/v/3.mp4", "local"))
+            .unwrap()
+            .id;
+        worker.wake();
+        wait_for_idle(&rx);
+        let r = lib.get(third).unwrap().unwrap();
+        assert!(r.probed && r.thumbnail.is_none());
 
         worker.stop();
         let rest: Vec<WorkerEvent> = rx.iter().collect();

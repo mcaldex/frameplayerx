@@ -14,8 +14,12 @@
 //! | Menu / View | Library | Recenter |
 //! | Bumper | Forward 1 minute | Back 1 minute |
 //! | Grip + thumbstick | Up / down raises or lowers you | Left / right turns the picture, up / down zooms |
+//! | Grip + X / Y | Previous / next chapter | As without the grip |
+//! | Grip + A | Bookmark | As without the grip |
+//! | Grip + thumbstick press | Subtitles on / off | As without the grip |
 //!
-//! Fixed: the trigger clicks (on empty space it shows or hides the
+//! With a hand's grip held, a button runs its grip action, or its own when
+//! it has none. Fixed: the trigger clicks (on empty space it shows or hides the
 //! controls), grip + trigger drags the picture, both grips recenter, and a
 //! thumbstick pointed at a list pages it left / right (at a slider, steps
 //! it).
@@ -47,6 +51,10 @@ pub enum Cmd {
     ToggleMute,
     Next,
     Previous,
+    /// -1 the previous chapter or bookmark, +1 the next.
+    Chapter(i32),
+    Bookmark,
+    ToggleSubtitles,
     ResetImage,
     DragBegin,
     /// Degrees moved since the drag began (yaw left-positive, pitch up-positive).
@@ -173,10 +181,14 @@ impl Controls {
         for (i, hand) in hands.iter().enumerate() {
             let map = bindings.hand(i);
             for b in Button::ALL {
-                if b.pressed(hand)
-                    && !b.pressed(&prev[i])
-                    && let Some(cmd) = button_cmd(map.button(b), playing)
-                {
+                if !b.pressed(hand) || b.pressed(&prev[i]) {
+                    continue;
+                }
+                let action = match map.grip.button(b) {
+                    a if gripping(hand) && a != ButtonAction::Nothing => a,
+                    _ => map.button(b),
+                };
+                if let Some(cmd) = button_cmd(action, playing) {
                     out.push(cmd);
                 }
             }
@@ -293,6 +305,10 @@ fn button_cmd(action: ButtonAction, playing: bool) -> Option<Cmd> {
         B::ResetPicture => Cmd::ResetImage,
         B::ShowHideControls => Cmd::ToggleUi,
         B::AdjustPanel => Cmd::ToggleAdjust,
+        B::PreviousChapter => Cmd::Chapter(-1),
+        B::NextChapter => Cmd::Chapter(1),
+        B::Bookmark => Cmd::Bookmark,
+        B::Subtitles => Cmd::ToggleSubtitles,
     };
     Some(cmd)
 }
@@ -368,6 +384,31 @@ mod tests {
             vec![Cmd::TogglePassthrough],
             "passthrough works in the library too"
         );
+    }
+
+    #[test]
+    fn a_held_grip_gives_a_button_its_grip_action() {
+        type Set = fn(&mut Hand, bool);
+        let cases: [(Set, Cmd); 5] = [
+            (|h, v| (h.squeeze, h.north) = (1.0, v), Cmd::Chapter(1)),
+            (|h, v| (h.squeeze, h.west) = (1.0, v), Cmd::Chapter(-1)),
+            (|h, v| (h.squeeze, h.south) = (1.0, v), Cmd::Bookmark),
+            (
+                |h, v| (h.squeeze, h.stick_click) = (1.0, v),
+                Cmd::ToggleSubtitles,
+            ),
+            // None of its own: what it does alone.
+            (|h, v| (h.squeeze, h.east) = (1.0, v), Cmd::Back),
+        ];
+        for (set, want) in cases {
+            assert_eq!(press(RIGHT, set, true), vec![want], "{want:?}");
+        }
+        // The other hand's grip doesn't count.
+        let mut c = Controls::default();
+        let mut h = hands();
+        h[LEFT].squeeze = 1.0;
+        h[RIGHT].north = true;
+        assert_eq!(run(&mut c, &h, ctx(true)), vec![Cmd::Next]);
     }
 
     #[test]

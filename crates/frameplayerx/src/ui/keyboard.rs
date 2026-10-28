@@ -103,13 +103,19 @@ pub fn keyboard(ctx: &egui::Context, shift: &mut bool, symbols: &mut bool) -> (V
             if key(ui, icons::CARET_RIGHT, key_w, Style::Function, true) {
                 out.push(key_event(Key::ArrowRight));
             }
-            if key(ui, "space", key_w * 2.9, Style::Char, false) {
+            if key(ui, tr!("keyboard-space"), key_w * 2.9, Style::Char, false) {
                 out.push(Event::Text(" ".into()));
             }
             if key(ui, ".com", key_w * 1.5, Style::Function, false) {
                 out.push(Event::Text(".com".into()));
             }
-            if key(ui, "Done", ui.available_width(), Style::Function, false) {
+            if key(
+                ui,
+                tr!("common-done"),
+                ui.available_width(),
+                Style::Function,
+                false,
+            ) {
                 close = true;
             }
         });

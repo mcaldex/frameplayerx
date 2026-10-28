@@ -36,27 +36,32 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, title: &str, root: &str, b: &mut Br
     let (mut refresh, mut play_all) = (false, false);
     let back = page::header(ui, title, Some(&subtitle), |ui| {
         refresh = widgets::icon_button(ui, icons::ARROWS_CLOCKWISE, 44.0, false)
-            .tip("Refresh")
+            .tip(tr!("feed-refresh"))
             .clicked();
         if !videos.is_empty() {
-            play_all =
-                widgets::button_sized(ui, Some(icons::PLAY), "Play all", Kind::Secondary, 44.0)
-                    .clicked();
+            play_all = widgets::button_sized(
+                ui,
+                Some(icons::PLAY),
+                tr!("common-play-all"),
+                Kind::Secondary,
+                44.0,
+            )
+            .clicked();
         }
     });
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        page::search_field(ui, &mut b.filter, "Search this folder", 200.0);
+        page::search_field(ui, &mut b.filter, tr!("folders-search"), 200.0);
         ui.add_space(12.0);
         let mut sort = v.settings.browse_sort;
         if page::sort_bar(
             ui,
             &[
-                (EntrySort::Name, "Name"),
-                (EntrySort::Newest, "Newest"),
-                (EntrySort::Oldest, "Oldest"),
-                (EntrySort::Largest, "Largest"),
-                (EntrySort::Smallest, "Smallest"),
+                (EntrySort::Name, tr!("sort-name")),
+                (EntrySort::Newest, tr!("sort-newest")),
+                (EntrySort::Oldest, tr!("sort-oldest")),
+                (EntrySort::Largest, tr!("sort-largest")),
+                (EntrySort::Smallest, tr!("sort-smallest")),
             ],
             &mut sort,
         ) {
@@ -97,9 +102,9 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, title: &str, root: &str, b: &mut Br
                 ui.add_space(30.0);
                 ui.vertical_centered(|ui| {
                     let text = if words.is_empty() {
-                        "No videos or folders here."
+                        tr!("folders-empty")
                     } else {
-                        "Nothing here matches."
+                        tr!("folders-no-match")
                     };
                     ui.label(egui::RichText::new(text).color(theme::TEXT_2));
                 });
@@ -145,10 +150,10 @@ fn counts(shown: &[Entry]) -> String {
     let (folders, videos) = (count(EntryKind::Directory), count(EntryKind::Video));
     let mut parts = Vec::new();
     if folders > 0 {
-        parts.push(page::plural(folders, "folder", "folders"));
+        parts.push(tr!("count-folders", count = folders));
     }
     if videos > 0 {
-        parts.push(page::plural(videos, "video", "videos"));
+        parts.push(tr!("count-videos", count = videos));
     }
     parts.join("  ·  ")
 }
@@ -210,7 +215,7 @@ fn row(ui: &mut egui::Ui, v: &mut View, e: &Entry) -> (bool, bool) {
     );
     let mut facts = Vec::new();
     if e.kind == EntryKind::Directory {
-        facts.push("Folder".to_string());
+        facts.push(tr!("sources-folder").to_string());
     }
     if let Some(f) = e.format {
         facts.push(widgets::format_short(&f));
@@ -265,7 +270,7 @@ fn row(ui: &mut egui::Ui, v: &mut View, e: &Entry) -> (bool, bool) {
             theme::icon(24.0),
             theme::TEXT_2.lerp_to_gamma(Color32::WHITE, h.max(t * 0.6)),
         );
-        more = m.tip("Play next, add to a queue or playlist").clicked();
+        more = m.tip(tr!("folders-more-tip")).clicked();
     }
     (resp.clicked() && !more, more)
 }

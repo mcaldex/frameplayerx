@@ -8,30 +8,56 @@ use super::{Action, SettingsTab, View, icons};
 use crate::settings::HapticDeviceConfig;
 use egui::{Align2, Color32, RichText, Sense, Vec2};
 
-const TABS: [(SettingsTab, &str, &str); 10] = [
-    (SettingsTab::General, icons::GEAR_SIX, "General"),
-    (SettingsTab::Playback, icons::PLAY_CIRCLE, "Playback"),
-    (
-        SettingsTab::VideoPosition,
-        icons::FRAME_CORNERS,
-        "Video position",
-    ),
-    (
-        SettingsTab::Sound,
-        icons::SPEAKER_HIGH,
-        "Sound and subtitles",
-    ),
-    (SettingsTab::Passthrough, icons::EYEGLASSES, "Passthrough"),
-    (
-        SettingsTab::Controller,
-        icons::GAME_CONTROLLER,
-        "Controller",
-    ),
-    (SettingsTab::Haptics, icons::VIBRATE, "Haptics"),
-    (SettingsTab::Remote, icons::DEVICE_MOBILE, "Remote control"),
-    (SettingsTab::Updates, icons::CLOUD_ARROW_DOWN, "Updates"),
-    (SettingsTab::About, icons::INFO, "About"),
-];
+fn tabs() -> [(SettingsTab, &'static str, &'static str); 10] {
+    [
+        (
+            SettingsTab::General,
+            icons::GEAR_SIX,
+            tr!("settings-general"),
+        ),
+        (
+            SettingsTab::Playback,
+            icons::PLAY_CIRCLE,
+            tr!("settings-playback"),
+        ),
+        (
+            SettingsTab::VideoPosition,
+            icons::FRAME_CORNERS,
+            tr!("settings-video-position"),
+        ),
+        (
+            SettingsTab::Sound,
+            icons::SPEAKER_HIGH,
+            tr!("settings-sound"),
+        ),
+        (
+            SettingsTab::Passthrough,
+            icons::EYEGLASSES,
+            tr!("settings-passthrough"),
+        ),
+        (
+            SettingsTab::Controller,
+            icons::GAME_CONTROLLER,
+            tr!("settings-controller"),
+        ),
+        (
+            SettingsTab::Haptics,
+            icons::VIBRATE,
+            tr!("settings-haptics"),
+        ),
+        (
+            SettingsTab::Remote,
+            icons::DEVICE_MOBILE,
+            tr!("settings-remote"),
+        ),
+        (
+            SettingsTab::Updates,
+            icons::CLOUD_ARROW_DOWN,
+            tr!("settings-updates"),
+        ),
+        (SettingsTab::About, icons::INFO, tr!("settings-about")),
+    ]
+}
 
 pub fn settings(ui: &mut egui::Ui, v: &mut View) {
     let haptics_on = v.settings.haptics_enabled;
@@ -49,7 +75,7 @@ pub fn settings(ui: &mut egui::Ui, v: &mut View) {
                 .id_salt("settings-tabs")
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 4.0;
-                    for (t, icon, label) in TABS {
+                    for (t, icon, label) in tabs() {
                         if t == SettingsTab::Haptics && !haptics_on {
                             continue;
                         }
@@ -63,7 +89,7 @@ pub fn settings(ui: &mut egui::Ui, v: &mut View) {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.set_width(ui.available_width() - 8.0);
                 ui.spacing_mut().item_spacing.y = 10.0;
-                let title = TABS
+                let title = tabs()
                     .iter()
                     .find(|t| t.0 == v.state.settings_tab)
                     .map(|t| t.2)
@@ -127,11 +153,27 @@ fn side_tab(ui: &mut egui::Ui, icon: &str, label: &str, selected: bool) -> egui:
             theme::icon(22.0),
             fg.lerp_to_gamma(theme::ACCENT_HOVER, s),
         );
-        p.text(
-            rect.left_center() + Vec2::new(54.0, 0.0),
-            Align2::LEFT_CENTER,
-            label,
-            theme::font(Weight::SemiBold, 17.0),
+        // A long name in another language: smaller, then cut short.
+        let room = rect.width() - 62.0;
+        let mut size: f32 = 17.0;
+        while size > 14.0
+            && p.layout_no_wrap(label.to_string(), theme::font(Weight::SemiBold, size), fg)
+                .size()
+                .x
+                > room
+        {
+            size -= 1.0;
+        }
+        let g = widgets::one_line(
+            p,
+            label.to_string(),
+            theme::font(Weight::SemiBold, size),
+            fg,
+            room,
+        );
+        p.galley(
+            rect.left_center() + Vec2::new(54.0, -g.size().y / 2.0),
+            g,
             fg,
         );
     }
@@ -154,22 +196,22 @@ fn note(ui: &mut egui::Ui, text: &str) {
 fn controller(ui: &mut egui::Ui, v: &mut View) {
     use crate::bindings::Bindings;
     super::controller_map::controller_map(ui, v);
-    heading(ui, "Always");
+    heading(ui, tr!("settings-controls-fixed"));
     widgets::rows(ui, |r| {
         for (k, d) in [
+            (tr!("settings-trigger"), tr!("settings-trigger-desc")),
             (
-                "Trigger",
-                "Click; on empty space, show or hide the controls",
+                tr!("settings-grip-trigger"),
+                tr!("settings-grip-trigger-desc"),
             ),
-            ("Hold grip + trigger", "Drag the picture to move it"),
-            ("Both grips", "Recenter"),
+            (tr!("settings-both-grips"), tr!("settings-both-grips-desc")),
             (
-                "Pointing at a menu",
-                "Thumbstick left / right pages it, up / down scrolls it",
+                tr!("settings-pointing-menu"),
+                tr!("settings-pointing-menu-desc"),
             ),
             (
-                "Pointing at a slider",
-                "Thumbstick left / right moves it one step",
+                tr!("settings-pointing-slider"),
+                tr!("settings-pointing-slider-desc"),
             ),
         ] {
             r.row(k, None, |ui| {
@@ -183,7 +225,7 @@ fn controller(ui: &mut egui::Ui, v: &mut View) {
         if widgets::button(
             ui,
             Some(icons::ARROW_COUNTER_CLOCKWISE),
-            "Reset to defaults",
+            tr!("settings-reset-controls"),
             Kind::Secondary,
         )
         .clicked()
@@ -194,14 +236,56 @@ fn controller(ui: &mut egui::Ui, v: &mut View) {
     });
 }
 
-/// App-wide switches, then the ones for finding a problem.
+/// App-wide switches, thumbnails, then the switches for finding a problem.
 fn general(ui: &mut egui::Ui, v: &mut View) {
     let s = &mut *v.settings;
+    let open = &mut v.state.interface_languages_open;
     ui.add_space(12.0);
     widgets::rows(ui, |r| {
+        let name = |code: &str| {
+            crate::i18n::LANGUAGES
+                .iter()
+                .find(|l| l.0 == code)
+                .map_or("English", |l| l.1)
+        };
+        let shown = match &s.language {
+            Some(code) => name(code).to_string(),
+            None => tr!(
+                "settings-language-automatic",
+                language = name(crate::i18n::automatic())
+            ),
+        };
+        r.row(tr!("settings-language"), Some(&shown), |ui| {
+            let label = if *open {
+                tr!("common-done")
+            } else {
+                tr!("common-change")
+            };
+            if widgets::button(ui, None, label, Kind::Secondary).clicked() {
+                *open = !*open;
+            }
+        });
+        if *open {
+            r.content(|ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+                    let auto = tr!("settings-language-automatic-chip");
+                    if widgets::chip(ui, auto, s.language.is_none()).clicked() {
+                        s.language = None;
+                    }
+                    for (code, name) in crate::i18n::LANGUAGES {
+                        let on = s.language.as_deref() == Some(code);
+                        if widgets::chip(ui, name, on).clicked() {
+                            s.language = Some(code.to_string());
+                        }
+                    }
+                });
+                note(ui, tr!("settings-language-desc"));
+            });
+        }
         r.slider(
-            "Interface size",
-            Some("Text and buttons on every panel."),
+            tr!("settings-interface-size"),
+            Some(tr!("settings-interface-size-desc")),
             &mut s.ui_scale,
             crate::settings::UI_SCALES,
             1.0,
@@ -209,33 +293,70 @@ fn general(ui: &mut egui::Ui, v: &mut View) {
             2,
         );
         r.switch(
-            "Screen follows you",
-            Some(
-                "Flat videos and the menus stay in front of you as you \
-                 turn, lie back or roll onto your side.",
-            ),
+            tr!("settings-follow"),
+            Some(tr!("settings-follow-desc")),
             &mut s.follow,
         );
         eye_tracking(r, v.eyes, &mut s.eye_tracking);
         r.switch(
-            "Haptic devices",
-            Some("Sync connected haptic devices with videos that have scripts."),
+            tr!("settings-haptic-devices"),
+            Some(tr!("settings-haptic-devices-desc")),
             &mut s.haptics_enabled,
         );
     });
-    heading(ui, "Diagnostics");
+    heading(ui, tr!("settings-thumbnails"));
     widgets::rows(ui, |r| {
         r.switch(
-            "Hardware video decoding",
-            Some("Recommended: smooth 8K. Turn off only to rule out a decoder problem."),
+            tr!("settings-make-thumbnails"),
+            Some(tr!("settings-make-thumbnails-desc")),
+            &mut s.make_thumbnails,
+        );
+        r.switch(
+            tr!("settings-resume-frames"),
+            Some(tr!("settings-resume-frames-desc")),
+            &mut s.resume_frames,
+        );
+        // The sizes under the text, so they fit at any interface size.
+        r.row_with(
+            tr!("settings-image-cache"),
+            Some(tr!("settings-image-cache-desc")),
+            |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+                    for mb in crate::settings::IMAGE_CACHE_SIZES {
+                        let label = if mb >= 1000 {
+                            {
+                                let gb = mb / 1000;
+                                tr!("size-gb", n = gb)
+                            }
+                        } else {
+                            tr!("size-mb", n = mb)
+                        };
+                        if widgets::chip(ui, &label, s.image_cache_mb == mb).clicked() {
+                            s.image_cache_mb = mb;
+                        }
+                    }
+                });
+            },
+            |ui| {
+                if widgets::button(ui, Some(icons::TRASH), tr!("common-clear"), Kind::Secondary)
+                    .clicked()
+                {
+                    v.actions.push(Action::ClearImageCache);
+                }
+            },
+        );
+    });
+    heading(ui, tr!("settings-diagnostics"));
+    widgets::rows(ui, |r| {
+        r.switch(
+            tr!("settings-hardware-decoding"),
+            Some(tr!("settings-hardware-decoding-desc")),
             &mut s.hardware_decoding,
         );
         r.switch(
-            "Performance overlay",
-            Some(
-                "Frame time, the video's frame rate and decoder, CPU, GPU, memory \
-                 and where your eyes look, low in your view.",
-            ),
+            tr!("settings-perf-overlay"),
+            Some(tr!("settings-perf-overlay-desc")),
             &mut s.perf_overlay,
         );
         show_gaze(r, &mut s.show_gaze);
@@ -286,14 +407,14 @@ fn playback(ui: &mut egui::Ui, v: &mut View) {
     ui.add_space(12.0);
     widgets::rows(ui, |r| {
         r.switch(
-            "Resume where I left off",
-            Some("Videos start again from the last position."),
+            tr!("settings-resume"),
+            Some(tr!("settings-resume-desc")),
             &mut s.resume,
         );
         let mut step = s.seek_step as f32;
         if r.slider(
-            "Thumbstick seek",
-            Some("How far one push of the thumbstick jumps."),
+            tr!("settings-seek-step"),
+            Some(tr!("settings-seek-step-desc")),
             &mut step,
             5.0..=60.0,
             10.0,
@@ -303,8 +424,8 @@ fn playback(ui: &mut egui::Ui, v: &mut View) {
             s.seek_step = step.round() as f64;
         }
         r.slider(
-            "Hide controls after",
-            Some("While playing, without moving the pointer."),
+            tr!("settings-auto-hide"),
+            Some(tr!("settings-auto-hide-desc")),
             &mut s.auto_hide_secs,
             2.0..=15.0,
             4.0,
@@ -312,12 +433,8 @@ fn playback(ui: &mut egui::Ui, v: &mut View) {
             0,
         );
     });
-    heading(ui, "Default format");
-    note(
-        ui,
-        "For videos whose file, name and shape say nothing about their format. \
-         16:9, 4:3 and scope movies start flat on their own.",
-    );
+    heading(ui, tr!("settings-default-format"));
+    note(ui, tr!("settings-default-format-desc"));
     ui.add_space(6.0);
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
@@ -332,14 +449,11 @@ fn playback(ui: &mut egui::Ui, v: &mut View) {
 /// Where videos start: the defaults for a video with no adjustments saved.
 fn video_position(ui: &mut egui::Ui, v: &mut View) {
     let d = &mut v.settings.default_view;
-    note(
-        ui,
-        "Where videos start. A video you adjust in the player keeps its own.",
-    );
-    heading(ui, "Flat videos");
+    note(ui, tr!("settings-video-position-desc"));
+    heading(ui, tr!("settings-flat-videos"));
     widgets::rows(ui, |r| {
         r.slider(
-            "Screen distance",
+            tr!("settings-screen-distance"),
             None,
             &mut d.screen_distance,
             1.0..=20.0,
@@ -348,8 +462,8 @@ fn video_position(ui: &mut egui::Ui, v: &mut View) {
             1,
         );
         r.slider(
-            "Screen width",
-            Some("Its longer side: a portrait video's height."),
+            tr!("settings-screen-width"),
+            Some(tr!("settings-screen-width-desc")),
             &mut d.screen_width,
             0.5..=30.0,
             6.0,
@@ -357,7 +471,7 @@ fn video_position(ui: &mut egui::Ui, v: &mut View) {
             1,
         );
         r.slider(
-            "Screen curvature",
+            tr!("settings-screen-curvature"),
             None,
             &mut d.screen_curvature,
             0.0..=1.0,
@@ -366,11 +480,11 @@ fn video_position(ui: &mut egui::Ui, v: &mut View) {
             2,
         );
     });
-    heading(ui, "180° and 360° videos");
+    heading(ui, tr!("settings-vr-videos"));
     widgets::rows(ui, |r| {
         r.slider(
-            "Height",
-            Some("Raise or lower yourself in videos without their own."),
+            tr!("settings-height"),
+            Some(tr!("settings-height-desc")),
             &mut d.height,
             -1.0..=1.0,
             0.0,
@@ -472,12 +586,20 @@ pub(super) fn background(ui: &mut egui::Ui, c: &mut [f32; 3]) {
 
 fn sound(ui: &mut egui::Ui, v: &mut View) {
     let s = &mut *v.settings;
-    heading(ui, "Sound");
+    heading(ui, tr!("settings-sound-heading"));
     widgets::rows(ui, |r| {
-        r.slider("Volume", None, &mut s.volume, 0.0..=1.5, 1.0, "", 2);
+        r.slider(
+            tr!("settings-volume"),
+            None,
+            &mut s.volume,
+            0.0..=1.5,
+            1.0,
+            "",
+            2,
+        );
         r.row(
-            "Audio device",
-            Some("\"default\" follows the system output."),
+            tr!("settings-audio-device"),
+            Some(tr!("settings-audio-device-desc")),
             |ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut s.audio_device)
@@ -494,26 +616,24 @@ fn sound(ui: &mut egui::Ui, v: &mut View) {
 /// Which subtitles videos start with, in which language, and how far away.
 fn subtitles(ui: &mut egui::Ui, s: &mut crate::settings::Settings, languages_open: &mut bool) {
     use crate::settings::SubtitleMode;
-    heading(ui, "Subtitles");
+    heading(ui, tr!("settings-subtitles"));
     note(
         ui,
         match s.subtitles {
-            SubtitleMode::Off => "Videos start without subtitles.",
+            SubtitleMode::Off => tr!("settings-subtitles-off-desc"),
             SubtitleMode::Automatic => {
-                "Subtitles in your language when a video's audio is in another one, \
-                 forced subtitles for the parts in another language, and a subtitle \
-                 file named like the video."
+                tr!("settings-subtitles-automatic-desc")
             }
-            SubtitleMode::Always => "Subtitles in your language whenever a video has them.",
+            SubtitleMode::Always => tr!("settings-subtitles-always-desc"),
         },
     );
     ui.add_space(6.0);
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
         for (label, mode) in [
-            ("Off", SubtitleMode::Off),
-            ("Automatic", SubtitleMode::Automatic),
-            ("Always", SubtitleMode::Always),
+            (tr!("settings-subtitles-off"), SubtitleMode::Off),
+            (tr!("settings-subtitles-automatic"), SubtitleMode::Automatic),
+            (tr!("settings-subtitles-always"), SubtitleMode::Always),
         ] {
             if widgets::chip(ui, label, s.subtitles == mode).clicked() {
                 s.subtitles = mode;
@@ -523,9 +643,14 @@ fn subtitles(ui: &mut egui::Ui, s: &mut crate::settings::Settings, languages_ope
     ui.add_space(6.0);
     widgets::rows(ui, |r| {
         if s.subtitles != SubtitleMode::Off {
-            let name = fp_core::language::name(&s.subtitle_language).unwrap_or("Not set");
-            r.row("Your language", Some(name), |ui| {
-                let label = if *languages_open { "Done" } else { "Change" };
+            let name = super::language_name(&s.subtitle_language)
+                .unwrap_or_else(|| tr!("settings-language-not-set").to_string());
+            r.row(tr!("settings-your-language"), Some(&name), |ui| {
+                let label = if *languages_open {
+                    tr!("common-done")
+                } else {
+                    tr!("common-change")
+                };
                 if widgets::button(ui, None, label, Kind::Secondary).clicked() {
                     *languages_open = !*languages_open;
                 }
@@ -534,8 +659,9 @@ fn subtitles(ui: &mut egui::Ui, s: &mut crate::settings::Settings, languages_ope
                 r.content(|ui| {
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
-                        for (code, name, _) in fp_core::language::LANGUAGES {
-                            if widgets::chip(ui, name, s.subtitle_language == *code).clicked() {
+                        for (code, _, _) in fp_core::language::LANGUAGES {
+                            let name = super::language_name(code).unwrap_or_default();
+                            if widgets::chip(ui, &name, s.subtitle_language == *code).clicked() {
                                 s.subtitle_language = code.to_string();
                             }
                         }
@@ -544,8 +670,8 @@ fn subtitles(ui: &mut egui::Ui, s: &mut crate::settings::Settings, languages_ope
             }
         }
         r.slider(
-            "Subtitle depth",
-            Some("How far away subtitles float."),
+            tr!("settings-subtitle-depth"),
+            Some(tr!("settings-subtitle-depth-desc")),
             &mut s.default_view.subtitle_distance,
             0.8..=10.0,
             2.5,
@@ -558,43 +684,40 @@ fn subtitles(ui: &mut egui::Ui, s: &mut crate::settings::Settings, languages_ope
 fn passthrough(ui: &mut egui::Ui, v: &mut View) {
     let available = v.passthrough_available;
     let s = &mut *v.settings;
-    heading(ui, "Your room");
+    heading(ui, tr!("settings-your-room"));
     widgets::rows(ui, |r| {
         if available {
             r.switch(
-                "Show your room",
-                Some("Around flat videos and the menus."),
+                tr!("settings-show-room"),
+                Some(tr!("settings-show-room-desc")),
                 &mut s.passthrough,
             );
         } else {
             r.row(
-                "Show your room",
-                Some("This headset's runtime doesn't offer passthrough to apps."),
+                tr!("settings-show-room"),
+                Some(tr!("settings-show-room-unavailable")),
                 |_| {},
             );
         }
     });
     ui.add_space(14.0);
-    widgets::section_label(ui, "Passthrough videos");
-    ui.label(
-        RichText::new("Global settings. Each video can be individually adjusted and will save its adjustments.")
-            .color(theme::TEXT_2),
-    );
+    widgets::section_label(ui, tr!("settings-passthrough-videos"));
+    ui.label(RichText::new(tr!("settings-passthrough-videos-desc")).color(theme::TEXT_2));
     ui.add_space(6.0);
     super::player::chroma_controls(ui, &mut s.default_view, available);
 }
 
-const DEVICE_KINDS: [(&str, &str); 3] = [
-    ("Intiface Central", "ws://192.168.1.20:12345"),
-    (
-        "TCode (OSR2/SR6)",
-        "/dev/ttyACM0 or tcp://192.168.1.30:8000",
-    ),
-    ("The Handy", "connection key"),
-];
+/// The kinds of haptic device, each with the hint its address field shows.
+fn device_kinds() -> [(&'static str, &'static str); 3] {
+    [
+        ("Intiface Central", "ws://192.168.1.20:12345"),
+        ("TCode (OSR2/SR6)", tr!("settings-device-hint-tcode")),
+        ("The Handy", tr!("settings-device-hint-handy")),
+    ]
+}
 
 fn haptics(ui: &mut egui::Ui, v: &mut View) {
-    heading(ui, "Devices");
+    heading(ui, tr!("settings-devices"));
     let configs = v.settings.haptic_devices.clone();
     widgets::rows(ui, |r| {
         for (i, cfg) in configs.iter().enumerate() {
@@ -603,17 +726,23 @@ fn haptics(ui: &mut egui::Ui, v: &mut View) {
                 .and_then(|s| s.id)
                 .and_then(|id| v.devices.iter().find(|d| d.id == id));
             let desc = match (status, slot) {
-                (Some(d), _) if d.connected => format!("Connected · axes {:?}", d.axes),
+                (Some(d), _) if d.connected => {
+                    let axes = format!("{:?}", d.axes);
+                    tr!("settings-device-connected", axes = axes)
+                }
                 (Some(d), _) => d
                     .last_error
                     .clone()
-                    .unwrap_or_else(|| "Not connected".into()),
-                (None, Some(s)) => s.error.clone().unwrap_or_else(|| "Not connected".into()),
-                (None, None) => "Connecting…".into(),
+                    .unwrap_or_else(|| tr!("settings-device-not-connected").into()),
+                (None, Some(s)) => s
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| tr!("settings-device-not-connected").into()),
+                (None, None) => tr!("settings-device-connecting").into(),
             };
             r.row(&cfg.label(), Some(desc.as_str()), |ui| {
                 if widgets::icon_button(ui, icons::TRASH, 40.0, false)
-                    .tip("Remove")
+                    .tip(tr!("settings-device-remove"))
                     .clicked()
                 {
                     v.actions.push(Action::RemoveDevice(i));
@@ -630,7 +759,7 @@ fn haptics(ui: &mut egui::Ui, v: &mut View) {
         r.content(|ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                for (i, (k, _)) in DEVICE_KINDS.iter().enumerate() {
+                for (i, (k, _)) in device_kinds().iter().enumerate() {
                     if widgets::chip(ui, k, v.state.new_device_kind == i).clicked() {
                         v.state.new_device_kind = i;
                     }
@@ -638,7 +767,7 @@ fn haptics(ui: &mut egui::Ui, v: &mut View) {
             });
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                let hint = DEVICE_KINDS[v.state.new_device_kind.min(2)].1;
+                let hint = device_kinds()[v.state.new_device_kind.min(2)].1;
                 ui.add(
                     egui::TextEdit::singleline(&mut v.state.new_device)
                         .margin(egui::Margin::symmetric(12, 9))
@@ -652,7 +781,7 @@ fn haptics(ui: &mut egui::Ui, v: &mut View) {
                         widgets::button_sized(
                             ui,
                             Some(icons::PLUS),
-                            "Add device",
+                            tr!("settings-add-device"),
                             Kind::Secondary,
                             44.0,
                         )
@@ -681,20 +810,20 @@ fn haptics(ui: &mut egui::Ui, v: &mut View) {
         && widgets::button(
             ui,
             Some(icons::ARROWS_CLOCKWISE),
-            "Reconnect all",
+            tr!("settings-reconnect-all"),
             Kind::Secondary,
         )
         .clicked()
     {
         v.actions.push(Action::ReconnectDevices);
     }
-    heading(ui, "Timing and range");
+    heading(ui, tr!("settings-timing-range"));
     let h = &mut v.settings.haptics;
     widgets::rows(ui, |r| {
         let mut offset = h.offset_ms as f32;
         if r.slider(
-            "Timing offset",
-            Some("Move strokes earlier (−) or later (+)."),
+            tr!("settings-timing-offset"),
+            Some(tr!("settings-timing-offset-desc")),
             &mut offset,
             -500.0..=500.0,
             0.0,
@@ -704,7 +833,7 @@ fn haptics(ui: &mut egui::Ui, v: &mut View) {
             h.offset_ms = offset.round() as i64;
         }
         r.slider(
-            "Speed limit",
+            tr!("settings-speed-limit"),
             None,
             &mut h.speed_limit,
             0.0..=1000.0,
@@ -713,36 +842,36 @@ fn haptics(ui: &mut egui::Ui, v: &mut View) {
             0,
         );
         r.switch(
-            "Strokes as vibration",
-            Some("For devices that only vibrate."),
+            tr!("settings-vibration"),
+            Some(tr!("settings-vibration-desc")),
             &mut h.stroke_to_vibration,
         );
     });
     note(
         ui,
-        &format!(
-            "Scripts are found next to their videos, and in {}",
-            fp_core::dirs::interactive_dir().display()
+        &tr!(
+            "settings-scripts-found",
+            folder = fp_core::dirs::interactive_dir().display().to_string()
         ),
     );
 }
 
 fn remote(ui: &mut egui::Ui, v: &mut View) {
     let r = &mut v.settings.remote;
-    heading(ui, "Remotes");
+    heading(ui, tr!("settings-remotes"));
     widgets::rows(ui, |rows| {
         rows.switch(
-            "Phone and browser remote",
-            Some("Control playback from your phone: scan the code below."),
+            tr!("settings-web-remote"),
+            Some(tr!("settings-web-remote-desc")),
             &mut r.web_enabled,
         );
         rows.switch(
-            "DeoVR remote API",
-            Some("Port 23554, for DeoVR-compatible apps."),
+            tr!("settings-deovr-remote"),
+            Some(tr!("settings-deovr-remote-desc")),
             &mut r.deovr_enabled,
         );
     });
-    note(ui, "Both only answer devices on your local network.");
+    note(ui, tr!("settings-remotes-local"));
     if let Some(e) = &v.services.remote_error {
         ui.label(RichText::new(e).color(theme::ERROR));
     }
@@ -752,82 +881,79 @@ fn remote(ui: &mut egui::Ui, v: &mut View) {
     if let Some(a) = hub.deovr_addr() {
         note(
             ui,
-            &format!(
-                "DeoVR API on port {} · {} client(s)",
-                a.port(),
-                hub.deovr_client_count()
+            &tr!(
+                "settings-deovr-api-clients",
+                port = a.port(),
+                count = hub.deovr_client_count()
             ),
         );
     }
-    if hub.web_addr().is_some() {
-        heading(ui, "Pair a phone");
-        let ips = fp_remote::lan_addresses();
-        match ips.first() {
-            Some(ip) => {
-                let url = hub.pairing_url(*ip);
-                widgets::card(ui, |ui| {
-                    egui::Frame::new()
-                        .inner_margin(egui::Margin::same(16))
-                        .show(ui, |ui| {
-                            ui.horizontal_top(|ui| {
-                                ui.spacing_mut().item_spacing.x = 24.0;
-                                if let Ok(qr) = fp_remote::pairing_qr(&url) {
-                                    draw_qr(ui, &qr, 220.0);
-                                }
-                                ui.vertical(|ui| {
-                                    ui.label(
-                                        RichText::new("Scan with your phone's camera")
-                                            .font(theme::font(Weight::SemiBold, 20.0)),
-                                    );
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "or open {url}. {} phone(s) connected.",
-                                            hub.web_client_count()
-                                        ))
-                                        .color(theme::TEXT_2),
-                                    );
-                                    ui.add_space(10.0);
-                                    if widgets::button(
-                                        ui,
-                                        Some(icons::ARROWS_CLOCKWISE),
-                                        "New pairing code",
-                                        Kind::Secondary,
-                                    )
-                                    .clicked()
-                                    {
-                                        v.actions.push(Action::RegenerateToken);
-                                    }
-                                });
-                            });
-                        });
+    if hub.web_addr().is_none() {
+        return;
+    }
+    heading(ui, tr!("settings-pair"));
+    let Some(ip) = fp_remote::lan_addresses().first().copied() else {
+        ui.label(RichText::new(tr!("settings-no-network")).color(theme::WARN));
+        return;
+    };
+    let big = |ui: &mut egui::Ui, s: &str| {
+        ui.label(
+            RichText::new(s)
+                .font(theme::font(Weight::SemiBold, 34.0))
+                .color(theme::TEXT),
+        );
+    };
+    widgets::card(ui, |ui| {
+        egui::Frame::new()
+            .inner_margin(egui::Margin::same(16))
+            .show(ui, |ui| {
+                match hub.pairing_code() {
+                    Ok(Some(code)) => {
+                        ui.label(RichText::new(tr!("settings-pair-open")).color(theme::TEXT_2));
+                        big(ui, &hub.pairing_address(ip));
+                        ui.add_space(4.0);
+                        ui.label(RichText::new(tr!("settings-pair-enter")).color(theme::TEXT_2));
+                        big(ui, &format!("{} {}", &code[..3], &code[3..]));
+                    }
+                    Ok(None) => {
+                        ui.label(RichText::new(tr!("settings-pair-stopped")).color(theme::WARN));
+                        ui.add_space(6.0);
+                        if widgets::button(
+                            ui,
+                            Some(icons::ARROWS_CLOCKWISE),
+                            tr!("settings-pair-new-code"),
+                            Kind::Secondary,
+                        )
+                        .clicked()
+                        {
+                            v.actions.push(Action::NewPairingCode);
+                        }
+                    }
+                    Err(e) => {
+                        ui.label(RichText::new(e.to_string()).color(theme::ERROR));
+                    }
+                }
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(tr!("settings-pair-phones", count = hub.web_client_count()))
+                            .color(theme::TEXT_2),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if widgets::button(
+                            ui,
+                            Some(icons::X),
+                            tr!("settings-unpair-all"),
+                            Kind::Secondary,
+                        )
+                        .clicked()
+                        {
+                            v.actions.push(Action::RegenerateToken);
+                        }
+                    });
                 });
-            }
-            None => {
-                ui.label(RichText::new("Not connected to a network.").color(theme::WARN));
-            }
-        }
-    }
-}
-
-fn draw_qr(ui: &mut egui::Ui, qr: &fp_remote::QrMatrix, size: f32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
-    let p = ui.painter();
-    p.rect_filled(rect, 12.0, Color32::WHITE);
-    let quiet = 3.0;
-    let cell = size / (qr.size as f32 + quiet * 2.0);
-    for y in 0..qr.size {
-        for x in 0..qr.size {
-            if qr.is_dark(x, y) {
-                let min =
-                    rect.min + Vec2::new((x as f32 + quiet) * cell, (y as f32 + quiet) * cell);
-                p.rect_filled(
-                    egui::Rect::from_min_size(min, Vec2::splat(cell + 0.3)),
-                    0.0,
-                    Color32::BLACK,
-                );
-            }
-        }
-    }
+            });
+    });
 }
 
 fn updates(ui: &mut egui::Ui, v: &mut View) {
@@ -836,21 +962,24 @@ fn updates(ui: &mut egui::Ui, v: &mut View) {
     heading(ui, &format!("FramePlayerX {}", env!("CARGO_PKG_VERSION")));
     widgets::rows(ui, |r| {
         r.switch(
-            "Check for updates at start",
+            tr!("settings-check-updates"),
             None,
             &mut v.settings.check_updates,
         );
         let beta_build = env!("CARGO_PKG_VERSION").contains('-');
         let about = match (v.settings.update_channel, beta_build) {
-            (Channel::Beta, _) => "Gets test versions too, before they are released.",
-            (Channel::Stable, false) => "Only finished releases.",
+            (Channel::Beta, _) => tr!("settings-channel-beta-desc"),
+            (Channel::Stable, false) => tr!("settings-channel-stable-desc"),
             (Channel::Stable, true) => {
-                "Only finished releases: this test version stays until a newer one is out."
+                tr!("settings-channel-stable-on-beta-desc")
             }
         };
-        r.row("Channel", Some(about), |ui| {
+        r.row(tr!("settings-channel"), Some(about), |ui| {
             // Right to left: Stable shows first.
-            for (c, label) in [(Channel::Beta, "Beta"), (Channel::Stable, "Stable")] {
+            for (c, label) in [
+                (Channel::Beta, tr!("settings-channel-beta")),
+                (Channel::Stable, tr!("settings-channel-stable")),
+            ] {
                 if widgets::chip(ui, label, v.settings.update_channel == c).clicked()
                     && v.settings.update_channel != c
                 {
@@ -866,25 +995,23 @@ fn updates(ui: &mut egui::Ui, v: &mut View) {
         });
     });
     if fp_updater::RELEASE_PUBLIC_KEY.is_none() {
-        note(
-            ui,
-            "This is a development build: in-app updates are off. Install new versions \
-             with Frame Control or FrameDrop.",
-        );
+        note(ui, tr!("settings-dev-build"));
         return;
     }
     ui.add_space(6.0);
     widgets::rows(ui, |r| match &v.state.update {
         U::Unknown => {
-            r.row("Not checked yet", None, |ui| check_button(ui, v.actions));
+            r.row(tr!("settings-update-unknown"), None, |ui| {
+                check_button(ui, v.actions);
+            });
         }
         U::Checking => {
-            r.row("Checking…", None, |ui| {
+            r.row(tr!("settings-update-checking"), None, |ui| {
                 ui.spinner();
             });
         }
         U::UpToDate => {
-            r.row("You have the latest version", None, |ui| {
+            r.row(tr!("settings-update-latest"), None, |ui| {
                 check_button(ui, v.actions);
                 ui.label(
                     RichText::new(icons::CHECK_CIRCLE)
@@ -895,13 +1022,13 @@ fn updates(ui: &mut egui::Ui, v: &mut View) {
         }
         U::Available { version, notes } => {
             r.row(
-                &format!("Version {version} is available"),
+                &tr!("settings-update-available", version = version.as_str()),
                 Some(notes.as_str()),
                 |ui| {
                     if widgets::button(
                         ui,
                         Some(icons::DOWNLOAD_SIMPLE),
-                        "Download and install",
+                        tr!("settings-update-install"),
                         Kind::Primary,
                     )
                     .clicked()
@@ -925,17 +1052,19 @@ fn updates(ui: &mut egui::Ui, v: &mut View) {
         }
         U::Installed { version } => {
             r.row(
-                &format!("Version {version} is installed"),
-                Some("Restart FramePlayerX to use it."),
+                &tr!("settings-update-installed", version = version.as_str()),
+                Some(tr!("settings-update-restart-desc")),
                 |ui| {
-                    if widgets::button(ui, None, "Restart now", Kind::Primary).clicked() {
+                    if widgets::button(ui, None, tr!("settings-update-restart"), Kind::Primary)
+                        .clicked()
+                    {
                         v.actions.push(Action::Restart);
                     }
                 },
             );
         }
         U::Failed(e) => {
-            r.row("The update failed", Some(e.as_str()), |ui| {
+            r.row(tr!("settings-update-failed"), Some(e.as_str()), |ui| {
                 check_button(ui, v.actions);
             });
         }
@@ -946,7 +1075,7 @@ fn check_button(ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     if widgets::button_sized(
         ui,
         Some(icons::ARROWS_CLOCKWISE),
-        "Check now",
+        tr!("settings-update-check"),
         Kind::Secondary,
         44.0,
     )
@@ -956,30 +1085,84 @@ fn check_button(ui: &mut egui::Ui, actions: &mut Vec<Action>) {
     }
 }
 
+/// What the app tells About about the headset at start (main.rs), in the
+/// interface's language.
+fn about_text(text: &str) -> &str {
+    match text {
+        "OpenXR runtime" => tr!("about-runtime"),
+        "Headset" => tr!("about-headset-name"),
+        "Passthrough for apps" => tr!("about-passthrough"),
+        "yes (WebXR immersive-ar possible)" => tr!("about-passthrough-yes"),
+        "no (VR only)" => tr!("about-passthrough-no"),
+        "Eye resolution" => tr!("about-eye-resolution"),
+        "Controllers" => tr!("about-controllers"),
+        other => other,
+    }
+}
+
+/// The project's pages, as About lists them.
+const GITHUB: &str = "github.com/remotesojourner/frameplayerx";
+const ISSUES: &str = "github.com/remotesojourner/frameplayerx/issues/new/choose";
+const SPONSOR: &str = "github.com/sponsors/remotesojourner";
+
 fn about(ui: &mut egui::Ui, v: &mut View) {
     ui.label(
-        RichText::new(format!(
-            "FramePlayerX {} · a native VR video player for the Steam Frame",
-            env!("CARGO_PKG_VERSION")
+        RichText::new(tr!(
+            "settings-about-tagline",
+            version = env!("CARGO_PKG_VERSION")
         ))
         .color(theme::TEXT_2),
     );
-    heading(ui, "This headset");
+    heading(ui, tr!("settings-about-headset"));
     widgets::rows(ui, |r| {
         for (k, val) in &v.state.about {
-            r.info(k, val);
+            r.info(about_text(k), about_text(val));
         }
         r.info(
-            "Settings file",
+            tr!("settings-about-settings-file"),
             &crate::settings::Settings::path().display().to_string(),
         );
-        r.info("Log", &crate::logger::log_path().display().to_string());
+        r.info(
+            tr!("settings-about-log"),
+            &crate::logger::log_path().display().to_string(),
+        );
+    });
+    heading(ui, tr!("settings-about-links"));
+    widgets::rows(ui, |r| {
+        for (title, desc, address) in [
+            (
+                tr!("settings-about-github"),
+                tr!("settings-about-github-desc"),
+                GITHUB,
+            ),
+            (
+                tr!("settings-about-issue"),
+                tr!("settings-about-issue-desc"),
+                ISSUES,
+            ),
+            (
+                tr!("settings-about-sponsor"),
+                tr!("settings-about-sponsor-desc"),
+                SPONSOR,
+            ),
+        ] {
+            r.row_with(
+                title,
+                Some(desc),
+                |ui| {
+                    let link = egui::Link::new(
+                        RichText::new(format!("{}  {address}", icons::LINK))
+                            .font(theme::font(Weight::Medium, 16.0))
+                            .color(theme::ACCENT_HOVER),
+                    );
+                    if ui.add(link).clicked() {
+                        v.actions.push(Action::OpenWebPage(address));
+                    }
+                },
+                |_| {},
+            );
+        }
     });
     ui.add_space(6.0);
-    note(
-        ui,
-        "Video decoding uses FFmpeg (LGPL 2.1+) and dav1d (BSD), shipped as separate \
-         libraries in lib/. Text is set in Inter (OFL) with Phosphor icons (MIT). \
-         Licences and the source offer are in the licenses/ folder.",
-    );
+    note(ui, tr!("settings-about-licences"));
 }

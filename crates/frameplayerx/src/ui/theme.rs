@@ -80,6 +80,57 @@ pub fn subhead() -> TextStyle {
 
 pub const INTER_REGULAR: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
 
+/// Noto Sans CJK, regular and bold, for Chinese, Japanese and Korean text:
+/// none is built in, as SteamOS ships it. Read once, for every panel.
+struct Cjk {
+    regular: &'static [u8],
+    bold: &'static [u8],
+    /// The faces, in each file, of Japanese and of Simplified Chinese.
+    japanese: u32,
+    chinese: u32,
+}
+
+static CJK: std::sync::LazyLock<Option<Cjk>> = std::sync::LazyLock::new(|| {
+    let cjk = load_cjk();
+    if cjk.is_none() {
+        log::info!("no Noto Sans CJK font: Chinese, Japanese and Korean text shows as boxes");
+    }
+    cjk
+});
+
+fn load_cjk() -> Option<Cjk> {
+    // fontconfig's file and face for a family, when it has that family.
+    let find = |pattern: &str| {
+        let out = std::process::Command::new("fc-match")
+            .args(["-f", "%{file}\n%{index}\n%{family[0]}", pattern])
+            .output()
+            .ok()?;
+        let text = String::from_utf8(out.stdout).ok()?;
+        let mut lines = text.lines();
+        let (file, index, family) = (lines.next()?, lines.next()?, lines.next()?);
+        family
+            .starts_with("Noto Sans CJK")
+            .then(|| (file.to_string(), index.parse::<u32>().ok()))
+    };
+    let (regular, japanese) = find("Noto Sans CJK JP")?;
+    let (_, chinese) = find("Noto Sans CJK SC")?;
+    let bold = find("Noto Sans CJK JP:bold").map_or(regular.clone(), |b| b.0);
+    let read = |path: &str| -> Option<&'static [u8]> {
+        Some(Box::leak(std::fs::read(path).ok()?.into_boxed_slice()))
+    };
+    let regular_bytes = read(&regular)?;
+    Some(Cjk {
+        bold: if bold == regular {
+            regular_bytes
+        } else {
+            read(&bold).unwrap_or(regular_bytes)
+        },
+        regular: regular_bytes,
+        japanese: japanese.unwrap_or(0),
+        chinese: chinese.unwrap_or(0),
+    })
+}
+
 fn fonts() -> FontDefinitions {
     let mut defs = FontDefinitions::default();
     let fallbacks: Vec<String> = defs.families[&FontFamily::Proportional].clone();
@@ -108,19 +159,47 @@ fn fonts() -> FontDefinitions {
         "phosphor-fill",
         include_bytes!("../../assets/fonts/Phosphor-Fill.ttf"),
     );
-    let chain = |first: &str| {
+    // The interface's language picks which forms come first of the
+    // characters Chinese and Japanese share.
+    let mut cjk_names: [Vec<String>; 2] = Default::default();
+    if let Some(c) = CJK.as_ref() {
+        let faces = if crate::i18n::current().starts_with("zh") {
+            [("sc", c.chinese), ("jp", c.japanese)]
+        } else {
+            [("jp", c.japanese), ("sc", c.chinese)]
+        };
+        for (weight, (bytes, names)) in [c.regular, c.bold]
+            .into_iter()
+            .zip(&mut cjk_names)
+            .enumerate()
+        {
+            for (form, index) in faces {
+                let name = format!("cjk-{form}-{weight}");
+                let mut data = FontData::from_static(bytes);
+                data.index = index;
+                defs.font_data.insert(name.clone(), Arc::new(data));
+                names.push(name);
+            }
+        }
+    }
+    let chain = |first: &str, bold: bool| {
         let mut v = vec![first.to_string(), "phosphor".to_string()];
+        v.extend(cjk_names[bold as usize].iter().cloned());
         v.extend(fallbacks.iter().cloned());
         v
     };
     defs.families
-        .insert(FontFamily::Proportional, chain("inter"));
+        .insert(FontFamily::Proportional, chain("inter", false));
+    defs.families.insert(
+        FontFamily::Name("medium".into()),
+        chain("inter-medium", false),
+    );
+    defs.families.insert(
+        FontFamily::Name("semibold".into()),
+        chain("inter-semibold", true),
+    );
     defs.families
-        .insert(FontFamily::Name("medium".into()), chain("inter-medium"));
-    defs.families
-        .insert(FontFamily::Name("semibold".into()), chain("inter-semibold"));
-    defs.families
-        .insert(FontFamily::Name("bold".into()), chain("inter-bold"));
+        .insert(FontFamily::Name("bold".into()), chain("inter-bold", true));
     defs.families
         .insert(FontFamily::Name("icon".into()), vec!["phosphor".into()]);
     defs.families.insert(
@@ -133,8 +212,13 @@ fn fonts() -> FontDefinitions {
     defs
 }
 
-pub fn apply(ctx: &egui::Context) {
+/// The fonts, for the interface's language.
+pub fn set_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts());
+}
+
+pub fn apply(ctx: &egui::Context) {
+    set_fonts(ctx);
     super::widgets::set_dimensional(ctx, true);
     let mut style = (*ctx.style()).clone();
     style.text_styles = [

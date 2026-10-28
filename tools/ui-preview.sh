@@ -3,6 +3,8 @@
 # desktop preview (no headset; any Vulkan driver, lavapipe on CI).
 #
 # Usage: tools/ui-preview.sh OUT_DIR
+# UI_LANGUAGE=de (or pseudo, a made-up longer language) renders them in
+# another language.
 # Runs against a throwaway home with a small library made from the test
 # clips, so it never touches your own settings or library.
 set -euo pipefail
@@ -11,9 +13,15 @@ out="$(mkdir -p "${1:?usage: $0 OUT_DIR}" && cd "$1" && pwd)"
 data=crates/fp-media/tests/data
 
 home="$(mktemp -d)"
+# Fonts you installed yourself, such as the headset's Noto Sans CJK for
+# UI_LANGUAGE=ja or zh-CN, which the throwaway home would hide.
+if [ -d "$HOME/.local/share/fonts" ]; then
+  mkdir -p "$home/.local/share"
+  ln -s "$HOME/.local/share/fonts" "$home/.local/share/fonts"
+fi
 jf_port_file="$home/jf.port"
 python3 - "$home" "$jf_port_file" <<'PY' &
-import glob, http.server, json, os, sqlite3, sys
+import glob, http.server, json, os, random, sqlite3, sys, urllib.parse
 
 home, port_file = sys.argv[1], sys.argv[2]
 
@@ -69,6 +77,42 @@ LATEST_VR = [
      "UserData": {"Played": True}},
 ]
 
+# What the VR Videos grid can be filtered by.
+FACETS = {
+    "Genres": ["Documentary", "Nature", "Timelapse", "Travel"],
+    "Studios": ["Coastline Films", "Northlight VR"],
+    "Years": ["2026", "2025"],
+    "Tags": ["beach", "city", "drone", "night", "sunset"],
+}
+
+# The people a search finds (one without a picture); each is in a few videos.
+PEOPLE = [
+    {"Id": "p_riley", "Name": "Riley Brooks", "Type": "Person", "ImageTags": {"Primary": "r"}},
+    {"Id": "p_rivera", "Name": "Alex Rivera", "Type": "Person", "ImageTags": {}},
+]
+
+def grid_items(query):
+    """The VR Videos library: by id for a shuffle's pages, shuffled when asked.
+    A search's videos by title, a person's by who they are."""
+    q = urllib.parse.parse_qs(query)
+    if "SearchTerm" in q:
+        term = q["SearchTerm"][0].lower()
+        if "Video" not in q.get("IncludeItemTypes", [""])[0].split(","):
+            return []
+        return [i for i in LATEST_VR if term in i["Name"].lower()]
+    if q.get("PersonIds"):
+        return LATEST_VR[1:4]
+    if q.get("ParentId") != ["lib_vr"]:
+        return []
+    ids = q.get("Ids", [""])[0]
+    if ids:
+        by_id = {i["Id"]: i for i in LATEST_VR}
+        return [by_id[i] for i in ids.split(",") if i in by_id]
+    items = list(LATEST_VR)
+    if q.get("SortBy") == ["Random"]:
+        random.shuffle(items)
+    return items
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
@@ -86,8 +130,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(data)
                 return
+        query = self.path.split("?", 1)[1] if "?" in self.path else ""
         if path.endswith("/Views"):
             body = VIEWS
+        elif path == "/Users/u1/Items":
+            items = grid_items(query)
+            body = {"Items": items, "TotalRecordCount": len(items)}
+        elif path == "/Persons":
+            term = urllib.parse.parse_qs(query).get("SearchTerm", [""])[0].lower()
+            body = {"Items": [p for p in PEOPLE if term in p["Name"].lower()]}
+        elif path == "/Items/Filters":
+            body = {"Tags": FACETS["Tags"], "Genres": FACETS["Genres"]}
+        elif path.lstrip("/") in FACETS:
+            body = {"Items": [{"Name": n} for n in FACETS[path.lstrip("/")]]}
         elif path.endswith("/Items/Resume"):
             body = RESUME
         elif path.endswith("/Items/Latest"):
@@ -126,6 +181,9 @@ touch -d 2026-01-08 "$home/Videos/Aurora Timelapse_360_TB.mkv"
 # The Videos library, a Jellyfin server, and a library to lock with a PIN.
 mkdir -p "$home/Private" "$home/.config/frameplayerx"
 cp "$data/h264_aac_180_LR.mp4" "$home/Private/Rooftop.mp4"
+if [ -n "${UI_LANGUAGE:-}" ]; then
+  printf '{"language": "%s"}\n' "$UI_LANGUAGE" >"$home/.config/frameplayerx/settings.json"
+fi
 (umask 077 && cat >"$home/.config/frameplayerx/sources.json" <<EOF
 [{"type": "library", "id": "videos", "name": "Videos", "folder": "$home/Videos"},
  {"type": "mediabrowser", "id": "jellyfin", "name": "Jellyfin", "url": "http://127.0.0.1:$jf_port", "access_token": "tok", "user_id": "u1"},
@@ -171,6 +229,22 @@ panel main local
 open-source jellyfin
 wait 1
 panel main jellyfin
+# A library of the server, and its Filters drawer (Back closes it).
+point main 0.133 0.37
+click
+wait 1
+panel main jellyfin-grid
+filters
+wait 1
+panel main jellyfin-filters
+button secondary
+frames 4
+# Search: titles, and the people whose names match.
+button secondary
+frames 4
+jellyfin-search ri
+wait 1
+panel main jellyfin-search
 # Playlists: none yet, one made of the library, its page; Up next.
 details
 panel main details
@@ -225,18 +299,22 @@ chroma-global
 screen settings passthrough
 frames 8
 panel main settings-passthrough-on
-chroma-global
+chroma-global off
 screen settings controller
 panel main settings-controller
 screen settings controller-open
 panel main settings-controller-open
+screen settings controller-grip
+panel main settings-controller-grip
 screen settings controller-stick
 panel main settings-controller-stick
 haptics on
 screen settings haptics
 panel main settings-haptics
+remote on
 screen settings remote
 panel main settings-remote
+remote off
 screen settings updates
 panel main settings-updates
 screen settings about
@@ -320,8 +398,8 @@ point main 0.6 0.6
 stick 0 -1 30
 frames 8
 panel main settings-subtitles
-# The video with subtitle files, set to start in Arabic: the subtitles and
-# the Audio & subs tab.
+# The video with subtitle files, set to start in Arabic: the subtitles, the
+# audio and subtitles picker over the bar, and the Chapters tab.
 subtitles always ar
 open-in device-home $home/Subtitled/Lantern.mp4
 wait-playing
@@ -329,11 +407,22 @@ wait 1
 pause
 frames 8
 panel subs subtitles-arabic
+tracks
+frames 8
+panel tracks tracks
+panel bar player-bar-tracks
+sbs player-tracks-scene
+point tracks 0.5 0.02
+click
+frames 4
 adjust 5
 frames 8
-panel adjust adjust-subtitles
-# The library queued behind it, and Up next from the control bar.
+panel adjust adjust-chapters
+# The library queued behind it: Next on the bar, and Up next from it.
 queue-all
+point bar 0.6215 0.69
+frames 10
+panel bar player-bar-next
 up-next
 frames 8
 panel main up-next

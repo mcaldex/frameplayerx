@@ -15,7 +15,8 @@
 //!   settings, keyframes, playback progress and history, playlists.
 //! - [`MetadataWorker`]: a background thread that fills in duration, size,
 //!   codec and format via an app-provided [`MediaProber`] and writes JPEG
-//!   thumbnails and scrub-preview sheets.
+//!   thumbnails for videos whose server offers no picture, and the frame
+//!   where each partly watched video was left off.
 
 mod error;
 mod image;
@@ -36,14 +37,14 @@ pub use library::{
 pub use playlist::{Playlist, PlaylistEntry};
 pub use query::{Query, Sort, SortDirection, StereoFilter};
 pub use record::{
-    HistoryEntry, Marker, MarkerId, MediaId, MediaRecord, PlaylistId, PreviewStrip, ProjectionKind,
-    SessionId, TagCount,
+    HistoryEntry, Marker, MarkerId, MediaId, MediaRecord, PickedSubtitles, PickedTracks,
+    PlaylistId, ProjectionKind, SessionId, TagCount,
 };
 pub use scan::{
     SCRIPT_AXES, ScanError, ScanOptions, ScanPhase, ScanProgress, ScanReport, script_axis,
 };
 pub use schema::SCHEMA_VERSION;
 pub use worker::{
-    FrameRequest, MediaProber, MetadataWorker, ProbeInfo, ThumbnailCrop, WorkerEvent,
-    WorkerOptions, WorkerStats, process_pending,
+    MediaProber, MetadataWorker, ProbeInfo, ThumbnailCrop, WorkerEvent, WorkerOptions, WorkerStats,
+    process_pending,
 };

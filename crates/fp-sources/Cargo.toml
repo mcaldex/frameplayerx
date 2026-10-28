@@ -12,8 +12,8 @@ workspace = true
 
 [features]
 default = ["smb"]
-# Pure-Rust SMB2/3 client (smb-rs in its blocking, multi-threaded mode).
-smb = ["dep:smb", "dep:picky-krb"]
+# Pure-Rust SMB2/3 client (smb2, on a tokio runtime of its own).
+smb = ["dep:smb2", "dep:tokio"]
 
 [dependencies]
 fp-core.workspace = true
@@ -27,12 +27,8 @@ thiserror.workspace = true
 ureq = { workspace = true, features = ["rustls"] }
 url = "2.5"
 
-# smb-rs: sync mode (no async runtime), NTLM through sspi with the ring backend.
-smb = { version = "0.12.1", default-features = false, features = ["multi_threaded", "sign", "encrypt"], optional = true }
-# sspi 0.21.3 (pinned exactly by smb 0.12.1) fails to compile against
-# picky-krb 0.12.5, which added an enum variant in a patch release. Pin the
-# last compatible release until smb moves to a newer sspi.
-picky-krb = { version = "=0.12.4", optional = true }
+smb2 = { version = "0.36.0", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

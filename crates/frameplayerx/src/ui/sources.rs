@@ -21,8 +21,24 @@ pub(super) fn kind_icon(kind: SourceKind) -> &'static str {
 }
 
 /// What the headset itself holds, as the Sources list and Home name it.
-pub(super) const LOCAL_NAME: &str = "On this device";
-const LOCAL_DESC: &str = "Folders on the headset, its microSD card and USB drives";
+pub(super) fn local_name() -> &'static str {
+    tr!("sources-local")
+}
+
+/// A kind of source, as the lists and the add form name it.
+pub(super) fn kind_label(kind: SourceKind) -> &'static str {
+    match kind {
+        SourceKind::Local => tr!("source-kind-local"),
+        SourceKind::Library => tr!("source-kind-library"),
+        SourceKind::Http => "HTTP",
+        SourceKind::WebDav => "WebDAV",
+        SourceKind::Dlna => "DLNA",
+        SourceKind::DeoVr => tr!("source-kind-deovr"),
+        SourceKind::HereSphere => tr!("source-kind-heresphere"),
+        SourceKind::Smb => tr!("source-kind-smb"),
+        SourceKind::MediaBrowser => "Jellyfin/Emby",
+    }
+}
 
 /// A page title with an optional line under it and actions on the right.
 fn page_header(
@@ -97,9 +113,9 @@ struct Row {
 fn rows(v: &View) -> Vec<Row> {
     let local = Row {
         id: crate::services::LOCAL_HUB.into(),
-        name: LOCAL_NAME.into(),
-        desc: LOCAL_DESC.into(),
-        facts: "Folders, microSD and USB".into(),
+        name: local_name().into(),
+        desc: tr!("sources-local-desc").into(),
+        facts: tr!("sources-local-facts").into(),
         icon: icons::HARD_DRIVES,
         builtin: true,
         lock: Lock::None,
@@ -109,20 +125,20 @@ fn rows(v: &View) -> Vec<Row> {
             let lock = lock_of(v, c.id());
             let kind = match c {
                 SourceConfig::Library(l) if !crate::libraries::present(l) => {
-                    "Library · Not inserted"
+                    tr!("sources-library-not-inserted")
                 }
-                _ => c.kind().label(),
+                _ => kind_label(c.kind()),
             };
             // The list's line and Home's; a locked source's address can say
             // what is in it, so it shows neither.
             let (desc, facts) = match lock {
                 Lock::Locked => (
-                    format!("{kind} · Locked with a PIN"),
-                    "Locked with a PIN".to_string(),
+                    format!("{kind} · {}", tr!("sources-locked")),
+                    tr!("sources-locked").to_string(),
                 ),
                 Lock::Unlocked => (
-                    format!("{kind} · {} · Unlocked", c.address()),
-                    format!("{kind} · Unlocked"),
+                    format!("{kind} · {} · {}", c.address(), tr!("sources-unlocked")),
+                    format!("{kind} · {}", tr!("sources-unlocked")),
                 ),
                 Lock::None => (format!("{kind} · {}", c.address()), kind.to_string()),
             };
@@ -155,18 +171,13 @@ pub fn sources(ui: &mut egui::Ui, v: &mut View) {
         browse(ui, v);
         return;
     }
-    page_header(
-        ui,
-        "Sources",
-        Some("Browse the headset and your servers. What you watch is kept in Watch history."),
-        |ui| {
-            if widgets::button(ui, Some(icons::PLUS), "Add source", Kind::Primary).clicked() {
-                v.state.source_form = Some(SourceForm::default());
-            }
-        },
-    );
+    page_header(ui, tr!("nav-sources"), Some(tr!("sources-desc")), |ui| {
+        if widgets::button(ui, Some(icons::PLUS), tr!("sources-add"), Kind::Primary).clicked() {
+            v.state.source_form = Some(SourceForm::default());
+        }
+    });
     egui::ScrollArea::vertical().show(ui, |ui| {
-        widgets::section_label(ui, "On this device and your network");
+        widgets::section_label(ui, tr!("sources-heading"));
         ui.add_space(4.0);
         widgets::card(ui, |ui| {
             for (i, row) in rows(v).into_iter().enumerate() {
@@ -219,7 +230,7 @@ fn list_row(ui: &mut egui::Ui, v: &mut View, row: Row) {
                         if widgets::button_sized(
                             ui,
                             Some(icons::LOCK),
-                            "Unlock",
+                            tr!("sources-unlock"),
                             Kind::Secondary,
                             44.0,
                         )
@@ -235,21 +246,21 @@ fn list_row(ui: &mut egui::Ui, v: &mut View, row: Row) {
                     }
                     if !builtin {
                         if widgets::icon_button(ui, icons::TRASH, 44.0, false)
-                            .tip("Remove (and forget its unwatched videos)")
+                            .tip(tr!("sources-remove"))
                             .clicked()
                         {
                             v.actions.push(Action::RemoveSource(id.clone()));
                         }
                         if widgets::icon_button(ui, icons::PENCIL_SIMPLE, 44.0, false)
-                            .tip("Edit")
+                            .tip(tr!("sources-edit"))
                             .clicked()
                         {
                             edit(v, &id);
                         }
                         let tip = if lock == Lock::Unlocked {
-                            "Lock"
+                            tr!("sources-lock")
                         } else {
-                            "Lock with a PIN"
+                            tr!("sources-lock-pin")
                         };
                         if widgets::icon_button(ui, icons::LOCK_OPEN, 44.0, false)
                             .tip(tip)
@@ -261,7 +272,7 @@ fn list_row(ui: &mut egui::Ui, v: &mut View, row: Row) {
                     if widgets::button_sized(
                         ui,
                         Some(icons::FOLDER_OPEN),
-                        "Browse",
+                        tr!("sources-browse"),
                         Kind::Secondary,
                         44.0,
                     )
@@ -285,8 +296,8 @@ fn browse(ui: &mut egui::Ui, v: &mut View) {
     let kind = v
         .services
         .source_config(&sv.source)
-        .map(|c| c.kind().label())
-        .unwrap_or("Folder");
+        .map(|c| kind_label(c.kind()))
+        .unwrap_or(tr!("sources-folder"));
     let back = match &mut sv.page {
         SourcePage::Folders(b) => super::folders::page(ui, v, &sv.name, kind, b),
         SourcePage::Local(l) => super::local::page(ui, v, l),
@@ -344,7 +355,7 @@ pub fn source_row(ui: &mut egui::Ui, v: &mut View, back_to: Screen) {
         .into_iter()
         .filter(|r| r.lock != Lock::Locked)
         .collect();
-    page::carousel(ui, "Sources", None, rows.len() + 1, |ui, i| {
+    page::carousel(ui, tr!("nav-sources"), None, rows.len() + 1, |ui, i| {
         let Some(row) = rows.get(i) else {
             let c = page::card(
                 ui,
@@ -352,8 +363,8 @@ pub fn source_row(ui: &mut egui::Ui, v: &mut View, back_to: Screen) {
                 &Card {
                     placeholder: icons::PLUS,
                     tint: theme::ACCENT_HOVER,
-                    title: "Add a source",
-                    facts: "A library, Jellyfin, DeoVR, SMB…",
+                    title: tr!("sources-add-a-source"),
+                    facts: tr!("sources-add-a-source-facts"),
                     play: false,
                     ..Card::default()
                 },
@@ -368,9 +379,9 @@ pub fn source_row(ui: &mut egui::Ui, v: &mut View, back_to: Screen) {
         // A padlock to lock it: always there with a PIN set, on pointing
         // otherwise (it then asks for one).
         let tip = if row.lock == Lock::Unlocked {
-            "Lock"
+            tr!("sources-lock")
         } else {
-            "Lock with a PIN"
+            tr!("sources-lock-pin")
         };
         let lockable = (!row.builtin).then_some((icons::LOCK_OPEN, tip));
         let c = page::card(
@@ -413,15 +424,16 @@ fn pin_form(ui: &mut egui::Ui, v: &mut View) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 12.0;
         if widgets::icon_button(ui, icons::ARROW_LEFT, 48.0, false)
-            .tip("Cancel")
+            .tip(tr!("common-cancel"))
             .clicked()
         {
             close = true;
         }
+        let name = f.name.as_str();
         let title = match (f.set, has_pin) {
-            (false, _) => format!("Unlock {}", f.name),
-            (true, false) => format!("Lock {} with a PIN", f.name),
-            (true, true) => format!("Change the PIN of {}", f.name),
+            (false, _) => tr!("pin-unlock-title", name = name),
+            (true, false) => tr!("pin-lock-title", name = name),
+            (true, true) => tr!("pin-change-title", name = name),
         };
         ui.label(
             RichText::new(title)
@@ -431,11 +443,9 @@ fn pin_form(ui: &mut egui::Ui, v: &mut View) {
     });
     ui.add_space(8.0);
     let help = if f.set {
-        "While it is locked, it can't be browsed, it is left off Home, and its videos \
-         are hidden from the watch history, search and the remotes. The PIN unlocks \
-         it until FramePlayerX restarts or you lock it again."
+        tr!("pin-lock-help")
     } else {
-        "Enter its PIN."
+        tr!("pin-enter")
     };
     ui.label(RichText::new(help).color(theme::TEXT_2));
     ui.add_space(12.0);
@@ -453,12 +463,16 @@ fn pin_form(ui: &mut egui::Ui, v: &mut View) {
     };
     let mut submit = false;
     widgets::rows(ui, |r| {
-        let label = if f.set && has_pin { "New PIN" } else { "PIN" };
-        r.row(label, Some("4 to 8 digits."), |ui| {
+        let label = if f.set && has_pin {
+            tr!("pin-new")
+        } else {
+            tr!("pin-label")
+        };
+        r.row(label, Some(tr!("pin-digits")), |ui| {
             submit |= field(ui, &mut f.pin);
         });
         if f.set {
-            r.row("PIN again", None, |ui| {
+            r.row(tr!("pin-again"), None, |ui| {
                 submit |= field(ui, &mut f.confirm);
             });
         }
@@ -467,7 +481,11 @@ fn pin_form(ui: &mut egui::Ui, v: &mut View) {
     let valid = crate::pin::valid(&f.pin);
     let matches = !f.set || f.pin == f.confirm;
     ui.horizontal(|ui| {
-        let label = if f.set { "Save PIN" } else { "Unlock" };
+        let label = if f.set {
+            tr!("pin-save")
+        } else {
+            tr!("sources-unlock")
+        };
         let icon = if f.set { icons::LOCK } else { icons::LOCK_OPEN };
         let ok = valid && matches;
         if ui
@@ -491,9 +509,9 @@ fn pin_form(ui: &mut egui::Ui, v: &mut View) {
             });
         }
         if f.wrong {
-            ui.label(RichText::new("Wrong PIN").color(theme::WARN));
+            ui.label(RichText::new(tr!("pin-wrong")).color(theme::WARN));
         } else if f.set && !matches && f.confirm.len() >= f.pin.len() && !f.confirm.is_empty() {
-            ui.label(RichText::new("The PINs don't match").color(theme::WARN));
+            ui.label(RichText::new(tr!("pin-mismatch")).color(theme::WARN));
         }
     });
     if !f.pin.is_empty() {
@@ -504,41 +522,18 @@ fn pin_form(ui: &mut egui::Ui, v: &mut View) {
     }
 }
 
-const KINDS: [(SourceKind, &str); 8] = [
-    (
-        SourceKind::Library,
-        "A folder on this device, a microSD card or a USB drive: its videos are found, with \
-         thumbnails, filters and sorting, and it gets its own place on Home",
-    ),
-    (
-        SourceKind::MediaBrowser,
-        "Jellyfin / Emby server URL, e.g. http://192.168.1.10:8096",
-    ),
-    (
-        SourceKind::DeoVr,
-        "The URL of any server's DeoVR feed, e.g. http://192.168.1.10:9999/deovr",
-    ),
-    (
-        SourceKind::HereSphere,
-        "The URL of any server's HereSphere API, e.g. http://192.168.1.10:9999/heresphere",
-    ),
-    (
-        SourceKind::WebDav,
-        "WebDAV share URL (Nextcloud, NAS), e.g. https://nas.local/dav/videos/",
-    ),
-    (
-        SourceKind::Http,
-        "Web server folder listing, e.g. http://192.168.1.10:8080/videos/",
-    ),
-    (
-        SourceKind::Smb,
-        "Windows / Samba server or share, e.g. smb://nas.local/ or smb://nas.local/videos",
-    ),
-    (
-        SourceKind::Dlna,
-        "DLNA media server on your network (Plex, Jellyfin, Emby, Serviio)",
-    ),
-];
+fn kinds() -> [(SourceKind, &'static str); 8] {
+    [
+        (SourceKind::Library, tr!("source-kind-library-desc")),
+        (SourceKind::MediaBrowser, tr!("source-kind-jellyfin-desc")),
+        (SourceKind::DeoVr, tr!("source-kind-deovr-desc")),
+        (SourceKind::HereSphere, tr!("source-kind-heresphere-desc")),
+        (SourceKind::WebDav, tr!("source-kind-webdav-desc")),
+        (SourceKind::Http, tr!("source-kind-http-desc")),
+        (SourceKind::Smb, tr!("source-kind-smb-desc")),
+        (SourceKind::Dlna, tr!("source-kind-dlna-desc")),
+    ]
+}
 
 fn address_hint(kind: SourceKind) -> &'static str {
     match kind {
@@ -555,14 +550,14 @@ fn address_hint(kind: SourceKind) -> &'static str {
 
 fn name_hint(kind: SourceKind) -> &'static str {
     match kind {
-        SourceKind::MediaBrowser => "Optional (e.g. Jellyfin)",
-        SourceKind::DeoVr => "Optional (e.g. DeoVR feed)",
-        SourceKind::HereSphere => "Optional (e.g. HereSphere feed)",
-        SourceKind::WebDav => "Optional (e.g. Nextcloud)",
-        SourceKind::Http => "Optional (e.g. Video server)",
-        SourceKind::Smb => "Optional (e.g. Home NAS)",
-        SourceKind::Local | SourceKind::Library => "Optional (e.g. Movies)",
-        SourceKind::Dlna => "Optional",
+        SourceKind::MediaBrowser => tr!("source-name-hint-jellyfin"),
+        SourceKind::DeoVr => tr!("source-name-hint-deovr"),
+        SourceKind::HereSphere => tr!("source-name-hint-heresphere"),
+        SourceKind::WebDav => tr!("source-name-hint-webdav"),
+        SourceKind::Http => tr!("source-name-hint-http"),
+        SourceKind::Smb => tr!("source-name-hint-smb"),
+        SourceKind::Local | SourceKind::Library => tr!("source-name-hint-library"),
+        SourceKind::Dlna => tr!("source-name-hint"),
     }
 }
 
@@ -614,14 +609,14 @@ fn form_header(ui: &mut egui::Ui, f: &mut SourceForm, editing: Option<&SourceCon
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 12.0;
         if widgets::icon_button(ui, icons::ARROW_LEFT, 48.0, false)
-            .tip("Cancel")
+            .tip(tr!("common-cancel"))
             .clicked()
         {
             cancel = true;
         }
         let title = match editing {
-            Some(c) => format!("Edit {}", c.name()),
-            None => "Add a source".to_string(),
+            Some(c) => tr!("source-edit-title", name = c.name()),
+            None => tr!("sources-add-a-source").to_string(),
         };
         ui.label(
             RichText::new(title)
@@ -630,24 +625,25 @@ fn form_header(ui: &mut egui::Ui, f: &mut SourceForm, editing: Option<&SourceCon
         );
     });
     ui.add_space(12.0);
-    widgets::section_label(ui, "Type");
+    widgets::section_label(ui, tr!("source-type"));
     ui.add_space(4.0);
     if editing.is_some() {
         // A source keeps its type; add another for a different one.
         ui.horizontal(|ui| {
-            widgets::chip_icon(ui, Some(kind_icon(f.kind)), f.kind.label(), true);
+            widgets::chip_icon(ui, Some(kind_icon(f.kind)), kind_label(f.kind), true);
         });
     } else {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
-            for (k, _) in KINDS {
-                if widgets::chip_icon(ui, Some(kind_icon(k)), k.label(), f.kind == k).clicked() {
+            for (k, _) in kinds() {
+                if widgets::chip_icon(ui, Some(kind_icon(k)), kind_label(k), f.kind == k).clicked()
+                {
                     f.kind = k;
                 }
             }
         });
     }
-    let help = KINDS
+    let help = kinds()
         .iter()
         .find(|(k, _)| *k == f.kind)
         .map(|(_, h)| *h)
@@ -671,11 +667,11 @@ fn library_form(
     let editing = f.editing.is_some();
     widgets::rows(ui, |r| {
         r.row(
-            "Name",
-            Some("Optional; the folder's name otherwise."),
+            tr!("source-name"),
+            Some(tr!("source-name-desc-folder")),
             |ui| text_field(ui, &mut f.name, name_hint(f.kind), false),
         );
-        r.row("Folder", None, |ui| {
+        r.row(tr!("sources-folder"), None, |ui| {
             text_field(ui, &mut f.address, address_hint(f.kind), false);
         });
         let suggestions = crate::libraries::suggestions(configs);
@@ -698,20 +694,21 @@ fn library_form(
     ui.add_space(12.0);
     let built = build_config(f, id).and_then(|cfg| match &cfg {
         SourceConfig::Library(l) => match crate::libraries::overlap(l, configs) {
-            Some(other) => Err(format!("This folder is in {other}, or holds it")),
+            Some(other) => Err(tr!("source-library-overlap", other = other)),
             None => Ok(cfg),
         },
         _ => Ok(cfg),
     });
     ui.horizontal(|ui| match built {
         Ok(cfg) => {
-            if widgets::button(ui, Some(icons::CHECK), "Save", Kind::Primary).clicked() {
+            if widgets::button(ui, Some(icons::CHECK), tr!("common-save"), Kind::Primary).clicked()
+            {
                 save = Some(cfg);
             }
         }
         Err(e) => {
             ui.add_enabled_ui(false, |ui| {
-                widgets::button(ui, Some(icons::CHECK), "Save", Kind::Primary)
+                widgets::button(ui, Some(icons::CHECK), tr!("common-save"), Kind::Primary)
             });
             if !f.address.is_empty() {
                 ui.label(RichText::new(e).color(theme::WARN));
@@ -720,14 +717,16 @@ fn library_form(
     });
     if let Some(SourceConfig::Library(l)) = f.editing.as_ref().filter(|_| editing) {
         ui.add_space(20.0);
-        widgets::section_label(ui, "Videos");
+        widgets::section_label(ui, tr!("source-videos"));
         ui.add_space(4.0);
         widgets::rows(ui, |r| {
             r.row(
-                "Rebuild thumbnails",
-                Some("Reads every video again."),
+                tr!("source-rebuild-thumbnails"),
+                Some(tr!("source-rebuild-thumbnails-desc")),
                 |ui| {
-                    if widgets::button_sized(ui, None, "Rebuild", Kind::Secondary, 44.0).clicked() {
+                    if widgets::button_sized(ui, None, tr!("source-rebuild"), Kind::Secondary, 44.0)
+                        .clicked()
+                    {
                         actions.push(Action::Rescan {
                             source: l.id.clone(),
                             force: true,
@@ -735,8 +734,10 @@ fn library_form(
                     }
                 },
             );
-            r.row("Retry videos that couldn't be read", None, |ui| {
-                if widgets::button_sized(ui, None, "Retry", Kind::Secondary, 44.0).clicked() {
+            r.row(tr!("source-retry-unreadable"), None, |ui| {
+                if widgets::button_sized(ui, None, tr!("source-retry"), Kind::Secondary, 44.0)
+                    .clicked()
+                {
                     actions.push(Action::RetryFailed(l.id.clone()));
                 }
             });
@@ -753,7 +754,7 @@ fn dlna_name_form(
 ) -> Option<SourceConfig> {
     let mut save = None;
     widgets::rows(ui, |r| {
-        r.row("Name", Some(old.location.as_str()), |ui| {
+        r.row(tr!("source-name"), Some(old.location.as_str()), |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut f.name)
                     .margin(egui::Margin::symmetric(12, 9))
@@ -766,7 +767,7 @@ fn dlna_name_form(
     let name = f.name.trim();
     if ui
         .add_enabled_ui(!name.is_empty(), |ui| {
-            widgets::button(ui, Some(icons::CHECK), "Save", Kind::Primary)
+            widgets::button(ui, Some(icons::CHECK), tr!("common-save"), Kind::Primary)
         })
         .inner
         .clicked()
@@ -793,7 +794,7 @@ fn dlna_search(
                 widgets::button(
                     ui,
                     Some(icons::MAGNIFYING_GLASS),
-                    "Search the network",
+                    tr!("source-dlna-search"),
                     Kind::Primary,
                 )
             })
@@ -809,14 +810,20 @@ fn dlna_search(
     ui.add_space(8.0);
     if found.is_empty() {
         if !searching {
-            ui.label(RichText::new("No servers found yet.").color(theme::TEXT_3));
+            ui.label(RichText::new(tr!("source-dlna-none")).color(theme::TEXT_3));
         }
     } else {
         widgets::rows(ui, |r| {
             for d in found {
                 r.row(&d.friendly_name, Some(d.manufacturer.as_str()), |ui| {
-                    if widgets::button_sized(ui, Some(icons::PLUS), "Add", Kind::Secondary, 44.0)
-                        .clicked()
+                    if widgets::button_sized(
+                        ui,
+                        Some(icons::PLUS),
+                        tr!("common-add"),
+                        Kind::Secondary,
+                        44.0,
+                    )
+                    .clicked()
                     {
                         save = Some(SourceConfig::Dlna(d.to_config(id.to_string())));
                     }
@@ -844,19 +851,27 @@ fn server_form(
     }
     widgets::rows(ui, |r| {
         r.row(
-            "Name",
-            Some("Optional; the server's name otherwise."),
+            tr!("source-name"),
+            Some(tr!("source-name-desc-server")),
             |ui| text_field(ui, &mut f.name, name_hint(f.kind), false),
         );
-        r.row(if local { "Folder" } else { "Address" }, None, |ui| {
-            text_field(ui, &mut f.address, address_hint(f.kind), false);
-        });
+        r.row(
+            if local {
+                tr!("sources-folder")
+            } else {
+                tr!("source-address")
+            },
+            None,
+            |ui| {
+                text_field(ui, &mut f.address, address_hint(f.kind), false);
+            },
+        );
         if is_mb {
             r.row(
-                "Sign in with",
-                Some("Jellyfin's Quick Connect pairs using a 6-digit code on another device."),
+                tr!("source-sign-in-with"),
+                Some(tr!("source-sign-in-with-desc")),
                 |ui| {
-                    if widgets::chip(ui, "Password", !f.use_quick_connect).clicked() {
+                    if widgets::chip(ui, tr!("source-password"), !f.use_quick_connect).clicked() {
                         f.use_quick_connect = false;
                     }
                     if widgets::chip(ui, "Quick Connect", f.use_quick_connect).clicked() {
@@ -869,17 +884,21 @@ fn server_form(
             if is_mb && f.use_quick_connect {
                 quick_connect_rows(r, f, actions);
             } else {
-                r.row("User name", Some("If the server asks for one."), |ui| {
-                    text_field(ui, &mut f.username, "", false);
-                });
-                r.row("Password", None, |ui| {
+                r.row(
+                    tr!("source-user-name"),
+                    Some(tr!("source-user-name-desc")),
+                    |ui| {
+                        text_field(ui, &mut f.username, "", false);
+                    },
+                );
+                r.row(tr!("source-password"), None, |ui| {
                     text_field(ui, &mut f.password, "", true);
                 });
             }
             if !smb {
                 r.switch(
-                    "Accept self-signed certificates",
-                    Some("For HTTPS servers on your own network."),
+                    tr!("source-self-signed"),
+                    Some(tr!("source-self-signed-desc")),
                     &mut f.insecure_tls,
                 );
             }
@@ -892,13 +911,14 @@ fn server_form(
     });
     ui.horizontal(|ui| match built {
         Ok(cfg) => {
-            if widgets::button(ui, Some(icons::CHECK), "Save", Kind::Primary).clicked() {
+            if widgets::button(ui, Some(icons::CHECK), tr!("common-save"), Kind::Primary).clicked()
+            {
                 save = Some(cfg);
             }
         }
         Err(e) => {
             ui.add_enabled_ui(false, |ui| {
-                widgets::button(ui, Some(icons::CHECK), "Save", Kind::Primary)
+                widgets::button(ui, Some(icons::CHECK), tr!("common-save"), Kind::Primary)
             });
             if !f.address.is_empty() {
                 ui.label(RichText::new(e).color(theme::WARN));
@@ -908,7 +928,7 @@ fn server_form(
     if !is_mb || !f.use_quick_connect {
         ui.add_space(8.0);
         ui.label(
-            RichText::new("Passwords are stored on this device only, in a file only you can read.")
+            RichText::new(tr!("source-passwords-note"))
                 .font(theme::font(Weight::Regular, 15.0))
                 .color(theme::TEXT_3),
         );
@@ -916,11 +936,11 @@ fn server_form(
     save
 }
 
-fn text_field(ui: &mut egui::Ui, value: &mut String, hint: &str, password: bool) {
+fn text_field(ui: &mut egui::Ui, value: &mut String, hint: &str, masked: bool) {
     ui.add(
         egui::TextEdit::singleline(value)
             .margin(egui::Margin::symmetric(12, 9))
-            .password(password)
+            .password(masked)
             .hint_text(hint)
             .font(theme::font(Weight::Regular, 17.0))
             .desired_width(460.0),
@@ -948,25 +968,37 @@ fn poll_quick_connect(ui: &egui::Ui, f: &mut SourceForm, actions: &mut Vec<Actio
 fn quick_connect_rows(r: &mut widgets::Rows, f: &mut SourceForm, actions: &mut Vec<Action>) {
     let state = f.quick_connect.clone();
     if let QuickConnect::Authorized { .. } = state {
-        r.row("Quick Connect", Some("Authorized with server."), |ui| {
-            if widgets::button_sized(ui, None, "Clear", Kind::Secondary, 36.0).clicked() {
-                f.quick_connect = QuickConnect::Idle;
-            }
-            ui.label(
-                RichText::new(format!("{} Quick Connect authorized", icons::CHECK_CIRCLE))
-                    .font(theme::font(Weight::SemiBold, 17.0))
-                    .color(theme::OK),
-            );
-        });
-    } else if let QuickConnect::Waiting { code, .. } = state {
         r.row(
-            "Pairing code",
-            Some("Enter this code in your Jellyfin or Emby app under Quick Connect:"),
+            "Quick Connect",
+            Some(tr!("quick-connect-authorized-desc")),
             |ui| {
-                if widgets::button_sized(ui, None, "Cancel", Kind::Secondary, 36.0).clicked() {
+                if widgets::button_sized(ui, None, tr!("common-clear"), Kind::Secondary, 36.0)
+                    .clicked()
+                {
                     f.quick_connect = QuickConnect::Idle;
                 }
-                ui.label(RichText::new("Waiting for approval…").color(theme::TEXT_3));
+                ui.label(
+                    RichText::new(format!(
+                        "{}  {}",
+                        icons::CHECK_CIRCLE,
+                        tr!("quick-connect-authorized")
+                    ))
+                    .font(theme::font(Weight::SemiBold, 17.0))
+                    .color(theme::OK),
+                );
+            },
+        );
+    } else if let QuickConnect::Waiting { code, .. } = state {
+        r.row(
+            tr!("quick-connect-code"),
+            Some(tr!("quick-connect-code-desc")),
+            |ui| {
+                if widgets::button_sized(ui, None, tr!("common-cancel"), Kind::Secondary, 36.0)
+                    .clicked()
+                {
+                    f.quick_connect = QuickConnect::Idle;
+                }
+                ui.label(RichText::new(tr!("quick-connect-waiting")).color(theme::TEXT_3));
                 ui.spinner();
                 let spaced: String = code
                     .chars()
@@ -982,9 +1014,9 @@ fn quick_connect_rows(r: &mut widgets::Rows, f: &mut SourceForm, actions: &mut V
         );
     } else {
         let desc = if let QuickConnect::Failed(err) = &state {
-            format!("Error: {err}")
+            tr!("quick-connect-error", error = err.as_str())
         } else {
-            "Pair without typing your password.".to_string()
+            tr!("quick-connect-desc").to_string()
         };
         let requesting = state == QuickConnect::Requesting;
         r.row("Quick Connect", Some(&desc), |ui| {
@@ -994,7 +1026,7 @@ fn quick_connect_rows(r: &mut widgets::Rows, f: &mut SourceForm, actions: &mut V
                     widgets::button(
                         ui,
                         Some(icons::KEY_RETURN),
-                        "Get pairing code",
+                        tr!("quick-connect-get-code"),
                         Kind::Secondary,
                     )
                 })
@@ -1008,7 +1040,7 @@ fn quick_connect_rows(r: &mut widgets::Rows, f: &mut SourceForm, actions: &mut V
                 });
             }
             if requesting {
-                ui.label(RichText::new("Connecting…").color(theme::TEXT_3));
+                ui.label(RichText::new(tr!("settings-device-connecting")).color(theme::TEXT_3));
                 ui.spinner();
             }
         });
@@ -1018,19 +1050,19 @@ fn quick_connect_rows(r: &mut widgets::Rows, f: &mut SourceForm, actions: &mut V
 /// The PIN part of the edit form: set one, change it or take it away.
 fn pin_rows(ui: &mut egui::Ui, v: &mut View, id: &str, name: &str, has_pin: bool) {
     ui.add_space(20.0);
-    widgets::section_label(ui, "PIN");
+    widgets::section_label(ui, tr!("pin-label"));
     ui.add_space(4.0);
     let desc = if has_pin {
-        "Locked, it is left off Home and its videos are hidden until the PIN is entered."
+        tr!("pin-section-locked-desc")
     } else {
-        "A PIN keeps it, and its videos, hidden from anyone else using the headset."
+        tr!("pin-section-desc")
     };
     widgets::rows(ui, |r| {
         r.row(
             if has_pin {
-                "Locked with a PIN"
+                tr!("sources-locked")
             } else {
-                "No PIN"
+                tr!("pin-none")
             },
             Some(desc),
             |ui| {
@@ -1044,7 +1076,7 @@ fn pin_rows(ui: &mut egui::Ui, v: &mut View, id: &str, name: &str, has_pin: bool
                     if widgets::button_sized(
                         ui,
                         Some(icons::TRASH),
-                        "Remove PIN",
+                        tr!("pin-remove"),
                         Kind::Danger,
                         44.0,
                     )
@@ -1055,7 +1087,7 @@ fn pin_rows(ui: &mut egui::Ui, v: &mut View, id: &str, name: &str, has_pin: bool
                             pin: None,
                         });
                     }
-                    if widgets::button_sized(ui, None, "Change PIN", Kind::Secondary, 44.0)
+                    if widgets::button_sized(ui, None, tr!("pin-change"), Kind::Secondary, 44.0)
                         .clicked()
                     {
                         v.state.pin_form = Some(form(true));
@@ -1063,7 +1095,7 @@ fn pin_rows(ui: &mut egui::Ui, v: &mut View, id: &str, name: &str, has_pin: bool
                 } else if widgets::button_sized(
                     ui,
                     Some(icons::LOCK),
-                    "Set a PIN",
+                    tr!("pin-set"),
                     Kind::Secondary,
                     44.0,
                 )
@@ -1154,7 +1186,7 @@ fn keep_hidden(mut new: SourceConfig, old: &SourceConfig) -> SourceConfig {
 pub fn build_config(f: &SourceForm, id: String) -> Result<SourceConfig, String> {
     let address = f.address.trim().to_string();
     if address.is_empty() {
-        return Err("Enter an address".into());
+        return Err(tr!("source-error-no-address").into());
     }
     let credentials = (!f.username.trim().is_empty())
         .then(|| Credentials::new(f.username.trim(), f.password.clone()));
@@ -1172,7 +1204,7 @@ pub fn build_config(f: &SourceForm, id: String) -> Result<SourceConfig, String> 
         if urlutil::is_http_url(&url) {
             Ok(url)
         } else {
-            Err("Address must start with http:// or https://".into())
+            Err(tr!("source-error-http").into())
         }
     };
     Ok(match f.kind {
@@ -1239,14 +1271,15 @@ pub fn build_config(f: &SourceForm, id: String) -> Result<SourceConfig, String> 
                 .to_string();
             // No share: the whole server, which lists its shares.
             if hostport.is_empty() {
-                return Err(
-                    "Use smb://server/, smb://server/share or smb://server/share/folder".into(),
-                );
+                return Err(tr!("source-error-smb").into());
             }
             let (host, port) = match hostport.rsplit_once(':') {
                 Some((h, p)) => (
                     h.to_string(),
-                    Some(p.parse::<u16>().map_err(|_| "Bad port".to_string())?),
+                    Some(
+                        p.parse::<u16>()
+                            .map_err(|_| tr!("source-error-port").to_string())?,
+                    ),
                 ),
                 None => (hostport, None),
             };
@@ -1267,12 +1300,12 @@ pub fn build_config(f: &SourceForm, id: String) -> Result<SourceConfig, String> 
                         (None, Some(token.clone()), user_id.clone())
                     }
                     QuickConnect::Waiting { .. } => {
-                        return Err("Approve the code in your Jellyfin/Emby app".into());
+                        return Err(tr!("source-error-approve-code").into());
                     }
-                    _ => return Err("Click 'Get pairing code' to sign in".into()),
+                    _ => return Err(tr!("source-error-get-code").into()),
                 }
             } else if credentials.is_none() {
-                return Err("Enter username and password".into());
+                return Err(tr!("source-error-credentials").into());
             } else {
                 (credentials, None, None)
             };
@@ -1287,7 +1320,7 @@ pub fn build_config(f: &SourceForm, id: String) -> Result<SourceConfig, String> 
                 user_id,
             })
         }
-        SourceKind::Dlna => return Err("Pick a server found on the network".into()),
+        SourceKind::Dlna => return Err(tr!("source-error-pick-server").into()),
     })
 }
 

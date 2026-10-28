@@ -52,6 +52,47 @@ Comments say what the code can't:
   (clippy checks).
 - No commented-out code. A known gap is an issue, not a `TODO`.
 
+## Translations
+
+The interface's text is in [Fluent](https://projectfluent.org/) files, one
+per language: `crates/frameplayerx/i18n/<language>/frameplayerx.ftl`.
+English is the source; every other language translates its messages, and a
+message a language lacks shows in English. Translators work on
+[Codeberg Translate](https://translate.codeberg.org/projects/frameplayerx/),
+which sends their changes as pull requests (see [Help translate](../README.md#help-translate)).
+
+- Text the interface shows goes through `tr!("message-id")`, or
+  `tr!("message-id", name = value)` with arguments. Add the message to the
+  English file only, with a comment saying where it shows, "Short." for a
+  button, chip or tab. The build checks each `tr!` against the English
+  file: an unknown id or arguments that don't match don't compile.
+- `tr!` without arguments returns a `&'static str`, kept until the
+  language changes. `const` and `static` items can't call it, so lists of
+  labels are functions.
+- Errors from `fp-sources` and `fp-media` are put into words in
+  `ui/errors.rs`. Text from servers, decoders and drivers shows as it comes.
+- The phone remote's pages (`crates/fp-remote/src/web/`) are filled in as
+  they are served, with the messages `remote_page_text` in `services.rs`
+  hands over in the app's language: `{{remote-send:Send}}` in the HTML,
+  `t('remote-sent', 'Sent to headset')` in `app.js`, each with the English
+  for one it doesn't.
+- A new language: its folder (Weblate adds it) and an entry in `LANGUAGES`
+  in `src/i18n.rs`, named in itself. Steam's name for it goes in
+  `steam_code` if Steam has it. egui can't yet show right-to-left text or
+  scripts that need shaping (Arabic, Hebrew, Thai, the Indic scripts).
+
+```bash
+cargo test -p frameplayerx every_translation -- --nocapture   # each file parses, uses only English's ids and arguments; prints how much is translated
+UI_LANGUAGE=pseudo tools/ui-preview.sh /tmp/pseudo   # every screen in a made-up language
+UI_LANGUAGE=de tools/ui-preview.sh /tmp/de           # or es, fr, ja, zh-CN
+```
+
+The made-up language is English with its letters accented and its vowels
+doubled: text left untranslated stands out, and text that only just fits
+in English shows where German won't. Japanese and Chinese use the
+headset's Noto Sans CJK; for the preview, install it with
+`sudo apt install fonts-noto-cjk`.
+
 ## Repository layout
 
 | Crate | Purpose |
@@ -79,7 +120,6 @@ Comments say what the code can't:
 | `tools/` | Build, package, preview and test scripts |
 | `tools/frame-desktop-install/` | The Desktop Mode installer: a Python script, and the install and uninstall `.desktop` launchers that download and run it (see its [README](../tools/frame-desktop-install/README.md)) |
 | `tools/crash-relay/` | The Cloudflare Worker crash reports go to (see [Crash reports](#crash-reports)) |
-| `vendor/smb/` | The `smb` crate with a credit-accounting fix (see `vendor/smb/PATCHES.md`) |
 
 ## How it fits together
 
@@ -155,6 +195,35 @@ and forward-only migrations in `fp-library/src/schema.rs`. The scanner
 marks files missing rather than deleting them, so ratings, resume points
 and adjustments survive a card being taken out.
 
+**Blu-ray.** `fp-media/src/mvc` rewrites H.264 MVC's second view into
+plain H.264 pictures any decoder takes. In MKV the second view rides in the
+base view's packets. In transport streams (`.ssif`, and `.m2ts` holding
+both views) it has a PID of its own, 0x1012, which FFmpeg's H.264 parser
+holds back whole, so FFmpeg discards it and `second_view.rs` reads it from
+the file, adding each access unit to the base view's packet of the same
+decoding time. `fp-media/src/bluray` opens disc images: a read-only UDF
+reader (`udf.rs`, 2.50 metadata partitions included), the playlists
+(`mpls.rs`) and the main title, its longest playlist. `Input` plays its
+clips one after another, their timestamps moved onto the title's clock;
+3D titles read each clip's SSIF straight out of the image.
+
+**Pictures.** A card shows `MediaRecord::picture`: the frame where a partly
+watched video was left off, else its server's picture, else a thumbnail the
+metadata worker made (`fp-library/src/worker.rs`; only for videos whose
+server offers none). Each pass of the worker first deletes the files in its
+folder no video points to (thumbnails of videos since removed, interrupted
+writes), then makes the frames for videos left off since the last pass,
+after playback, and deletes those of videos since watched; each new
+position gets a new file name, so the UI never shows an old frame from its
+texture cache. Settings › General › Thumbnails reaches a running worker
+through `MetadataWorker::set_options` (`WorkerOptions::thumbnails`,
+`resume_thumbnails`). Server pictures go through
+`frameplayerx/src/image_cache.rs`: kept on disk up to Settings › General ›
+Image cache, least recently used out first. One its server marks
+`immutable` (Jellyfin's, whose address carries the image's tag) is never
+checked again; any other is checked once a day with `If-None-Match` /
+`If-Modified-Since`, shown from the cache meanwhile.
+
 **Data on the headset.**
 
 | Folder | What's in it |
@@ -163,7 +232,7 @@ and adjustments survive a card being taken out.
 | `~/frameplayerx.old` | The previous version, kept for rollback |
 | `~/.config/frameplayerx` | `settings.json`, `sources.json` (passwords, readable only by the user) and the optional `env` file |
 | `~/.local/share/frameplayerx` | The database, `frameplayerx.log` (and `.log.old`), and `Interactive/`, searched for scripts not next to their video |
-| `~/.cache/frameplayerx` | Thumbnails, scrub previews, and `feeds/`: each scene feed's last listing, shown at once the next time it's opened (readable only by the user: its URLs can carry the server's API key) |
+| `~/.cache/frameplayerx` | `thumbnails/` (made thumbnails and the frames where videos were left off), `images/` (server pictures), and `feeds/`: each scene feed's last listing, shown at once the next time it's opened (readable only by the user: its URLs can carry the server's API key) |
 
 ## Running without a headset
 

@@ -1,5 +1,6 @@
 //! The [`Library`] handle: opening, reading and changing media rows.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -12,15 +13,38 @@ use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 
 use crate::error::{Error, Result};
 use crate::record::{
-    HistoryEntry, MEDIA_COLUMNS, Marker, MarkerId, MediaId, MediaRecord, PreviewStrip, SessionId,
+    HistoryEntry, MEDIA_COLUMNS, Marker, MarkerId, MediaId, MediaRecord, PickedTracks, SessionId,
     TagCount, effective_columns, evidence_str, file_name_of, media_from_row, now, stem_of,
 };
 use crate::schema;
+use crate::worker::ThumbnailCrop;
 use fp_core::sync::{lock, read, write};
 
 /// Fraction of the duration after which a playback counts as a full watch
 /// and the video drops out of "continue watching".
 pub const WATCHED_FRACTION: f64 = 0.9;
+
+/// SQL for [`Library::pending_metadata`], of a media table aliased `m`.
+fn pending_sql(thumbnails: bool) -> String {
+    let wanted = if thumbnails {
+        "(m.probed = 0 OR (m.thumbnail IS NULL AND m.thumbnail_url IS NULL))"
+    } else {
+        "m.probed = 0"
+    };
+    format!(
+        "m.missing = 0 AND m.probe_error IS NULL AND {wanted}{}",
+        on_inserted_cards()
+    )
+}
+
+/// SQL true for videos [`MediaRecord::partly_watched`] is true for, of a
+/// media table aliased `m`.
+fn partly_watched_sql() -> String {
+    format!(
+        "(m.resume_position > 0 AND (m.duration IS NULL OR m.duration <= 0
+              OR m.resume_position < m.duration * {WATCHED_FRACTION}))"
+    )
+}
 
 /// Handle to the media library database.
 ///
@@ -118,7 +142,7 @@ pub struct MediaUpsert {
     pub scripts: Vec<String>,
     /// Subtitle locations.
     pub subtitles: Vec<String>,
-    /// Remote thumbnail offered by the source.
+    /// Picture offered by the source's server.
     pub thumbnail_url: Option<String>,
     /// What the source says about it; `None` keeps what was stored.
     pub description: Option<String>,
@@ -201,7 +225,12 @@ impl MediaUpsert {
         u.size = entry.size;
         u.mtime = entry.modified;
         u.duration = entry.duration.filter(|d| d.is_finite() && *d > 0.0);
-        u.thumbnail_url = entry.thumbnail_url.clone();
+        // A server's picture only: a browse entry can carry the library's
+        // own thumbnail file.
+        u.thumbnail_url = entry
+            .thumbnail_url
+            .clone()
+            .filter(|t| t.starts_with("http://") || t.starts_with("https://"));
         u.description = entry.description.clone();
         u.tags = (!entry.tags.is_empty()).then(|| entry.tags.clone());
         u.scripts = entry.scripts.clone();
@@ -536,7 +565,7 @@ pub(crate) fn upsert_conn(conn: &Connection, u: &MediaUpsert) -> Result<UpsertOu
     if content_changed {
         conn.prepare_cached(
             "UPDATE media SET width = NULL, height = NULL, video_codec = NULL, probed = 0,
-                 probe_error = NULL, thumbnail = NULL, preview_strip = NULL
+                 probe_error = NULL, thumbnail = NULL, resume_thumbnail_at = NULL
              WHERE id = ?1",
         )?
         .execute([old.id.0])?;
@@ -639,6 +668,15 @@ pub(crate) fn set_user_format_conn(
         "UPDATE media SET user_format = ?2, projection_kind = ?3, stereo = ?4 WHERE id = ?1",
         params![id.0, json_opt(format)?, kind, stereo],
     )?;
+    let crop =
+        |f: Option<&VideoFormat>| ThumbnailCrop::for_format(f.unwrap_or(&rec.detected.format));
+    // The worker makes its pictures again, showing the new part of the frame.
+    if crop(format) != crop(rec.user_format.as_ref()) {
+        conn.execute(
+            "UPDATE media SET probed = 0, resume_thumbnail_at = NULL WHERE id = ?1",
+            [id.0],
+        )?;
+    }
     Ok(())
 }
 
@@ -722,18 +760,14 @@ impl Library {
     /// above zero and before [`WATCHED_FRACTION`] of the duration.
     pub fn continue_watching(&self, limit: usize) -> Result<Vec<MediaRecord>> {
         let (hide, mut args) = self.hidden_and();
-        args.extend([
-            Value::Real(WATCHED_FRACTION),
-            Value::Integer(limit_i64(limit)),
-        ]);
+        args.push(Value::Integer(limit_i64(limit)));
         self.with(|c| {
             query_records(
                 c,
                 &format!(
-                    "WHERE {hide} m.missing = 0 AND m.resume_position > 0
-                       AND (m.duration IS NULL OR m.duration <= 0
-                            OR m.resume_position < m.duration * ?)
-                     ORDER BY m.last_played DESC, m.id DESC LIMIT ?"
+                    "WHERE {hide} m.missing = 0 AND {}
+                     ORDER BY m.last_played DESC, m.id DESC LIMIT ?",
+                    partly_watched_sql()
                 ),
                 params_from_iter(args),
             )
@@ -998,6 +1032,18 @@ impl Library {
         })
     }
 
+    /// Stores the audio and subtitles picked for a video.
+    pub fn set_tracks(&self, id: MediaId, tracks: &PickedTracks) -> Result<()> {
+        let value = json_opt(Some(tracks).filter(|t| **t != PickedTracks::default()))?;
+        self.with(|c| {
+            let n = c.execute(
+                "UPDATE media SET tracks = ?2 WHERE id = ?1",
+                params![id.0, value],
+            )?;
+            affected(n, id)
+        })
+    }
+
     /// Stores keyframed settings for the video's timeline.
     pub fn set_keyframes(&self, id: MediaId, keyframes: &Keyframes) -> Result<()> {
         let value = json(keyframes)?;
@@ -1069,10 +1115,10 @@ impl Library {
         })
     }
 
-    /// Records progress for a session. Updates the resume position (reset to
-    /// 0 when `finished`), `last_played` and the history row. The play count
-    /// goes up once per session, when it finishes or passes
-    /// [`WATCHED_FRACTION`] of the duration.
+    /// Records progress for a session. Updates the resume position,
+    /// `last_played` and the history row. Playback that finishes or passes
+    /// [`WATCHED_FRACTION`] of the duration counts as watched: the resume
+    /// position goes back to 0 and the play count goes up, once per session.
     pub fn update_playback(
         &self,
         session: SessionId,
@@ -1097,7 +1143,7 @@ impl Library {
             let watched =
                 finished || duration.is_some_and(|d| d > 0.0 && position >= d * WATCHED_FRACTION);
             let counted_now = watched && !completed;
-            let resume = if finished { 0.0 } else { position };
+            let resume = if watched { 0.0 } else { position };
             let t = now();
             c.execute(
                 "UPDATE media SET resume_position = ?2, last_played = ?3,
@@ -1227,30 +1273,100 @@ impl Library {
 
     // -- metadata worker support ---------------------------------------------
 
-    /// Videos the metadata worker still has to process: not missing, not
-    /// failed, not on a card that is out, and not yet probed or without a
-    /// thumbnail. Oldest first.
-    pub fn pending_metadata(&self, limit: usize) -> Result<Vec<MediaRecord>> {
-        let sql = format!(
-            "WHERE m.missing = 0 AND m.probe_error IS NULL
-               AND (m.probed = 0 OR m.thumbnail IS NULL){}
-             ORDER BY m.id LIMIT ?1",
-            on_inserted_cards()
-        );
+    /// Videos the metadata worker still has to probe: not missing, not
+    /// failed, not on a card that is out, and not yet probed, or without any
+    /// picture when it makes `thumbnails`. Oldest first.
+    pub fn pending_metadata(&self, limit: usize, thumbnails: bool) -> Result<Vec<MediaRecord>> {
+        let sql = format!("WHERE {} ORDER BY m.id LIMIT ?1", pending_sql(thumbnails));
         self.with(|c| query_records(c, &sql, [limit_i64(limit)]))
     }
 
     /// Number of rows [`Library::pending_metadata`] would return without a
     /// limit.
-    pub fn pending_metadata_count(&self) -> Result<usize> {
+    pub fn pending_metadata_count(&self, thumbnails: bool) -> Result<usize> {
         let sql = format!(
-            "SELECT COUNT(*) FROM media m WHERE m.missing = 0 AND m.probe_error IS NULL
-               AND (m.probed = 0 OR m.thumbnail IS NULL){}",
-            on_inserted_cards()
+            "SELECT COUNT(*) FROM media m WHERE {}",
+            pending_sql(thumbnails)
         );
         self.with(|c| {
             let n: i64 = c.query_row(&sql, [], |r| r.get(0))?;
             Ok(n.max(0) as usize)
+        })
+    }
+
+    /// Every picture file the videos use (worker use: what else is in its
+    /// folder can go).
+    pub(crate) fn picture_files(&self) -> Result<HashSet<PathBuf>> {
+        self.with(|c| {
+            Ok(c.prepare(
+                "SELECT thumbnail FROM media WHERE thumbnail IS NOT NULL
+                 UNION SELECT resume_thumbnail FROM media WHERE resume_thumbnail IS NOT NULL",
+            )?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .map(|p| p.map(PathBuf::from))
+            .collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// Partly watched videos whose frame at the resume position is still
+    /// to be made, most recently played first.
+    pub fn pending_resume_thumbnails(&self, limit: usize) -> Result<Vec<MediaRecord>> {
+        let sql = format!(
+            "WHERE m.missing = 0 AND {}
+               AND (m.resume_thumbnail_at IS NULL OR m.resume_thumbnail_at <> m.resume_position){}
+             ORDER BY m.last_played DESC, m.id DESC LIMIT ?1",
+            partly_watched_sql(),
+            on_inserted_cards()
+        );
+        self.with(|c| query_records(c, &sql, [limit_i64(limit)]))
+    }
+
+    /// Stores the frame made for `rec` at its resume position; `None` when
+    /// it could not be made, so it is not tried again for that position.
+    pub(crate) fn store_resume_thumbnail(
+        &self,
+        rec: &MediaRecord,
+        path: Option<&Path>,
+    ) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE media SET resume_thumbnail = ?2, resume_thumbnail_at = ?3 WHERE id = ?1",
+                params![
+                    rec.id.0,
+                    path.map(|p| p.to_string_lossy().into_owned()),
+                    rec.resume_position
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Forgets the frames of videos no longer partly watched, or `all` of
+    /// them, and returns their files, for the worker to delete.
+    pub(crate) fn take_resume_thumbnails(&self, all: bool) -> Result<Vec<PathBuf>> {
+        let held = "(m.resume_thumbnail IS NOT NULL OR m.resume_thumbnail_at IS NOT NULL)";
+        let stale = if all {
+            held.to_string()
+        } else {
+            format!("NOT {} AND {held}", partly_watched_sql())
+        };
+        self.in_tx(|c| {
+            let paths = c
+                .prepare(&format!(
+                    "SELECT m.resume_thumbnail FROM media m
+                     WHERE {stale} AND m.resume_thumbnail IS NOT NULL"
+                ))?
+                .query_map([], |r| r.get::<_, String>(0))?
+                .map(|p| p.map(PathBuf::from))
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            c.execute(
+                &format!(
+                    "UPDATE media SET resume_thumbnail = NULL, resume_thumbnail_at = NULL
+                     WHERE id IN (SELECT m.id FROM media m WHERE {stale})"
+                ),
+                [],
+            )?;
+            Ok(paths)
         })
     }
 
@@ -1289,8 +1405,8 @@ impl Library {
             c.execute(
                 "UPDATE media SET duration = COALESCE(?2, duration), width = ?3, height = ?4,
                      video_codec = ?5, detected_format = ?6, detected_evidence = ?7,
-                     projection_kind = ?8, stereo = ?9, thumbnail = ?10, preview_strip = ?11,
-                     probe_error = ?12, probed = 1
+                     projection_kind = ?8, stereo = ?9, thumbnail = ?10, probe_error = ?11,
+                     probed = 1
                  WHERE id = ?1",
                 params![
                     probed.id.0,
@@ -1306,7 +1422,6 @@ impl Library {
                         .thumbnail
                         .as_ref()
                         .map(|p| p.to_string_lossy().into_owned()),
-                    json_opt(probe.preview_strip.as_ref())?,
                     probe.error,
                 ],
             )?;
@@ -1334,7 +1449,6 @@ pub(crate) struct StoredProbe {
     pub video_codec: Option<String>,
     pub detected: DetectedFormat,
     pub thumbnail: Option<PathBuf>,
-    pub preview_strip: Option<PreviewStrip>,
     pub error: Option<String>,
 }
 
@@ -1430,6 +1544,11 @@ mod tests {
         lib.set_keyframes(id, &kf).unwrap();
         lib.add_marker(id, 12.0, "good bit").unwrap();
         lib.set_resume_position(id, 33.0).unwrap();
+        let tracks = PickedTracks {
+            audio: Some(2),
+            subtitles: Some(crate::PickedSubtitles::File("/v/a.ar.srt".into())),
+        };
+        lib.set_tracks(id, &tracks).unwrap();
 
         // Same file again: unchanged.
         assert_eq!(lib.upsert(&u).unwrap().status, UpsertStatus::Unchanged);
@@ -1452,7 +1571,41 @@ mod tests {
         assert_eq!(r.view_settings, Some(vs));
         assert_eq!(r.keyframes, kf);
         assert_eq!(r.resume_position, 33.0);
+        assert_eq!(r.tracks, tracks);
         assert_eq!(lib.markers(id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn picked_tracks_are_kept_and_cleared() {
+        let lib = lib();
+        let id = lib
+            .upsert(&MediaUpsert::new("/v/a.mkv", "local"))
+            .unwrap()
+            .id;
+        assert_eq!(
+            lib.get(id).unwrap().unwrap().tracks,
+            PickedTracks::default()
+        );
+        let off = PickedTracks {
+            audio: None,
+            subtitles: Some(crate::PickedSubtitles::Off),
+        };
+        lib.set_tracks(id, &off).unwrap();
+        assert_eq!(lib.get(id).unwrap().unwrap().tracks, off);
+        // Clearing the history keeps them, as it keeps adjustments.
+        lib.clear_history().unwrap();
+        assert_eq!(lib.get(id).unwrap().unwrap().tracks, off);
+        lib.set_tracks(id, &PickedTracks::default()).unwrap();
+        let stored: Option<String> = lib
+            .with(|c| {
+                Ok(
+                    c.query_row("SELECT tracks FROM media WHERE id = ?1", [id.0], |r| {
+                        r.get(0)
+                    })?,
+                )
+            })
+            .unwrap();
+        assert_eq!(stored, None, "nothing picked is no value");
     }
 
     #[test]
@@ -1476,7 +1629,6 @@ mod tests {
                     video_codec: Some("hevc".into()),
                     detected,
                     thumbnail: Some("/cache/1.jpg".into()),
-                    preview_strip: None,
                     error: None,
                 },
             )
@@ -1747,8 +1899,15 @@ mod tests {
         let p = lib.update_playback(s, 95.0, false).unwrap();
         assert!(p.counted_now);
         assert_eq!(p.play_count, 1);
-        // Near the end: no longer "continue watching".
+        // Near the end: watched, so it starts over and is no longer
+        // "continue watching".
+        assert_eq!(p.resume_position, 0.0);
         assert!(lib.continue_watching(10).unwrap().is_empty());
+        // Back before the mark, it resumes there again.
+        assert_eq!(
+            lib.update_playback(s, 60.0, false).unwrap().resume_position,
+            60.0
+        );
         // Further reports and finishing in the same session do not recount.
         let p = lib.update_playback(s, 100.0, true).unwrap();
         assert_eq!(
@@ -1901,9 +2060,9 @@ mod tests {
         // No card has this ID.
         add(&lib, "volume:0000-0000/Clips/a.mp4");
         let here = add(&lib, "/v/b.mp4");
-        let pending = lib.pending_metadata(10).unwrap();
+        let pending = lib.pending_metadata(10, true).unwrap();
         assert_eq!(pending.iter().map(|r| r.id).collect::<Vec<_>>(), [here]);
-        assert_eq!(lib.pending_metadata_count().unwrap(), 1);
+        assert_eq!(lib.pending_metadata_count(true).unwrap(), 1);
     }
 
     #[test]

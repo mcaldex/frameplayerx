@@ -4,6 +4,7 @@
 mod actions;
 mod frame;
 mod input;
+mod remote;
 mod sources;
 mod tasks;
 
@@ -101,6 +102,8 @@ const MAIN: usize = 0;
 const BAR: usize = 1;
 const ADJUST: usize = 2;
 const KEYBOARD: usize = 3;
+/// The audio and subtitles picker, above the control bar.
+const TRACKS: usize = 4;
 /// The performance overlay's quad layer (the panels' are their indices).
 const PERF_LAYER: u64 = 8;
 /// Where the performance overlay sits from the eyes: low and to the left.
@@ -133,7 +136,7 @@ pub struct App {
     services: Services,
     pub ui: UiState,
     thumbs: ui::thumbs::Thumbs,
-    panels: [Panel; 4],
+    panels: [Panel; 5],
     subs: Panel,
     /// The performance overlay, its sampler while it shows, the last
     /// second of frame times, and the video's counters at its last paint.
@@ -178,6 +181,10 @@ pub struct App {
     /// Up next.
     queue: crate::queue::Queue,
     last_status: Option<PlaybackStatus>,
+    /// When the web remote's details were last built.
+    remote_details_at: Instant,
+    /// The open video's picture for the web remote, by its location.
+    remote_picture: Option<(String, Option<std::path::PathBuf>)>,
     update: Option<fp_updater::Update>,
     /// Counts update checks, so a check for a channel the user has since
     /// left is dropped.
@@ -238,16 +245,20 @@ fn floating_panel(px: [u32; 2], width_m: f32, ppp: f32) -> Panel {
 
 impl App {
     pub fn new(settings: Settings, library: Library) -> App {
+        crate::i18n::set_language(&settings.interface_language());
         let services = Services::new(&settings, library);
-        let thumbs = ui::thumbs::Thumbs::new(services.opener.clone());
+        let thumbs = ui::thumbs::Thumbs::new(services.opener.clone(), services.images.clone());
         let mut panels = [
             floating_panel([1600, 1000], 1.8, 1.25),
             growing_panel([1400, 268], 1.2, 1.25),
             floating_panel([900, 1020], 0.75, 1.25),
             growing_panel([1200, 456], 1.0, 1.25),
+            // As fine as the bar it sits on, and growing with it.
+            growing_panel([850, 560], 1.2 * 850.0 / 1400.0, 1.25),
         ];
         panels[BAR].refresh = Some(Duration::from_millis(250));
         panels[ADJUST].refresh = Some(Duration::from_millis(1000));
+        panels[TRACKS].refresh = Some(Duration::from_millis(1000));
         panels[MAIN].refresh = Some(Duration::from_millis(1000));
         let subs = panel([1600, 320], 1.6, 1.0);
         // Seven rows: the eyes' last.
@@ -299,6 +310,8 @@ impl App {
             offsets: Default::default(),
             queue: Default::default(),
             last_status: None,
+            remote_details_at: Instant::now(),
+            remote_picture: None,
             update: None,
             update_check: 0,
             start_check: None,
@@ -349,8 +362,8 @@ impl App {
     /// One line about the open video and the UI, for the preview harness.
     pub fn status_line(&self) -> String {
         let ui = format!(
-            "ui_visible={} browser={} adjust={}",
-            self.ui_visible, self.show_browser, self.ui.adjust_open
+            "ui_visible={} browser={} adjust={} tracks={}",
+            self.ui_visible, self.show_browser, self.ui.adjust_open, self.ui.tracks_open
         );
         match &self.playback {
             Some(p) => format!(
@@ -376,6 +389,7 @@ impl App {
             "bar" => BAR,
             "adjust" => ADJUST,
             "keyboard" => KEYBOARD,
+            "tracks" => TRACKS,
             _ => return None,
         })
     }
@@ -431,6 +445,22 @@ impl App {
         if self.settings.ui_scale != self.saved.ui_scale {
             self.apply_ui_scale();
         }
+        if self.settings.language != self.saved.language {
+            crate::i18n::set_language(&self.settings.interface_language());
+            self.services.set_remote_language();
+            // Chinese or Japanese forms of the characters they share.
+            for p in self.panels.iter_mut() {
+                ui::theme::set_fonts(&p.ctx);
+            }
+        }
+        if self.settings.image_cache_mb != self.saved.image_cache_mb {
+            self.services.images.set_limit(self.settings.image_cache_mb);
+        }
+        if (self.settings.make_thumbnails, self.settings.resume_frames)
+            != (self.saved.make_thumbnails, self.saved.resume_frames)
+        {
+            self.services.set_worker_options(&self.settings);
+        }
         self.saved = self.settings.clone();
         self.save_settings();
     }
@@ -443,7 +473,8 @@ impl App {
             Err(e) => {
                 if self.unsaved_since.is_none() {
                     log::warn!("saving settings: {e}");
-                    self.ui.toast(format!("Settings couldn't be saved: {e}"));
+                    self.ui
+                        .toast(tr!("error-save-settings", error = e.to_string()));
                 }
                 self.unsaved_since = Some(Instant::now());
             }
@@ -478,6 +509,25 @@ impl App {
                         C::SetSpeed { speed } => Action::SetSpeed(speed),
                         C::Stop => Action::ClosePlayback,
                         C::Recenter => Action::Recenter,
+                        C::SetVolume { volume } => {
+                            self.ui.unmute_volume = None;
+                            Action::SetVolume(volume as f32)
+                        }
+                        C::ToggleMute => {
+                            self.toggle_mute();
+                            continue;
+                        }
+                        C::Previous => Action::StepQueue(-1),
+                        C::Next => Action::StepQueue(1),
+                        C::SelectAudio { stream } => Action::SelectAudio(stream),
+                        C::SelectSubtitles { track } => {
+                            use crate::subtitles::Pick;
+                            Action::SelectSubtitles(match track {
+                                None => Pick::Off,
+                                Some(fp_core::SubtitleTrack::Stream(i)) => Pick::Stream(i),
+                                Some(fp_core::SubtitleTrack::File(i)) => Pick::File(i),
+                            })
+                        }
                     };
                     self.apply(a);
                 }

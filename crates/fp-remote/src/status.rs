@@ -135,11 +135,17 @@ pub(crate) fn command_is_valid(c: &PlayerCommand) -> bool {
         PlayerCommand::Seek { position } => position.is_finite() && *position >= 0.0,
         PlayerCommand::SeekRelative { delta } => delta.is_finite(),
         PlayerCommand::SetSpeed { speed } => speed.is_finite() && *speed > 0.0 && *speed <= 16.0,
+        PlayerCommand::SetVolume { volume } => (0.0..=1.5).contains(volume),
         PlayerCommand::Play
         | PlayerCommand::Pause
         | PlayerCommand::TogglePause
         | PlayerCommand::Stop
-        | PlayerCommand::Recenter => true,
+        | PlayerCommand::Recenter
+        | PlayerCommand::ToggleMute
+        | PlayerCommand::Previous
+        | PlayerCommand::Next
+        | PlayerCommand::SelectAudio { .. }
+        | PlayerCommand::SelectSubtitles { .. } => true,
     }
 }
 

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 /// The library of the folder at `path`: on a card, by the card's ID.
 pub fn config_for(id: String, name: String, path: &Path) -> Result<LibraryConfig, String> {
     if path.is_absolute() && !path.is_dir() {
-        return Err("There is no such folder".into());
+        return Err(tr!("library-error-no-folder").into());
     }
     config_in(&volume::mounted(), id, name, path)
 }
@@ -28,9 +28,9 @@ pub fn config_in(
     let path: PathBuf = path.components().collect();
     let removable = Path::new(volume::REMOVABLE_ROOT);
     if removable.starts_with(&path) {
-        return Err("Choose a folder on the headset or on a card".into());
+        return Err(tr!("library-error-choose-folder").into());
     }
-    let text = path.to_str().ok_or("The folder's name can't be read")?;
+    let text = path.to_str().ok_or(tr!("library-error-name"))?;
     let stable = volume::stable_in(volumes, text);
     if let Some((card, folder)) = volume::split(&stable) {
         let label = volumes
@@ -49,7 +49,7 @@ pub fn config_in(
         });
     }
     if path.starts_with(removable) {
-        return Err("This drive has no ID to tell it apart from other cards".into());
+        return Err(tr!("library-error-no-id").into());
     }
     Ok(LibraryConfig {
         id,
@@ -123,8 +123,8 @@ pub fn display_location(location: &str) -> String {
     match volume::resolve(location) {
         Some(path) => path.into_owned(),
         None => match volume::split(location) {
-            Some((_, "")) | None => "On a card that is not inserted".to_string(),
-            Some((_, path)) => format!("{path}, on a card that is not inserted"),
+            Some((_, "")) | None => tr!("location-card-out").to_string(),
+            Some((_, path)) => tr!("location-on-card-out", path = path),
         },
     }
 }

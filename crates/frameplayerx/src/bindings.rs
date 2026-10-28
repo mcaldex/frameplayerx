@@ -1,8 +1,8 @@
 //! Remappable controller bindings, saved in settings.json. Each hand's face
-//! buttons, Menu/View, bumper and thumbstick press run a [`ButtonAction`];
-//! its thumbstick and grip + thumbstick axes run an [`AxisAction`]. Pointing,
-//! the trigger, grip + trigger drags, paging/scrolling menus and stepping
-//! sliders are fixed.
+//! buttons, Menu/View, bumper and thumbstick press run a [`ButtonAction`],
+//! and another with that hand's grip held; its thumbstick and grip +
+//! thumbstick axes run an [`AxisAction`]. Pointing, the trigger, grip +
+//! trigger drags, paging/scrolling menus and stepping sliders are fixed.
 
 use serde::{Deserialize, Serialize};
 
@@ -20,11 +20,15 @@ pub enum ButtonAction {
     Library,
     PreviousVideo,
     NextVideo,
+    PreviousChapter,
+    NextChapter,
     SeekBack,
     SeekForward,
     BackOneMinute,
     ForwardOneMinute,
     Mute,
+    Subtitles,
+    Bookmark,
     ResetPicture,
     ShowHideControls,
     AdjustPanel,
@@ -33,17 +37,21 @@ pub enum ButtonAction {
 }
 
 impl ButtonAction {
-    pub const ALL: [ButtonAction; 16] = [
+    pub const ALL: [ButtonAction; 20] = [
         ButtonAction::PlayPause,
         ButtonAction::Back,
         ButtonAction::Library,
         ButtonAction::PreviousVideo,
         ButtonAction::NextVideo,
+        ButtonAction::PreviousChapter,
+        ButtonAction::NextChapter,
         ButtonAction::SeekBack,
         ButtonAction::SeekForward,
         ButtonAction::BackOneMinute,
         ButtonAction::ForwardOneMinute,
         ButtonAction::Mute,
+        ButtonAction::Subtitles,
+        ButtonAction::Bookmark,
         ButtonAction::ResetPicture,
         ButtonAction::ShowHideControls,
         ButtonAction::AdjustPanel,
@@ -54,37 +62,43 @@ impl ButtonAction {
 
     pub fn label(self) -> &'static str {
         match self {
-            ButtonAction::Nothing => "Nothing",
-            ButtonAction::PlayPause => "Play / pause",
-            ButtonAction::Back => "Back",
-            ButtonAction::Library => "Browse",
-            ButtonAction::PreviousVideo => "Previous video",
-            ButtonAction::NextVideo => "Next video",
-            ButtonAction::SeekBack => "Seek back",
-            ButtonAction::SeekForward => "Seek forward",
-            ButtonAction::BackOneMinute => "Back 1 minute",
-            ButtonAction::ForwardOneMinute => "Forward 1 minute",
-            ButtonAction::Mute => "Mute",
-            ButtonAction::ResetPicture => "Reset picture",
-            ButtonAction::ShowHideControls => "Show / hide controls",
-            ButtonAction::AdjustPanel => "Adjust panel",
-            ButtonAction::Passthrough => "Show your room",
-            ButtonAction::Recenter => "Recenter",
+            ButtonAction::Nothing => tr!("action-nothing"),
+            ButtonAction::PlayPause => tr!("action-play-pause"),
+            ButtonAction::Back => tr!("action-back"),
+            ButtonAction::Library => tr!("action-browse"),
+            ButtonAction::PreviousVideo => tr!("action-previous-video"),
+            ButtonAction::NextVideo => tr!("action-next-video"),
+            ButtonAction::PreviousChapter => tr!("action-previous-chapter"),
+            ButtonAction::NextChapter => tr!("action-next-chapter"),
+            ButtonAction::SeekBack => tr!("action-seek-back"),
+            ButtonAction::SeekForward => tr!("action-seek-forward"),
+            ButtonAction::BackOneMinute => tr!("action-back-minute"),
+            ButtonAction::ForwardOneMinute => tr!("action-forward-minute"),
+            ButtonAction::Mute => tr!("action-mute"),
+            ButtonAction::Subtitles => tr!("action-subtitles"),
+            ButtonAction::Bookmark => tr!("action-bookmark"),
+            ButtonAction::ResetPicture => tr!("action-reset-picture"),
+            ButtonAction::ShowHideControls => tr!("action-show-hide"),
+            ButtonAction::AdjustPanel => tr!("action-adjust"),
+            ButtonAction::Passthrough => tr!("action-room"),
+            ButtonAction::Recenter => tr!("action-recenter"),
         }
     }
 
     /// A shorter label, for the controller picture.
     pub fn short_label(self) -> &'static str {
         match self {
-            ButtonAction::PlayPause => "Play/pause",
-            ButtonAction::PreviousVideo => "Previous",
-            ButtonAction::NextVideo => "Next",
-            ButtonAction::BackOneMinute => "−1 min",
-            ButtonAction::ForwardOneMinute => "+1 min",
-            ButtonAction::ResetPicture => "Reset view",
-            ButtonAction::ShowHideControls => "Show/hide UI",
-            ButtonAction::AdjustPanel => "Adjust",
-            ButtonAction::Passthrough => "Room",
+            ButtonAction::PlayPause => tr!("action-short-play-pause"),
+            ButtonAction::PreviousVideo => tr!("action-short-previous"),
+            ButtonAction::NextVideo => tr!("action-short-next"),
+            ButtonAction::PreviousChapter => tr!("action-short-previous-chapter"),
+            ButtonAction::Subtitles => tr!("action-short-subtitles"),
+            ButtonAction::BackOneMinute => tr!("toast-minus-minute"),
+            ButtonAction::ForwardOneMinute => tr!("toast-plus-minute"),
+            ButtonAction::ResetPicture => tr!("action-short-reset"),
+            ButtonAction::ShowHideControls => tr!("action-short-show-hide"),
+            ButtonAction::AdjustPanel => tr!("action-short-adjust"),
+            ButtonAction::Passthrough => tr!("action-short-room"),
             other => other.label(),
         }
     }
@@ -118,22 +132,22 @@ impl AxisAction {
 
     pub fn label(self) -> &'static str {
         match self {
-            AxisAction::Nothing => "Nothing",
-            AxisAction::Seek => "Seek",
-            AxisAction::Volume => "Volume",
-            AxisAction::Tilt => "Tilt the picture",
-            AxisAction::Turn => "Turn the picture",
-            AxisAction::Zoom => "Zoom",
-            AxisAction::Height => "Raise or lower yourself",
+            AxisAction::Nothing => tr!("action-nothing"),
+            AxisAction::Seek => tr!("action-seek"),
+            AxisAction::Volume => tr!("settings-volume"),
+            AxisAction::Tilt => tr!("action-tilt"),
+            AxisAction::Turn => tr!("action-turn"),
+            AxisAction::Zoom => tr!("adjust-zoom"),
+            AxisAction::Height => tr!("action-height"),
         }
     }
 
     /// A shorter label, for the controller picture.
     pub fn short_label(self) -> &'static str {
         match self {
-            AxisAction::Tilt => "Tilt",
-            AxisAction::Turn => "Turn",
-            AxisAction::Height => "Height",
+            AxisAction::Tilt => tr!("action-short-tilt"),
+            AxisAction::Turn => tr!("action-short-turn"),
+            AxisAction::Height => tr!("settings-height"),
             other => other.label(),
         }
     }
@@ -170,13 +184,13 @@ impl Button {
             (Button::West, true) => "X",
             (Button::North, true) => "Y",
             (Button::Menu, true) => "Menu",
-            (Button::South, false) => "D-pad down",
-            (Button::East, false) => "D-pad right",
-            (Button::West, false) => "D-pad left",
-            (Button::North, false) => "D-pad up",
+            (Button::South, false) => tr!("button-dpad-down"),
+            (Button::East, false) => tr!("button-dpad-right"),
+            (Button::West, false) => tr!("button-dpad-left"),
+            (Button::North, false) => tr!("button-dpad-up"),
             (Button::Menu, false) => "View",
-            (Button::Shoulder, _) => "Bumper",
-            (Button::StickClick, _) => "Thumbstick press",
+            (Button::Shoulder, _) => tr!("button-bumper"),
+            (Button::StickClick, _) => tr!("button-stick-press"),
         }
     }
 
@@ -208,10 +222,8 @@ impl Axis {
     }
 }
 
-/// One controller's bindings. A field missing from settings.json (a
-/// binding added in a later version) reads as Nothing.
+/// One controller's bindings.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct HandBindings {
     pub south: ButtonAction,
     pub east: ButtonAction,
@@ -224,6 +236,46 @@ pub struct HandBindings {
     pub stick_y: AxisAction,
     pub grip_x: AxisAction,
     pub grip_y: AxisAction,
+    pub grip: GripButtons,
+}
+
+/// What the buttons do pressed with their controller's grip held. Nothing
+/// does what the button does alone.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GripButtons {
+    pub south: ButtonAction,
+    pub east: ButtonAction,
+    pub west: ButtonAction,
+    pub north: ButtonAction,
+    pub menu: ButtonAction,
+    pub shoulder: ButtonAction,
+    pub stick_click: ButtonAction,
+}
+
+impl GripButtons {
+    pub fn button(&self, b: Button) -> ButtonAction {
+        match b {
+            Button::South => self.south,
+            Button::East => self.east,
+            Button::West => self.west,
+            Button::North => self.north,
+            Button::Menu => self.menu,
+            Button::Shoulder => self.shoulder,
+            Button::StickClick => self.stick_click,
+        }
+    }
+
+    pub fn button_mut(&mut self, b: Button) -> &mut ButtonAction {
+        match b {
+            Button::South => &mut self.south,
+            Button::East => &mut self.east,
+            Button::West => &mut self.west,
+            Button::North => &mut self.north,
+            Button::Menu => &mut self.menu,
+            Button::Shoulder => &mut self.shoulder,
+            Button::StickClick => &mut self.stick_click,
+        }
+    }
 }
 
 impl HandBindings {
@@ -271,12 +323,51 @@ impl HandBindings {
 }
 
 /// Both controllers. The default: the right hand runs playback, the left
-/// the picture, with play/pause and seeking under either thumb.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+/// the picture, with play/pause and seeking under either thumb; the right
+/// grip makes X/Y chapters, A a bookmark and the thumbstick press subtitles.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Bindings {
     pub left: HandBindings,
     pub right: HandBindings,
+}
+
+impl<'de> Deserialize<'de> for Bindings {
+    /// What is saved over the defaults: a binding missing from the file
+    /// (one added in a later version) comes with its default, the ones
+    /// there stay as they were set.
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let saved = serde_json::Value::deserialize(d)?;
+        let defaults = Bindings::default();
+        let hand = |name: &str, default: &HandBindings| {
+            let mut v = serde_json::to_value(default).map_err(D::Error::custom)?;
+            if let Some(s) = saved.get(name) {
+                overlay(&mut v, s.clone());
+            }
+            serde_json::from_value(v).map_err(D::Error::custom)
+        };
+        Ok(Bindings {
+            left: hand("left", &defaults.left)?,
+            right: hand("right", &defaults.right)?,
+        })
+    }
+}
+
+/// `saved` over `base`: objects key by key, anything else replaced.
+fn overlay(base: &mut serde_json::Value, saved: serde_json::Value) {
+    match (base, saved) {
+        (serde_json::Value::Object(b), serde_json::Value::Object(s)) => {
+            for (k, v) in s {
+                match b.get_mut(&k) {
+                    Some(slot) => overlay(slot, v),
+                    None => {
+                        b.insert(k, v);
+                    }
+                }
+            }
+        }
+        (b, s) => *b = s,
+    }
 }
 
 impl Default for Bindings {
@@ -296,6 +387,7 @@ impl Default for Bindings {
                 stick_y: X::Tilt,
                 grip_x: X::Turn,
                 grip_y: X::Zoom,
+                grip: GripButtons::default(),
             },
             right: HandBindings {
                 south: B::PlayPause,
@@ -309,6 +401,13 @@ impl Default for Bindings {
                 stick_y: X::Volume,
                 grip_x: X::Nothing,
                 grip_y: X::Height,
+                grip: GripButtons {
+                    south: B::Bookmark,
+                    west: B::PreviousChapter,
+                    north: B::NextChapter,
+                    stick_click: B::Subtitles,
+                    ..GripButtons::default()
+                },
             },
         }
     }
@@ -338,12 +437,18 @@ mod tests {
         let json = serde_json::to_string(&b).unwrap();
         assert!(json.contains("\"south\":\"play_pause\""), "{json}");
         assert_eq!(serde_json::from_str::<Bindings>(&json).unwrap(), b);
-        // A file from before a hand (or a button) existed keeps the rest.
+        // A file from before a binding (or a hand) existed: what it has
+        // stays, what it lacks comes with its default.
         let partial: Bindings =
-            serde_json::from_str(r#"{"right":{"south":"next_video"}}"#).unwrap();
+            serde_json::from_str(r#"{"right":{"south":"next_video","grip":{"north":"nothing"}}}"#)
+                .unwrap();
         assert_eq!(partial.right.south, ButtonAction::NextVideo);
-        assert_eq!(partial.right.east, ButtonAction::Nothing);
+        assert_eq!(partial.right.east, ButtonAction::Back);
+        let grip = &partial.right.grip;
+        assert_eq!(grip.north, ButtonAction::Nothing, "set to Same as press");
+        assert_eq!(grip.west, ButtonAction::PreviousChapter);
         assert_eq!(partial.left, Bindings::default().left);
+        assert!(json.contains("\"grip\":{"), "{json}");
     }
 
     #[test]

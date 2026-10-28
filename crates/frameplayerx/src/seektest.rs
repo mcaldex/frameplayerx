@@ -114,7 +114,8 @@ pub fn run(location: &str, opts: &SeekTestOptions) -> Result<(), String> {
             audio: Backend::Null,
             ..Default::default()
         };
-        let p = Player::open(src, &name, cfg, |_| None).map_err(|e| format!("{name}: {e}"))?;
+        let p = Player::open(src, &name, cfg, |_| fp_media::Tracks::default())
+            .map_err(|e| format!("{name}: {e}"))?;
         if !run_for(&p, STUCK, |p| landed(p, 0.0)) {
             failures.push(format!("round {round}: no picture after opening"));
             close(p)?;

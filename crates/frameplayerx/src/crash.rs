@@ -201,6 +201,8 @@ const PRIVATE_EXTENSIONS: &[&str] = &[
     "ts",
     "m2ts",
     "mts",
+    "ssif",
+    "iso",
     "mpg",
     "mpeg",
     "3gp",

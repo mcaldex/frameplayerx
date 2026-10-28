@@ -3,16 +3,17 @@
 mod common;
 
 use common::*;
-use fp_core::PlayerCommand;
-use fp_remote::{RemoteEvent, RemoteHub};
+use fp_core::{PlayerCommand, SubtitleTrack};
+use fp_remote::{
+    RemoteAudio, RemoteDetails, RemoteEvent, RemoteHub, RemoteMarker, RemoteSubtitles,
+};
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn started() -> (RemoteHub, SocketAddr, String) {
     let hub = hub();
-    let addr = hub.start_web(Arc::new(FakeLibrary::new())).unwrap();
+    let addr = hub.start_web().unwrap();
     let token = hub.token();
     (hub, addr, token)
 }
@@ -21,15 +22,28 @@ fn bearer(token: &str) -> String {
     format!("Bearer {token}")
 }
 
+const FORM: (&str, &str) = ("Content-Type", "application/x-www-form-urlencoded");
+
+/// Enters `code` on the pairing page.
+fn enter(addr: SocketAddr, code: &str) -> HttpResponse {
+    http(
+        addr,
+        "POST",
+        "/pair",
+        &[FORM],
+        format!("code={code}").as_bytes(),
+    )
+}
+
+/// A code that isn't `code`.
+fn not(code: &str) -> &'static str {
+    if code == "000000" { "111111" } else { "000000" }
+}
+
 #[test]
 fn everything_but_assets_requires_the_token() {
     let (_hub, addr, token) = started();
-    for path in [
-        "/api/status",
-        "/api/library?q=",
-        "/api/thumb/1",
-        "/api/events",
-    ] {
+    for path in ["/api/status", "/api/picture", "/api/events"] {
         let r = http(addr, "GET", path, &[], b"");
         assert_eq!(r.status, 401, "{path}");
     }
@@ -38,13 +52,16 @@ fn everything_but_assets_requires_the_token() {
     let wrong = "fp_remote_token=0000";
     let r = http(addr, "GET", "/api/status", &[("Cookie", wrong)], b"");
     assert_eq!(r.status, 401);
-    let r = http(addr, "GET", "/api/status?token=nope", &[], b"");
+    // The token never travels in an address, where history keeps it.
+    let r = http(addr, "GET", &format!("/api/status?token={token}"), &[], b"");
+    assert_eq!(r.status, 401);
+    let r = http(addr, "GET", &format!("/?token={token}"), &[], b"");
     assert_eq!(r.status, 401);
 
-    // Unpaired page explains what to do; it is not the app.
+    // Unpaired, the page asks for the headset's code; it is not the app.
     let r = http(addr, "GET", "/", &[], b"");
     assert_eq!(r.status, 401);
-    assert!(r.text().contains("Not paired"));
+    assert!(r.text().contains("action=\"/pair\""));
     assert!(!r.text().contains("app.js"));
 
     // Static code needs no token (it holds no data).
@@ -70,16 +87,24 @@ fn everything_but_assets_requires_the_token() {
 }
 
 #[test]
-fn pairing_url_sets_cookie_and_redirects() {
+fn the_headsets_code_pairs_a_phone() {
     let (hub, addr, token) = started();
-    let url = hub.pairing_url(Ipv4Addr::LOCALHOST);
     assert_eq!(
-        url,
-        format!("http://127.0.0.1:{}/?token={token}", addr.port())
+        hub.pairing_address(Ipv4Addr::LOCALHOST),
+        format!("127.0.0.1:{}", addr.port())
     );
-    let path = &url[url.find("/?").unwrap()..];
+    let r = enter(addr, "123456");
+    assert_eq!(r.status, 401);
+    assert!(r.text().contains("isn't showing a code"), "{}", r.text());
 
-    let r = http(addr, "GET", path, &[], b"");
+    let code = hub.pairing_code().unwrap().unwrap();
+    let r = enter(addr, not(&code));
+    assert_eq!(r.status, 401);
+    assert!(r.text().contains("isn't the code"));
+    assert!(r.header("Set-Cookie").is_none());
+
+    // Typed as the headset shows it, with a space.
+    let r = enter(addr, &format!("{}+{}", &code[..3], &code[3..]));
     assert_eq!(r.status, 303);
     assert_eq!(r.header("Location"), Some("/"));
     let cookie = r.header("Set-Cookie").unwrap();
@@ -110,10 +135,32 @@ fn pairing_url_sets_cookie_and_redirects() {
     let back: fp_core::PlaybackStatus = serde_json::from_value(s).unwrap();
     assert_eq!(back.position, 7.0);
 
+    // Used up: another phone needs the new code the headset shows next.
+    assert!(enter(addr, &code).text().contains("isn't showing a code"));
+
     // Rotating the token unpairs.
     hub.regenerate_token().unwrap();
     let r = http(addr, "GET", "/api/status", &[("Cookie", pair)], b"");
     assert_eq!(r.status, 401);
+}
+
+#[test]
+fn wrong_codes_stop_pairing() {
+    let (hub, addr, _) = started();
+    let code = hub.pairing_code().unwrap().unwrap();
+    for _ in 0..5 {
+        assert!(enter(addr, not(&code)).text().contains("isn't the code"));
+    }
+    let r = enter(addr, &code);
+    assert_eq!(r.status, 401, "not even the right one");
+    assert!(r.text().contains("Too many wrong codes"));
+    assert_eq!(hub.pairing_code().unwrap(), None);
+
+    hub.new_pairing_code();
+    let code = hub.pairing_code().unwrap().unwrap();
+    assert_eq!(enter(addr, &code).status, 303);
+    let r = http(addr, "GET", "/pair", &[], b"");
+    assert_eq!(r.status, 405);
 }
 
 #[test]
@@ -164,12 +211,40 @@ fn commands_and_text_reach_the_event_queue() {
         RemoteEvent::Command(PlayerCommand::SeekRelative { delta: -10.0 })
     );
 
+    for (body, cmd) in [
+        (
+            &br#"{"cmd":"set_volume","volume":0.5}"#[..],
+            PlayerCommand::SetVolume { volume: 0.5 },
+        ),
+        (br#"{"cmd":"toggle_mute"}"#, PlayerCommand::ToggleMute),
+        (br#"{"cmd":"next"}"#, PlayerCommand::Next),
+        (
+            br#"{"cmd":"select_audio","stream":2}"#,
+            PlayerCommand::SelectAudio { stream: 2 },
+        ),
+        (
+            br#"{"cmd":"select_subtitles","track":{"stream":3}}"#,
+            PlayerCommand::SelectSubtitles {
+                track: Some(SubtitleTrack::Stream(3)),
+            },
+        ),
+        (
+            br#"{"cmd":"select_subtitles","track":null}"#,
+            PlayerCommand::SelectSubtitles { track: None },
+        ),
+    ] {
+        let r = http(addr, "POST", "/api/command", &h, body);
+        assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(body));
+        assert_eq!(next_event(&hub), RemoteEvent::Command(cmd));
+    }
+
     // Rejected: bad JSON, unknown command, bad values, wrong method.
     for body in [
         &b"nope"[..],
         br#"{"cmd":"explode"}"#,
         br#"{"cmd":"seek","position":-1}"#,
         br#"{"cmd":"set_speed","speed":0}"#,
+        br#"{"cmd":"set_volume","volume":2}"#,
         br#"{"cmd":"open","location":""}"#,
     ] {
         let r = http(addr, "POST", "/api/command", &h, body);
@@ -201,54 +276,74 @@ fn commands_and_text_reach_the_event_queue() {
 }
 
 #[test]
-fn library_search_and_thumbnails() {
-    let (_hub, addr, token) = started();
+fn details_and_the_picture_reach_the_page() {
+    let (hub, addr, token) = started();
     let auth = bearer(&token);
     let h = [("Authorization", auth.as_str())];
+    assert_eq!(http(addr, "GET", "/api/picture", &h, b"").status, 404);
+    assert!(http(addr, "GET", "/api/status", &h, b"").json()["picture"].is_null());
 
-    let r = http(addr, "GET", "/api/library", &h, b"");
-    assert_eq!(r.status, 200);
-    let items = r.json()["items"].as_array().unwrap().clone();
-    assert_eq!(items.len(), 4);
-    assert_eq!(items[0]["id"], 1);
-    assert_eq!(items[0]["title"], "Beach sunset");
-    assert_eq!(items[0]["location"], "/media/1.mp4");
-    assert_eq!(items[0]["duration"], 60.0);
-    assert_eq!(items[0]["format_label"], "180° Side by side");
-    assert_eq!(items[0]["has_thumbnail"], true);
-
-    let r = http(
-        addr,
-        "GET",
-        "/api/library?q=BEACH&limit=1&offset=1",
-        &h,
-        b"",
-    );
-    let j = r.json();
-    let items = j["items"].as_array().unwrap();
-    assert_eq!(items.len(), 1);
-    // Library text comes back verbatim as JSON data; the page renders it
+    hub.publish(&playing("/media/x.mp4", 7.0));
+    hub.publish_details(&RemoteDetails {
+        format: "180° 3D".into(),
+        picture: Some(picture_file()),
+        markers: vec![RemoteMarker {
+            time: 30.0,
+            name: "Into <the> cove".into(),
+        }],
+        volume: 0.7,
+        audio: vec![RemoteAudio {
+            stream: 1,
+            label: "English".into(),
+            detail: "aac · 2 ch".into(),
+            selected: true,
+        }],
+        subtitles: vec![RemoteSubtitles {
+            track: SubtitleTrack::File(0),
+            label: "English".into(),
+            detail: String::new(),
+            selected: false,
+        }],
+        has_previous: false,
+        has_next: true,
+    });
+    let s = http(addr, "GET", "/api/status", &h, b"").json();
+    let d = &s["details"];
+    assert_eq!(d["format"], "180° 3D");
+    // Server text comes back verbatim as JSON data; the page renders it
     // with textContent.
-    assert_eq!(
-        items[0]["title"],
-        "Beach volleyball <script>alert(1)</script>"
-    );
-    assert_eq!(j["limit"], 1);
-    assert_eq!(j["offset"], 1);
+    assert_eq!(d["markers"][0]["name"], "Into <the> cove");
+    assert_eq!(d["volume"], 0.7);
+    assert_eq!(d["audio"][0]["stream"], 1);
+    assert_eq!(d["subtitles"][0]["track"]["file"], 0);
+    assert_eq!(d["has_next"], true);
+    assert!(d.get("picture").is_none(), "the headset's path stays on it");
+    assert!(s["picture"].is_u64());
 
-    let r = http(addr, "GET", "/api/library?q=mountain%20hike", &h, b"");
-    assert_eq!(r.json()["items"][0]["id"], 2);
-    let r = http(addr, "GET", "/api/library?limit=99999&offset=x", &h, b"");
-    assert_eq!(r.json()["limit"], 200);
-    assert_eq!(r.json()["offset"], 0);
-
-    let r = http(addr, "GET", "/api/thumb/1", &h, b"");
+    let r = http(addr, "GET", "/api/picture", &h, b"");
     assert_eq!(r.status, 200);
     assert_eq!(r.header("Content-Type"), Some("image/jpeg"));
     assert_eq!(r.body, JPEG);
-    assert_eq!(http(addr, "GET", "/api/thumb/2", &h, b"").status, 404);
-    assert_eq!(http(addr, "GET", "/api/thumb/abc", &h, b"").status, 404);
+    assert_eq!(http(addr, "GET", "/api/picture", &[], b"").status, 401);
     assert_eq!(http(addr, "GET", "/api/nothing", &h, b"").status, 404);
+}
+
+#[test]
+fn details_changes_reach_live_streams() {
+    let (hub, addr, token) = started();
+    let (mut s, mut buf) = open_stream(addr, &token);
+    next_data(&mut s, &mut buf, |v| v["location"] == "");
+    hub.publish(&fp_core::PlaybackStatus {
+        playing: false,
+        ..playing("/media/paused.mp4", 3.0)
+    });
+    next_data(&mut s, &mut buf, |v| v["location"] == "/media/paused.mp4");
+    // Paused, so no periodic refresh: only the change sends it.
+    hub.publish_details(&RemoteDetails {
+        volume: 0.25,
+        ..Default::default()
+    });
+    next_data(&mut s, &mut buf, |v| v["details"]["volume"] == 0.25);
 }
 
 /// Reads server-sent events until one `data:` line satisfies `f`.
@@ -281,7 +376,7 @@ fn live_status_stream() {
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     write!(
         s,
-        "GET /api/events?token={token} HTTP/1.1\r\nHost: x\r\nAccept: text/event-stream\r\n\r\n"
+        "GET /api/events HTTP/1.1\r\nHost: x\r\nCookie: fp_remote_token={token}\r\nAccept: text/event-stream\r\n\r\n"
     )
     .unwrap();
     let mut buf = Vec::new();
@@ -299,7 +394,6 @@ fn live_status_stream() {
             .unwrap()
             .starts_with("text/event-stream")
     );
-    assert!(head.header("Set-Cookie").is_some());
     buf.drain(..split + 4);
 
     next_data(&mut s, &mut buf, |v| v["location"] == "");
@@ -321,7 +415,7 @@ fn open_stream(addr: SocketAddr, token: &str) -> (TcpStream, Vec<u8>) {
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     write!(
         s,
-        "GET /api/events?token={token} HTTP/1.1\r\nHost: x\r\n\r\n"
+        "GET /api/events HTTP/1.1\r\nHost: x\r\nCookie: fp_remote_token={token}\r\n\r\n"
     )
     .unwrap();
     let mut buf = Vec::new();
@@ -375,16 +469,22 @@ fn event_streams_are_capped() {
         ..Default::default()
     })
     .unwrap();
-    let addr = hub.start_web(Arc::new(FakeLibrary::new())).unwrap();
+    let addr = hub.start_web().unwrap();
     let token = hub.token();
     let mut first = TcpStream::connect(addr).unwrap();
     write!(
         first,
-        "GET /api/events?token={token} HTTP/1.1\r\nHost: x\r\n\r\n"
+        "GET /api/events HTTP/1.1\r\nHost: x\r\nCookie: fp_remote_token={token}\r\n\r\n"
     )
     .unwrap();
     assert!(wait_for(Duration::from_secs(2), || hub.web_client_count() == 1));
-    let r = http(addr, "GET", &format!("/api/events?token={token}"), &[], b"");
+    let r = http(
+        addr,
+        "GET",
+        "/api/events",
+        &[("Authorization", &bearer(&token))],
+        b"",
+    );
     assert_eq!(r.status, 503);
     hub.stop();
     assert!(hub.web_addr().is_none());

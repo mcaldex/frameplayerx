@@ -56,8 +56,9 @@ impl App {
     /// let go is saved: the bar's relative to a flat screen, the adjust
     /// panel's relative to the bar, so each goes along when what it is
     /// placed from moves. Squeezing one on the keyboard moves the panel it
-    /// types into, and the keyboard with it. The picture itself is dragged
-    /// with grip and trigger (see `controls`).
+    /// types into, and the keyboard with it; on the audio and subtitles
+    /// picker, the bar it sits on. The picture itself is dragged with grip
+    /// and trigger (see `controls`).
     pub(super) fn move_panels(
         &mut self,
         grab: Option<(usize, usize)>,
@@ -90,7 +91,7 @@ impl App {
         let grab = grab.and_then(|(panel, hand)| match panel {
             KEYBOARD => self.keyboard_target().map(|t| (t, hand)),
             MAIN | ADJUST => Some((panel, hand)),
-            BAR if self.playback.is_some() => Some((panel, hand)),
+            BAR | TRACKS if self.playback.is_some() => Some((BAR, hand)),
             _ => None,
         });
         if let Some((panel, hand)) = grab
@@ -193,6 +194,7 @@ impl App {
             p.watch_decoding(self.settings.hardware_decoding);
         }
         self.publish_status();
+        self.publish_details();
     }
 
     /// The room's frame of reference for the panels and the video.
@@ -353,6 +355,7 @@ impl App {
             && self.ui_visible
             && !paused
             && !self.ui.adjust_open
+            && !self.ui.tracks_open
             && !self.show_browser
             && self.last_activity.elapsed().as_secs_f32() > self.settings.auto_hide_secs
         {
@@ -366,11 +369,13 @@ impl App {
         }
         self.panels[BAR].visible = playing && self.ui_visible && !self.show_browser;
         self.panels[ADJUST].visible = self.panels[BAR].visible && self.ui.adjust_open;
+        self.panels[TRACKS].visible = self.panels[BAR].visible && self.ui.tracks_open;
     }
 
     /// Where each panel goes: the control bar from the player (see
-    /// `player_anchor`), and the adjust panel at its own place beside the
-    /// bar, upright, going wherever the bar goes.
+    /// `player_anchor`), the audio and subtitles picker on top of it, and
+    /// the adjust panel at its own place beside the bar, upright, going
+    /// wherever the bar goes.
     fn place_panels(&mut self, anchor: Mat4, kb_target: Option<usize>) {
         let bar_anchor = self.player_anchor(anchor);
         // The adjust panel holds still while the trigger is held on it: its
@@ -393,6 +398,7 @@ impl App {
         let [ay, ap] = self.offsets.adjust;
         self.panels[MAIN].pose = place_below(anchor, my, mp, 1.5, BELOW_DEG);
         self.panels[BAR].pose = place(bar_anchor, 0.0, 1.05, -0.32, 22.0);
+        self.panels[TRACKS].pose = above_bar(&self.panels[BAR], &self.panels[TRACKS]);
         self.panels[ADJUST].pose = place_around(adjust_anchor, beside + ay, ap, 1.15, 0.0);
         // The keyboard sits below the panel it types into, turned with it, so
         // it is where that panel was moved to.
@@ -409,9 +415,9 @@ impl App {
     /// commands; returns the haptic pulses to play.
     fn route_input(&mut self, input: &FrameInput, anchor: Mat4) -> Vec<(usize, f32, i64)> {
         let routed = {
-            let [a, b, c, d] = &mut self.panels;
+            let [a, b, c, d, e] = &mut self.panels;
             self.pointer
-                .route(&mut [a, b, c, d], &input.hands, input.dt)
+                .route(&mut [a, b, c, d, e], &input.hands, input.dt)
         };
         let mut buzz = Vec::new();
         self.move_panels(routed.grab, &input.hands, anchor, &mut buzz);
@@ -440,7 +446,7 @@ impl App {
         let devices = self.services.haptic_statuses();
         let passthrough_available = input.passthrough_available;
         let eyes = self.eyes;
-        for idx in [MAIN, BAR, ADJUST] {
+        for idx in [MAIN, BAR, ADJUST, TRACKS] {
             if !self.panels[idx].needs_paint() {
                 continue;
             }
@@ -469,6 +475,7 @@ impl App {
             let r = panels[idx].paint(renderer, input.time, |ctx| match idx {
                 MAIN => ui::library::browser(ctx, &mut view),
                 BAR => ui::player::control_bar(ctx, &mut view),
+                TRACKS => ui::player::tracks_panel(ctx, &mut view),
                 _ => ui::player::adjust_panel(ctx, &mut view),
             });
             if let Err(e) = r {
@@ -621,7 +628,9 @@ impl App {
         for p in self.panels.iter_mut() {
             p.update_fade(input.dt);
         }
-        let mut order: Vec<usize> = (0..4).filter(|&i| self.panels[i].shown()).collect();
+        let mut order: Vec<usize> = (0..self.panels.len())
+            .filter(|&i| self.panels[i].shown())
+            .collect();
         order.sort_by(|&a, &b| {
             let da = (self.panels[a].pose.w_axis.truncate() - eye).length();
             let db = (self.panels[b].pose.w_axis.truncate() - eye).length();
@@ -785,5 +794,59 @@ pub(super) fn key(key: egui::Key) -> egui::Event {
         pressed: true,
         repeat: false,
         modifiers: egui::Modifiers::NONE,
+    }
+}
+
+/// Where the audio and subtitles picker goes: on the control bar's plane,
+/// right on top of it, its right edge over the end of what the bar holds.
+/// Its bottom edge meets the top of the bar's body, so neither panel covers
+/// the other's controls.
+fn above_bar(bar: &Panel, picker: &Panel) -> Mat4 {
+    let room = ui::widgets::SHADOW_ROOM;
+    // Metres per point of each.
+    let b = bar.size.x / bar.points().x;
+    let p = picker.size.x / picker.points().x;
+    let top = bar.size.y / 2.0 - room.top as f32 * b;
+    let right = bar.size.x / 2.0 - (room.right as f32 + ui::player::BAR_MARGIN as f32) * b;
+    let x = right + room.right as f32 * p - picker.size.x / 2.0;
+    let y = top + picker.size.y / 2.0;
+    bar.pose * Mat4::from_translation(Vec3::new(x, y, 0.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_picker_sits_on_the_bar_without_covering_it() {
+        for scale in [1.0, 1.4] {
+            let mut bar = growing_panel([1400, 268], 1.2, 1.25);
+            let mut picker = growing_panel([850, 560], 1.2 * 850.0 / 1400.0, 1.25);
+            bar.set_scale(scale);
+            picker.set_scale(scale);
+            bar.pose = place(Mat4::IDENTITY, 0.0, 1.05, -0.32, 22.0);
+            picker.pose = above_bar(&bar, &picker);
+            let room = ui::widgets::SHADOW_ROOM;
+            let pts = bar.points();
+            let bar_top = bar.world_point(egui::pos2(pts.x / 2.0, room.top as f32));
+            let picker_pts = picker.points();
+            let picker_bottom = picker.world_point(egui::pos2(picker_pts.x / 2.0, picker_pts.y));
+            // In the same plane, the picker's bottom edge on the bar's body's
+            // top one, and its body's right end over the end of the bar's
+            // content.
+            let axis = |v: Vec3| bar.pose.transform_vector3(v);
+            assert!(axis(Vec3::Z).abs_diff_eq(picker.pose.transform_vector3(Vec3::Z), 1e-5));
+            assert!((bar_top - picker_bottom).dot(axis(Vec3::Z)).abs() < 1e-5);
+            let gap = (picker_bottom - bar_top).dot(axis(Vec3::Y));
+            assert!(gap.abs() < 1e-4, "{scale}: {gap}");
+            let margin = room.right as f32 + ui::player::BAR_MARGIN as f32;
+            let content_end = bar.world_point(egui::pos2(pts.x - margin, pts.y / 2.0));
+            let body_end = picker.world_point(egui::pos2(
+                picker_pts.x - room.right as f32,
+                picker_pts.y / 2.0,
+            ));
+            let off = (content_end - body_end).dot(axis(Vec3::X));
+            assert!(off.abs() < 1e-4, "{scale}: {off}");
+        }
     }
 }

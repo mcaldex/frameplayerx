@@ -69,6 +69,11 @@ pub struct Playback {
     pub markers: Vec<(f64, String)>,
     pub subtitle_files: Vec<SubtitleFile>,
     pub active_subtitle_file: Option<usize>,
+    /// The subtitles Subtitles on / off last turned off, to turn back on.
+    pub last_subtitles: Option<Pick>,
+    /// The audio and subtitles picked for this video in the player (see
+    /// [`Self::save_tracks`]).
+    pub picked: fp_library::PickedTracks,
     pub script_count: usize,
     last_save: Instant,
     pub notice: Option<String>,
@@ -212,18 +217,27 @@ pub fn open(
         source.clone(),
         settings.haptics_enabled,
     );
+    let picked = record
+        .as_ref()
+        .map(|r| r.tracks.clone())
+        .unwrap_or_default();
     let mut pick = Pick::Off;
     let player = Player::open(src, &name, player_config(settings, start_at), |info| {
-        pick = subtitles::choose(
+        pick = subtitles::starting(
+            picked.subtitles.as_ref(),
+            picked.audio,
             settings.subtitles,
             &settings.subtitle_language,
             info,
             &subs,
             &name,
         );
-        pick.stream()
+        fp_media::Tracks {
+            audio: picked.audio,
+            subtitle: pick.stream(),
+        }
     })
-    .map_err(|e| failed(format!("{name}: {e}")))?;
+    .map_err(|e| failed(format!("{name}: {}", crate::ui::errors::media(&e))))?;
     let info = player.info().clone();
     if settings.hardware_decoding {
         warn_if_software(&name, &info, &player.stats());
@@ -303,6 +317,8 @@ pub fn open(
             markers,
             subtitle_files: subs,
             active_subtitle_file,
+            last_subtitles: None,
+            picked,
             script_count: scripts.len(),
             last_save: Instant::now(),
             notice: None,
@@ -491,6 +507,15 @@ fn markers(
 }
 
 impl Playback {
+    /// The subtitles showing: a file, an embedded stream, or none.
+    pub fn subtitles_showing(&self) -> Pick {
+        match (self.active_subtitle_file, self.player.subtitle_stream()) {
+            (Some(i), _) => Pick::File(i),
+            (None, Some(s)) => Pick::Stream(s),
+            (None, None) => Pick::Off,
+        }
+    }
+
     pub fn status(&self) -> PlaybackStatus {
         let p = &self.player;
         PlaybackStatus {
@@ -639,9 +664,7 @@ impl Playback {
     /// unsaved, to save again.
     pub fn save_settings(&mut self, library: &Library) -> fp_library::Result<bool> {
         let Some(id) = self.record_id else {
-            self.notice = Some(
-                "Adjustments apply until you close this video (it is not in the library).".into(),
-            );
+            self.notice = Some(tr!("notice-not-in-library").into());
             return Ok(false);
         };
         library
@@ -651,6 +674,19 @@ impl Playback {
         self.settings_dirty = false;
         self.saved_settings = self.settings;
         Ok(true)
+    }
+
+    /// Saves the audio and subtitles picked in the player, which the video
+    /// opens with next time; what wasn't picked keeps following the
+    /// settings.
+    pub fn save_tracks(&self, library: &Library) {
+        let Some(id) = self.record_id else { return };
+        if let Err(e) = library.set_tracks(id, &self.picked) {
+            log::warn!(
+                "saving the tracks picked for {}: {e}",
+                self.request.location
+            );
+        }
     }
 
     /// Saves this video's chroma key (the Passthrough tab) without the
@@ -684,7 +720,7 @@ impl Playback {
 
     pub fn add_bookmark(&mut self, library: &Library) -> fp_library::Result<()> {
         let t = self.player.position();
-        let name = format!("Bookmark {}", crate::ui::fmt_time(t));
+        let name = tr!("bookmark-name", time = crate::ui::fmt_time(t));
         if let Some(id) = self.record_id {
             library.add_marker(id, t, &name)?;
         }
@@ -812,11 +848,9 @@ pub(crate) fn software_reason(
 ) -> String {
     match hardware_error {
         Some(e) => e.strip_prefix("unsupported: ").unwrap_or(e).to_string(),
-        None if !has_hardware_decoder(v) => {
-            format!("no hardware decoding for {}", stream_desc(v))
-        }
-        None if !hardware_on => "hardware decoding is off in Settings".to_string(),
-        None => "hardware decoder not tried".to_string(),
+        None if !has_hardware_decoder(v) => tr!("decoder-why-none", stream = stream_desc(v)),
+        None if !hardware_on => tr!("decoder-why-off").to_string(),
+        None => tr!("decoder-why-untried").to_string(),
     }
 }
 
@@ -830,12 +864,10 @@ pub(crate) fn slow_decode_notice(
 ) -> String {
     let desc = stream_desc(v);
     if !has_hardware_decoder(v) {
-        return format!(
-            "No hardware decoding for {desc}, so it stutters. 8-bit 4:2:0 H.265 plays smoothly"
-        );
+        return tr!("decoder-notice-none", stream = desc);
     }
     if !hardware_on {
-        return format!("{desc} in software stutters: turn on hardware decoding in Settings");
+        return tr!("decoder-notice-off", stream = desc);
     }
     // Out of decoder memory or sessions: other apps (Steam's streaming
     // among them) hold the hardware decoder.
@@ -844,12 +876,10 @@ pub(crate) fn slow_decode_notice(
         e.contains("memory") || e.contains("busy") || e.contains("no free")
     });
     if busy {
-        format!("Hardware decoder busy: {desc} in software stutters")
+        tr!("decoder-notice-busy", stream = desc)
     } else {
-        format!(
-            "The hardware decoder can't play this {desc} ({}x{}), so it stutters in software",
-            v.width, v.height
-        )
+        let size = format!("{}x{}", v.width, v.height);
+        tr!("decoder-notice-refused", stream = desc, size = size)
     }
 }
 

@@ -1,5 +1,5 @@
 //! Minimal RGBA image handling for thumbnails: validation, area-average
-//! downscaling, tiling and JPEG encoding (pure Rust).
+//! downscaling and JPEG encoding (pure Rust).
 
 use crate::error::{Error, Result};
 
@@ -90,22 +90,6 @@ impl RgbaImage {
         })
     }
 
-    /// Copies `src` into this image with its top-left corner at `(x, y)`,
-    /// clipping at the edges. Both images must be valid (callers validate
-    /// frames before tiling them).
-    pub(crate) fn blit(&mut self, src: &RgbaImage, x: u32, y: u32) {
-        if x >= self.width || y >= self.height {
-            return;
-        }
-        let w = src.width.min(self.width - x) as usize;
-        let h = src.height.min(self.height - y);
-        for row in 0..h {
-            let s = (row as usize * src.width as usize) * 4;
-            let d = ((y + row) as usize * self.width as usize + x as usize) * 4;
-            self.pixels[d..d + w * 4].copy_from_slice(&src.pixels[s..s + w * 4]);
-        }
-    }
-
     /// Encodes as a baseline JPEG.
     pub fn to_jpeg(&self, quality: u8) -> Result<Vec<u8>> {
         self.validate()?;
@@ -140,26 +124,6 @@ pub(crate) fn fit_size(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
     let nw = ((w as f64 * scale).round() as u32).clamp(1, max_w);
     let nh = ((h as f64 * scale).round() as u32).clamp(1, max_h);
     (nw, nh)
-}
-
-/// Lays frames out in a grid of `columns` cells sized to the largest frame,
-/// each frame centred on black. Returns the sheet and the cell size.
-pub(crate) fn tile(frames: &[RgbaImage], columns: u32) -> Result<(RgbaImage, u32, u32)> {
-    if frames.is_empty() {
-        return Err(Error::InvalidArgument("no frames to tile".into()));
-    }
-    let columns = columns.clamp(1, frames.len() as u32);
-    let rows = (frames.len() as u32).div_ceil(columns);
-    let cell_w = frames.iter().map(|f| f.width).max().unwrap_or(1).max(1);
-    let cell_h = frames.iter().map(|f| f.height).max().unwrap_or(1).max(1);
-    let mut sheet = RgbaImage::filled(cell_w * columns, cell_h * rows, [0, 0, 0, 255]);
-    for (i, f) in frames.iter().enumerate() {
-        let i = i as u32;
-        let x = (i % columns) * cell_w + (cell_w - f.width) / 2;
-        let y = (i / columns) * cell_h + (cell_h - f.height) / 2;
-        sheet.blit(f, x, y);
-    }
-    Ok((sheet, cell_w, cell_h))
 }
 
 /// Width and height of a JPEG from its first start-of-frame marker.
@@ -219,21 +183,12 @@ mod tests {
     }
 
     #[test]
-    fn tiles_and_encodes() {
-        let frames = vec![
-            RgbaImage::filled(10, 6, [255, 0, 0, 255]),
-            RgbaImage::filled(8, 6, [0, 255, 0, 255]),
-            RgbaImage::filled(10, 4, [0, 0, 255, 255]),
-        ];
-        let (sheet, cw, ch) = tile(&frames, 2).unwrap();
-        assert_eq!((sheet.width, sheet.height, cw, ch), (20, 12, 10, 6));
-        // Second frame is centred: column 0 of cell 1 is black padding.
-        assert_eq!(&sheet.pixels[10 * 4..10 * 4 + 4], &[0, 0, 0, 255]);
-        assert_eq!(&sheet.pixels[11 * 4..11 * 4 + 4], &[0, 255, 0, 255]);
-        let jpg = sheet.to_jpeg(80).unwrap();
+    fn encodes() {
+        let jpg = RgbaImage::filled(20, 12, [255, 0, 0, 255])
+            .to_jpeg(80)
+            .unwrap();
         assert_eq!(jpeg_size(&jpg), Some((20, 12)));
         assert_eq!(&jpg[jpg.len() - 2..], &[0xFF, 0xD9]);
-        assert!(tile(&[], 1).is_err());
     }
 
     #[test]

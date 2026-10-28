@@ -27,9 +27,6 @@ pub enum RemoteError {
     /// The embedded HTTP server failed to start.
     #[error("web server: {0}")]
     Http(String),
-    /// The pairing URL does not fit in a QR code.
-    #[error("QR code: {0}")]
-    Qr(String),
     /// `start_*` was called while that server was already running.
     #[error("{0} server is already running")]
     AlreadyRunning(&'static str),

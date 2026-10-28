@@ -26,19 +26,17 @@ impl CrashPrompt {
     }
 }
 
-const CONTAINS: [&str; 3] = [
-    "The versions of FramePlayerX and of the headset's system software.",
-    "What went wrong, and FramePlayerX's log of that session: what it was doing, \
-     such as the formats and decoders it used and the errors it met.",
-    "Not the names of your videos or files, your folders, your servers' addresses \
-     or any password: the report has placeholders such as <video 1> in their place.",
-];
+fn contains() -> [&'static str; 3] {
+    [
+        tr!("crash-contains-versions"),
+        tr!("crash-contains-log"),
+        tr!("crash-contains-not"),
+    ]
+}
 
-const GOES: [&str; 2] = [
-    "Only to FramePlayerX's developers, as a private issue on GitHub that only they can read.",
-    "No account, name or anything else that identifies you goes with it. Your network \
-     address reaches their server with the report, as with any website, but is not kept.",
-];
+fn goes() -> [&'static str; 2] {
+    [tr!("crash-goes-developers"), tr!("crash-goes-nothing-else")]
+}
 
 pub fn prompt(ui: &mut egui::Ui, v: &mut View) {
     let actions = &mut *v.actions;
@@ -56,59 +54,54 @@ pub fn prompt(ui: &mut egui::Ui, v: &mut View) {
                         .color(theme::WARN),
                 );
                 ui.label(
-                    RichText::new("FramePlayerX stopped unexpectedly")
+                    RichText::new(tr!("crash-title"))
                         .font(theme::font(Weight::Bold, 32.0))
                         .color(theme::TEXT),
                 );
             });
             ui.add_space(8.0);
             ui.label(
-                RichText::new(
-                    "It crashed the last time it ran. A crash report tells its developers \
-                     what went wrong so that they can fix it. Sending one is up to you: \
-                     nothing is sent unless you choose Send report.",
-                )
-                .font(theme::font(Weight::Regular, 18.0))
-                .color(theme::TEXT_2),
+                RichText::new(tr!("crash-desc"))
+                    .font(theme::font(Weight::Regular, 18.0))
+                    .color(theme::TEXT_2),
             );
             ui.add_space(16.0);
-            list(ui, "What a report contains", &CONTAINS);
-            list(ui, "Where it goes", &GOES);
+            list(ui, tr!("crash-contains"), &contains());
+            list(ui, tr!("crash-goes"), &goes());
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
                 if c.sending {
                     ui.spinner();
-                    ui.label(RichText::new("Sending…").color(theme::TEXT_2));
+                    ui.label(RichText::new(tr!("crash-sending")).color(theme::TEXT_2));
                     return;
                 }
-                if widgets::button(ui, Some(icons::CHECK), "Send report", Kind::Primary).clicked() {
+                if widgets::button(ui, Some(icons::CHECK), tr!("crash-send"), Kind::Primary)
+                    .clicked()
+                {
                     actions.push(Action::SendCrashReport);
                 }
                 let label = if c.shown {
-                    "Hide the report"
+                    tr!("crash-hide-report")
                 } else {
-                    "Show the report"
+                    tr!("crash-show-report")
                 };
                 if widgets::button(ui, Some(icons::EYE), label, Kind::Secondary).clicked() {
                     c.shown = !c.shown;
                 }
-                if widgets::button(ui, None, "Don't send", Kind::Ghost).clicked() {
+                if widgets::button(ui, None, tr!("crash-dont-send"), Kind::Ghost).clicked() {
                     actions.push(Action::DismissCrashReport);
                 }
             });
             if let Some(e) = &c.error {
                 ui.add_space(6.0);
                 ui.label(
-                    RichText::new(format!(
-                        "It couldn't be sent: {e}. Try again, or don't send it."
-                    ))
-                    .color(theme::ERROR),
+                    RichText::new(tr!("crash-send-failed", error = e.as_str())).color(theme::ERROR),
                 );
             }
             if c.shown {
                 ui.add_space(14.0);
-                widgets::section_label(ui, "The report, exactly as it would be sent");
+                widgets::section_label(ui, tr!("crash-report-heading"));
                 egui::Frame::new()
                     .fill(theme::SURFACE_2)
                     .corner_radius(12)

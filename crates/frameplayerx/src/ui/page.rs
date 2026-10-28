@@ -23,6 +23,12 @@ const LIFT_ROOM: i8 = 16;
 /// the same room inside: what is on it stays in line, and a card lifted at
 /// its edge shows whole.
 pub fn scroll<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    scroll_from(ui, false, add)
+}
+
+/// [`scroll`], back at the top when `top`: a list sorted or filtered anew
+/// starts from its beginning.
+pub fn scroll_from<R>(ui: &mut egui::Ui, top: bool, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new()
         .outer_margin(egui::Margin {
             left: -LIFT_ROOM,
@@ -30,15 +36,17 @@ pub fn scroll<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
             ..Default::default()
         })
         .show(ui, |ui| {
-            egui::ScrollArea::vertical()
-                .auto_shrink(false)
-                .show(ui, |ui| {
-                    egui::Frame::new()
-                        .inner_margin(egui::Margin::symmetric(LIFT_ROOM, 0))
-                        .show(ui, add)
-                        .inner
-                })
-                .inner
+            let mut area = egui::ScrollArea::vertical().auto_shrink(false);
+            if top {
+                area = area.vertical_scroll_offset(0.0);
+            }
+            area.show(ui, |ui| {
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(LIFT_ROOM, 0))
+                    .show(ui, add)
+                    .inner
+            })
+            .inner
         })
         .inner
 }
@@ -56,7 +64,7 @@ pub fn header(
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 12.0;
         back = widgets::icon_button(ui, icons::ARROW_LEFT, 48.0, false)
-            .tip("Back")
+            .tip(tr!("common-back"))
             .clicked();
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
@@ -108,7 +116,7 @@ pub fn search_field(ui: &mut egui::Ui, text: &mut String, hint: &str, width: f32
                 changed |= r.changed();
                 if !text.is_empty()
                     && widgets::icon_button(ui, icons::X, 30.0, false)
-                        .tip("Clear")
+                        .tip(tr!("common-clear"))
                         .clicked()
                 {
                     text.clear();
@@ -157,6 +165,369 @@ pub fn sort_bar<T: PartialEq + Copy>(
     changed
 }
 
+/// Which way a list is sorted: a caret that flips it, its tip saying the
+/// way it goes (`tips`: largest first, smallest first); true when flipped.
+pub fn direction(ui: &mut egui::Ui, descending: &mut bool, tips: [&str; 2]) -> bool {
+    let (icon, tip) = if *descending {
+        (icons::CARET_DOWN, tips[0])
+    } else {
+        (icons::CARET_UP, tips[1])
+    };
+    let flipped = widgets::icon_button(ui, icon, 38.0, false)
+        .tip(tip)
+        .clicked();
+    if flipped {
+        *descending = !*descending;
+    }
+    flipped
+}
+
+/// Shuffle again, beside a shuffled list's sorts: true for a new order.
+pub fn shuffle_again(ui: &mut egui::Ui) -> bool {
+    ui.add_space(8.0);
+    widgets::button_sized(
+        ui,
+        Some(icons::SHUFFLE),
+        tr!("sort-shuffle-again"),
+        widgets::Kind::Secondary,
+        36.0,
+    )
+    .clicked()
+}
+
+/// Height of the browse panel's navigation, over the page.
+pub const NAV_HEIGHT: f32 = 76.0;
+/// Width of the filters drawer.
+const DRAWER_WIDTH: f32 = 470.0;
+/// Corners of the browse panel's body (see [`widgets::panel_slab`]).
+const PANEL_RADIUS: u8 = 28;
+
+/// The Filters button, lit and counting the filters that are on.
+pub fn filters_button(ui: &mut egui::Ui, on: usize) -> egui::Response {
+    let label = if on == 0 {
+        tr!("filters").to_string()
+    } else {
+        format!("{}  {on}", tr!("filters"))
+    };
+    widgets::chip_icon(ui, Some(icons::SLIDERS_HORIZONTAL), &label, on > 0)
+}
+
+/// What a press on the filters that are on asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FilterEdit {
+    /// Take the filter at this place off.
+    Remove(usize),
+    Clear,
+}
+
+/// The filters that are on, a chip each under the sorts (pressing one takes
+/// it off), and Clear all; nothing while none is.
+pub fn active_filters(ui: &mut egui::Ui, labels: &[String]) -> Option<FilterEdit> {
+    if labels.is_empty() {
+        return None;
+    }
+    let mut edit = None;
+    ui.add_space(4.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::splat(8.0);
+        for (i, label) in labels.iter().enumerate() {
+            if widgets::chip(ui, &format!("{label}  {}", icons::X), true).clicked() {
+                edit = Some(FilterEdit::Remove(i));
+            }
+        }
+        if widgets::button_sized(
+            ui,
+            None,
+            tr!("filters-clear-all"),
+            widgets::Kind::Ghost,
+            40.0,
+        )
+        .clicked()
+        {
+            edit = Some(FilterEdit::Clear);
+        }
+    });
+    edit
+}
+
+/// The filters drawer, over the right of the browse panel with the page
+/// dimmed beside it; a press there, ✕ or Done closes it. `count` says how
+/// many the filters keep, `add` draws its sections ([`filter_section`]).
+/// True when Clear all was pressed.
+pub fn filter_drawer(
+    ui: &egui::Ui,
+    open: &mut bool,
+    count: &str,
+    add: impl FnOnce(&mut egui::Ui),
+) -> bool {
+    let ctx = ui.ctx().clone();
+    let body = ctx.screen_rect() - widgets::SHADOW_ROOM;
+    let page = egui::Rect::from_min_max(egui::pos2(body.left(), body.top() + NAV_HEIGHT), body.max);
+    let drawer = egui::Rect::from_min_max(
+        egui::pos2(body.right() - DRAWER_WIDTH, page.top()),
+        body.max,
+    );
+    egui::Area::new(egui::Id::new("filters-scrim"))
+        .order(egui::Order::Middle)
+        .fixed_pos(page.min)
+        .show(&ctx, |ui| {
+            let (r, resp) = ui.allocate_exact_size(page.size(), Sense::click());
+            let corners = egui::CornerRadius {
+                sw: PANEL_RADIUS,
+                se: PANEL_RADIUS,
+                ..Default::default()
+            };
+            ui.painter()
+                .rect_filled(r, corners, Color32::from_black_alpha(130));
+            if resp.clicked() {
+                *open = false;
+            }
+        });
+    let mut clear = false;
+    egui::Area::new(egui::Id::new("filters"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(drawer.min)
+        .show(&ctx, |ui| {
+            // Its parts are placed, not laid out: the area claims the whole
+            // drawer, so the thumbstick's scrolling comes to it, not to the
+            // dimmed page under it.
+            ui.set_min_size(drawer.size());
+            let corners = egui::CornerRadius {
+                se: PANEL_RADIUS,
+                ..Default::default()
+            };
+            let p = ui.painter();
+            p.add(
+                egui::epaint::Shadow {
+                    offset: [-10, 0],
+                    blur: 30,
+                    spread: 0,
+                    color: Color32::from_black_alpha(150),
+                }
+                .as_shape(drawer, corners),
+            );
+            p.rect_filled(drawer, corners, theme::SURFACE);
+            let inner = drawer.shrink2(Vec2::new(24.0, 18.0));
+            let title = egui::Rect::from_min_size(inner.min, Vec2::new(inner.width(), 48.0));
+            let footer = egui::Rect::from_min_max(
+                egui::pos2(inner.left(), inner.bottom() - 52.0),
+                inner.max,
+            );
+            let sections = egui::Rect::from_min_max(
+                egui::pos2(inner.left(), title.bottom() + 6.0),
+                egui::pos2(inner.right(), footer.top() - 10.0),
+            );
+            p.hline(
+                drawer.left()..=drawer.right(),
+                footer.top() - 5.0,
+                egui::Stroke::new(1.0_f32, theme::STROKE),
+            );
+            let mut part = |rect: egui::Rect| {
+                ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(rect)
+                        .layout(Layout::top_down(Align::Min)),
+                )
+            };
+            part(title).horizontal(|ui| {
+                ui.label(
+                    RichText::new(tr!("filters"))
+                        .font(theme::font(Weight::Bold, 24.0))
+                        .color(theme::TEXT),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if widgets::icon_button(ui, icons::X, 40.0, false)
+                        .tip(tr!("player-close"))
+                        .clicked()
+                    {
+                        *open = false;
+                    }
+                    if widgets::button_sized(
+                        ui,
+                        None,
+                        tr!("filters-clear-all"),
+                        widgets::Kind::Ghost,
+                        40.0,
+                    )
+                    .clicked()
+                    {
+                        clear = true;
+                    }
+                });
+            });
+            egui::ScrollArea::vertical()
+                .id_salt("filters")
+                .max_height(sections.height())
+                .auto_shrink([false, false])
+                .show(&mut part(sections), |ui| {
+                    ui.set_width(ui.available_width());
+                    add(ui);
+                    ui.add_space(12.0);
+                });
+            part(footer).horizontal(|ui| {
+                ui.set_height(footer.height());
+                ui.label(
+                    RichText::new(count)
+                        .font(theme::font(Weight::Medium, 16.0))
+                        .color(theme::TEXT_2),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if widgets::button_sized(
+                        ui,
+                        None,
+                        tr!("common-done"),
+                        widgets::Kind::Primary,
+                        44.0,
+                    )
+                    .clicked()
+                    {
+                        *open = false;
+                    }
+                });
+            });
+        });
+    clear
+}
+
+/// A section of the filters drawer: its title over its choices, which wrap.
+pub fn filter_section(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
+    ui.add_space(14.0);
+    widgets::section_label(ui, title);
+    ui.add_space(2.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::splat(8.0);
+        add(ui);
+    });
+}
+
+/// A list section of the filters drawer as narrowed: what its box says,
+/// and whether all of its choices show.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ListState {
+    pub query: String,
+    pub all: bool,
+}
+
+/// Sections with more choices than this get a box, and show [`FEW`] of them
+/// until Show all, so the drawer's other sections stay near.
+const LONG_LIST: usize = 12;
+const FEW: usize = 8;
+
+/// What a list section shows of its choices.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ListView {
+    /// Places of the choices shown, in their order.
+    pub shown: Vec<usize>,
+    /// Matching ones left out until Show all.
+    pub hidden: usize,
+    /// All show, and Show fewer would leave some out.
+    pub can_fold: bool,
+}
+
+/// Which of `names` a list section shows: those matching its box (a long
+/// list's), the chosen always, and at most [`FEW`] others until Show all.
+pub fn list_view(names: &[&str], chosen: impl Fn(&str) -> bool, state: &ListState) -> ListView {
+    let long = names.len() > LONG_LIST;
+    let text = if long {
+        state.query.trim().to_lowercase()
+    } else {
+        String::new()
+    };
+    let (mut shown, mut hidden, mut others) = (Vec::new(), 0, 0);
+    for (i, name) in names.iter().enumerate() {
+        let on = chosen(name);
+        if !on && !text.is_empty() && !name.to_lowercase().contains(&text) {
+            continue;
+        }
+        if on {
+            shown.push(i);
+        } else if !long || state.all || others < FEW {
+            others += 1;
+            shown.push(i);
+        } else {
+            hidden += 1;
+        }
+    }
+    ListView {
+        shown,
+        hidden,
+        can_fold: long && state.all && others > FEW,
+    }
+}
+
+/// A section of the filters drawer listing `choices`, each a name and how
+/// many have it when that is known. A long one has a box (`hint`) and shows
+/// a few, those chosen kept in sight, with Show all. Returns the choice
+/// pressed.
+pub fn filter_list<'a>(
+    ui: &mut egui::Ui,
+    title: &str,
+    hint: &str,
+    choices: &[(&'a str, Option<usize>)],
+    chosen: impl Fn(&str) -> bool,
+    state: &mut ListState,
+) -> Option<&'a str> {
+    let names: Vec<&str> = choices.iter().map(|c| c.0).collect();
+    ui.add_space(14.0);
+    widgets::section_label(ui, title);
+    ui.add_space(2.0);
+    if names.len() > LONG_LIST {
+        search_field(ui, &mut state.query, hint, 300.0);
+        ui.add_space(4.0);
+    }
+    let view = list_view(&names, &chosen, state);
+    let mut pressed = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::splat(8.0);
+        for &i in &view.shown {
+            let (name, count) = choices[i];
+            if filter_chip(ui, name, count, chosen(name)) {
+                pressed = Some(name);
+            }
+        }
+        let more = |ui: &mut egui::Ui, label: &str| {
+            widgets::button_sized(ui, None, label, widgets::Kind::Ghost, 40.0).clicked()
+        };
+        if view.hidden > 0 {
+            let n = view.shown.len() + view.hidden;
+            let all = tr!("filters-show-all", count = n);
+            if more(ui, &all) {
+                state.all = true;
+            }
+        } else if view.can_fold && more(ui, tr!("filters-show-fewer")) {
+            state.all = false;
+        }
+    });
+    pressed
+}
+
+/// A choice in the filters drawer, with how many it keeps when that is
+/// known; true when pressed.
+pub fn filter_chip(ui: &mut egui::Ui, label: &str, count: Option<usize>, on: bool) -> bool {
+    let text = match count {
+        Some(n) => format!("{label}  {n}"),
+        None => label.to_string(),
+    };
+    widgets::chip(ui, &text, on).clicked()
+}
+
+/// Under a list that has more to show: true once it comes into view, to
+/// load the next lot; a spinner while that is on its way (`loading`).
+pub fn load_more(ui: &mut egui::Ui, loading: bool) -> bool {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 64.0), Sense::hover());
+    if loading {
+        let r = egui::Rect::from_center_size(rect.center(), Vec2::splat(28.0));
+        ui.put(r, egui::Spinner::new().size(28.0));
+        return false;
+    }
+    let seen = ui.is_rect_visible(rect);
+    if seen {
+        // The next lot is drawn on the next pass, and may want another.
+        ui.ctx().request_repaint();
+    }
+    seen
+}
+
 /// Quiet text at the right end of a horizontal ui ("12 videos").
 pub fn count_label(ui: &mut egui::Ui, text: &str) {
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -171,10 +542,6 @@ pub fn count_label(ui: &mut egui::Ui, text: &str) {
 }
 
 /// "1 video", "12 videos".
-pub fn plural(n: usize, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
-}
-
 /// A title over a row or grid, with a count beside it.
 pub fn section_title(ui: &mut egui::Ui, title: &str, count: Option<usize>) {
     ui.horizontal(|ui| {
@@ -233,7 +600,7 @@ pub fn status(ui: &mut egui::Ui, loading: bool, error: Option<&str>) {
     if loading {
         ui.horizontal(|ui| {
             ui.spinner();
-            ui.label(RichText::new("Loading…").color(theme::TEXT_2));
+            ui.label(RichText::new(tr!("common-loading")).color(theme::TEXT_2));
         });
     }
     if let Some(e) = error {
@@ -489,7 +856,7 @@ pub fn card(ui: &mut egui::Ui, thumbs: &mut Thumbs, c: &Card) -> CardResponse {
             theme::icon(24.0),
             theme::TEXT_2.lerp_to_gamma(Color32::WHITE, m.max(t * 0.6)),
         );
-        more_clicked = more_resp.tip("Details").clicked();
+        more_clicked = more_resp.tip(tr!("jf-details")).clicked();
     }
     let mut action_clicked = false;
     if let Some((icon, tip)) = action {
@@ -685,11 +1052,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_long_list_shows_a_few_and_what_is_chosen() {
+        let names: Vec<String> = (0..20).map(|i| format!("Name {i}")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        let none = |_: &str| false;
+        let mut state = ListState::default();
+        let v = list_view(&names, none, &state);
+        assert_eq!(
+            (v.shown, v.hidden, v.can_fold),
+            ((0..8).collect(), 12, false)
+        );
+        // One chosen past the few stays in sight, in its place.
+        let v = list_view(&names, |n| n == "Name 15", &state);
+        assert_eq!(v.shown, [0, 1, 2, 3, 4, 5, 6, 7, 15]);
+        assert_eq!(v.hidden, 11);
+        // The box narrows; few matches need no Show all.
+        state.query = "name 1".into();
+        let v = list_view(&names, none, &state);
+        assert_eq!(v.shown, [1, 10, 11, 12, 13, 14, 15, 16]);
+        assert_eq!(v.hidden, 3);
+        state.query = "NAME 19".into();
+        assert_eq!(list_view(&names, none, &state).shown, [19]);
+        // Show all, then Show fewer.
+        state.query.clear();
+        state.all = true;
+        let v = list_view(&names, none, &state);
+        assert_eq!((v.shown.len(), v.hidden, v.can_fold), (20, 0, true));
+        // A short list shows whole, its box (there is none) ignored.
+        let short = &names[..10];
+        state = ListState {
+            query: "zzz".into(),
+            all: false,
+        };
+        assert_eq!(list_view(short, none, &state).shown.len(), 10);
+    }
+
+    #[test]
     fn words() {
         assert_eq!(rating(4.5), format!("{}  4.5", icons::STAR));
         assert_eq!(rating(8.0), format!("{}  8", icons::STAR));
-        assert_eq!(plural(1, "video", "videos"), "1 video");
-        assert_eq!(plural(3, "video", "videos"), "3 videos");
     }
 }
 

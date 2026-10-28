@@ -365,11 +365,21 @@ pub fn follow(anchor: Mat4, head: (Vec3, Quat), dt: f32) -> Mat4 {
 #[derive(Default, Clone, Copy)]
 struct Trigger {
     down: bool,
+    /// This frame's pull, and how fast it is changing (of its travel a
+    /// second).
+    value: f32,
+    rate: f32,
 }
+
+/// A trigger changing faster than this is being pulled or let go, which
+/// tips the controller; a finger resting on it stays well under.
+const TRAVEL_RATE: f32 = 2.0;
 
 impl Trigger {
     /// Returns Some(pressed) on a transition.
-    fn update(&mut self, value: f32) -> Option<bool> {
+    fn update(&mut self, value: f32, dt: f32) -> Option<bool> {
+        self.rate = (value - self.value) / dt.max(1e-3);
+        self.value = value;
         if !self.down && value > 0.7 {
             self.down = true;
             Some(true)
@@ -380,6 +390,20 @@ impl Trigger {
             None
         }
     }
+
+    fn travelling(&self) -> bool {
+        self.rate.abs() > TRAVEL_RATE
+    }
+}
+
+/// A press on a slider: it drags from the start, but leaves out the tip
+/// of the trigger's pull and let-go. While the trigger travels the pointer
+/// stays where it is, then moves as far as the ray does from there.
+#[derive(Clone, Copy)]
+struct Hold {
+    /// Where the pointer is put, and how far that is from the ray's hit.
+    at: Pos2,
+    offset: egui::Vec2,
 }
 
 /// Where each hand points this frame.
@@ -396,7 +420,8 @@ pub struct Aim {
 /// panel (about 7 points per cm) that moves a laser pointer tens of points,
 /// while egui only reports a click when press and release are within 6
 /// points. Until the ray leaves this radius the pointer stays at the press
-/// point, so a trigger pull is a click; beyond it, a drag (scrolling).
+/// point, so a trigger pull is a click; beyond it, a drag (scrolling). A
+/// press on a slider isn't held so: it drags from the start ([`Hold`]).
 const CLICK_SLOP: f32 = 60.0;
 
 #[derive(Default)]
@@ -412,6 +437,7 @@ pub struct Pointer {
     /// [`CLICK_SLOP`] of it.
     press_pos: Option<Pos2>,
     dragging: bool,
+    hold: Option<Hold>,
     hovered_panel: Option<usize>,
     pub aims: [Option<Aim>; 2],
 }
@@ -430,8 +456,19 @@ pub struct Routed {
 
 impl Pointer {
     /// The position to report for a ray hit on `panel`: the press point
-    /// while a press on that panel hasn't moved beyond [`CLICK_SLOP`].
+    /// while a press on that panel hasn't moved beyond [`CLICK_SLOP`], or
+    /// on a slider, see [`Hold`].
     fn pinned(&mut self, panel: usize, pos: Pos2) -> Pos2 {
+        if let Some(h) = &mut self.hold
+            && self.pressed_panel == Some(panel)
+        {
+            if self.triggers[self.active].travelling() {
+                h.offset = h.at - pos;
+            } else {
+                h.at = pos + h.offset;
+            }
+            return h.at;
+        }
         match (self.pressed_panel, self.press_pos) {
             (Some(pressed), Some(start)) if pressed == panel && !self.dragging => {
                 if pos.distance(start) <= CLICK_SLOP {
@@ -472,7 +509,7 @@ impl Pointer {
         // A trigger press makes that hand the active one.
         let mut transitions = [None, None];
         for (i, h) in hands.iter().enumerate() {
-            transitions[i] = self.triggers[i].update(h.trigger);
+            transitions[i] = self.triggers[i].update(h.trigger, dt);
             if transitions[i] == Some(true) {
                 self.active = i;
             }
@@ -535,7 +572,12 @@ impl Pointer {
                     });
                     self.pressed_panel = Some(pi);
                     self.press_pos = Some(pos);
-                    self.dragging = false;
+                    let slider = crate::ui::widgets::over_slider(&panels[pi].ctx);
+                    self.dragging = slider;
+                    self.hold = slider.then_some(Hold {
+                        at: pos,
+                        offset: egui::Vec2::ZERO,
+                    });
                 } else {
                     routed.click_outside = true;
                 }
@@ -543,13 +585,16 @@ impl Pointer {
             Some(false) => {
                 if let Some(pi) = self.pressed_panel.take() {
                     let start = self.press_pos.take();
-                    let pos = hit
-                        .filter(|h| h.0 == pi)
-                        .map(|h| match start {
-                            Some(start) if !self.dragging => start,
-                            _ => h.2,
-                        })
-                        .unwrap_or(Pos2::new(-1.0, -1.0));
+                    let pos = match self.hold.take() {
+                        Some(h) => h.at,
+                        None => hit
+                            .filter(|h| h.0 == pi)
+                            .map(|h| match start {
+                                Some(start) if !self.dragging => start,
+                                _ => h.2,
+                            })
+                            .unwrap_or(Pos2::new(-1.0, -1.0)),
+                    };
                     self.dragging = false;
                     panels[pi].push(Event::PointerButton {
                         pos,
@@ -705,6 +750,61 @@ mod tests {
         let b = button_positions(&p);
         assert_eq!(b.len(), 2);
         assert!(b[0].distance(b[1]) > CLICK_SLOP, "{b:?}");
+    }
+
+    #[test]
+    fn a_slider_follows_the_ray_but_not_the_triggers_tip() {
+        let mut p = panel_in_front();
+        let mut ptr = Pointer::default();
+        let mut hands = [Hand::default(), Hand::default()];
+        hands[1].active = true;
+        let turned = |deg: f32| Some((Vec3::ZERO, Quat::from_rotation_y(-deg.to_radians())));
+        hands[1].aim = turned(0.0);
+        // A slider across the middle, under the ray (laid out once before
+        // egui can tell the pointer is on it).
+        for _ in 0..2 {
+            ptr.route(&mut [&mut p], &hands, 0.016);
+            let input = p.input(0.0);
+            let _ = p.ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.add_space(182.0);
+                    crate::ui::widgets::slider(ui, &mut 0.5, 0.0..=1.0, 700.0);
+                });
+            });
+        }
+        assert!(crate::ui::widgets::over_slider(&p.ctx));
+        let moved = |p: &Panel| {
+            p.events.iter().rev().find_map(|e| match e {
+                Event::PointerMoved(pos) => Some(*pos),
+                _ => None,
+            })
+        };
+        let x = |p: &Panel, deg: f32| {
+            let dir = Quat::from_rotation_y(-deg.to_radians()) * Vec3::NEG_Z;
+            p.hit(Vec3::ZERO, dir).unwrap().1.x
+        };
+
+        // Pulled, the trigger tips the ray a degree: the pointer stays.
+        hands[1].trigger = 0.8;
+        ptr.route(&mut [&mut p], &hands, 0.016);
+        let press = button_positions(&p)[0];
+        hands[1].trigger = 1.0;
+        hands[1].aim = turned(1.0);
+        ptr.route(&mut [&mut p], &hands, 0.016);
+        assert_eq!(moved(&p), Some(press), "the pull's tip");
+        // Settled, it moves as far as the ray: from the tipped 1° to 6°.
+        ptr.route(&mut [&mut p], &hands, 0.016);
+        hands[1].aim = turned(6.0);
+        ptr.route(&mut [&mut p], &hands, 0.016);
+        let held = moved(&p).unwrap();
+        let want = press.x + x(&p, 6.0) - x(&p, 1.0);
+        assert!((held.x - want).abs() < 0.5, "{held:?} {want}");
+        // Let go, it tips back: the release lands where the pointer was.
+        hands[1].trigger = 0.1;
+        hands[1].aim = turned(5.0);
+        ptr.route(&mut [&mut p], &hands, 0.016);
+        assert_eq!(button_positions(&p).last(), Some(&held));
+        assert_eq!(moved(&p), Some(held));
     }
 
     #[test]

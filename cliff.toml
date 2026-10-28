@@ -15,7 +15,7 @@ body = """
 {% for commit in commits %}
 - {{ commit.message | split(pat="\n") | first | trim }}\
   {% if commit.scope %} *({{ commit.scope }})*{% endif %}\
-  {% if commit.breaking %} **BREAKING**{% endif %}\
+  {% if commit.breaking %} **BREAKING**{% endif %} \
   ([`{{ commit.id | truncate(length=7, end="") }}`](https://github.com/remotesojourner/frameplayerx/commit/{{ commit.id }}))\
 {% endfor %}
 {% endfor %}
@@ -38,6 +38,8 @@ commit_parsers = [
     { message = "^chore", group = "⚙️ Maintenance" },
     { message = "^ci", group = "⚙️ Maintenance" },
     { message = "^build", group = "⚙️ Maintenance" },
+    # A merge only repeats the commits it brings in.
+    { message = "^Merge (pull request|branch|remote-tracking branch) ", skip = true },
     # Catch-all: commits not following any convention still appear.
     { message = ".*", group = "📦 Other" },
 ]

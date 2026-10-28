@@ -18,7 +18,7 @@ pub fn browser(ctx: &egui::Context, v: &mut View) {
     widgets::panel_slab(ctx, 28.0);
     let room = widgets::SHADOW_ROOM;
     egui::TopBottomPanel::top("nav")
-        .exact_height(76.0)
+        .exact_height(page::NAV_HEIGHT)
         .frame(
             egui::Frame::new()
                 .outer_margin(egui::Margin { bottom: 0, ..room })
@@ -206,11 +206,11 @@ fn nav(ui: &mut egui::Ui, v: &mut View) {
         wordmark(ui, 22.0);
         ui.add_space(28.0);
         let tabs = [
-            (Screen::Home, icons::HOUSE, "Home"),
-            (Screen::History, icons::CLOCK, "Watch history"),
-            (Screen::Playlists, icons::PLAYLIST, "Playlists"),
-            (Screen::Sources, icons::HARD_DRIVES, "Sources"),
-            (Screen::Settings, icons::GEAR_SIX, "Settings"),
+            (Screen::Home, icons::HOUSE, tr!("nav-home")),
+            (Screen::History, icons::CLOCK, tr!("nav-history")),
+            (Screen::Playlists, icons::PLAYLIST, tr!("nav-playlists")),
+            (Screen::Sources, icons::HARD_DRIVES, tr!("nav-sources")),
+            (Screen::Settings, icons::GEAR_SIX, tr!("nav-settings")),
         ];
         // At a large interface size the labels would run into the buttons
         // on the right: the tabs then show their icons alone.
@@ -255,19 +255,25 @@ fn nav(ui: &mut egui::Ui, v: &mut View) {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             if v.playback.is_some() {
-                if widgets::button(ui, Some(icons::PLAY), "Back to video", Kind::Primary).clicked()
+                if widgets::button(
+                    ui,
+                    Some(icons::PLAY),
+                    tr!("library-back-to-video"),
+                    Kind::Primary,
+                )
+                .clicked()
                 {
                     v.actions.push(Action::ShowBrowser(false));
                 }
             } else if widgets::icon_button(ui, icons::POWER, 48.0, false)
-                .tip("Quit")
+                .tip(tr!("library-quit"))
                 .clicked()
             {
                 v.actions.push(Action::Quit);
             }
             if v.passthrough_available
                 && widgets::icon_button(ui, icons::ARMCHAIR, 48.0, v.settings.passthrough)
-                    .tip("Room")
+                    .tip(tr!("player-room"))
                     .clicked()
             {
                 v.actions.push(Action::TogglePassthrough);
@@ -315,16 +321,23 @@ fn status_toast(ctx: &egui::Context, v: &mut View) {
                         ui.set_min_height(32.0);
                         if let Some(o) = opening {
                             ui.spinner();
-                            ui.label(format!("Opening {}", widgets::display_title(&o)));
+                            let title = widgets::display_title(&o);
+                            ui.label(tr!("library-opening", title = title));
                         } else if let Some(e) = err {
                             ui.label(
                                 RichText::new(icons::WARNING_CIRCLE)
                                     .font(theme::icon(22.0))
                                     .color(theme::ERROR),
                             );
-                            ui.label(format!("Could not open: {e}"));
-                            if widgets::button_sized(ui, None, "Dismiss", Kind::Ghost, 36.0)
-                                .clicked()
+                            ui.label(tr!("library-could-not-open", error = e.as_str()));
+                            if widgets::button_sized(
+                                ui,
+                                None,
+                                tr!("library-dismiss"),
+                                Kind::Ghost,
+                                36.0,
+                            )
+                            .clicked()
                             {
                                 v.state.open_error = None;
                             }
@@ -339,13 +352,6 @@ fn status_toast(ctx: &egui::Context, v: &mut View) {
                     });
                 });
         });
-}
-
-pub(super) fn thumb_key(r: &MediaRecord) -> Option<String> {
-    r.thumbnail
-        .as_ref()
-        .map(|p| p.display().to_string())
-        .or_else(|| r.thumbnail_url.clone())
 }
 
 pub(crate) fn request(r: &MediaRecord) -> OpenRequest {
@@ -392,7 +398,7 @@ pub(super) fn facts(r: &MediaRecord, default: VideoFormat) -> String {
 
 /// A video's card: play on click, details from its "…".
 fn record_card(ui: &mut egui::Ui, v: &mut View, r: &MediaRecord) -> page::CardResponse {
-    let thumb = thumb_key(r);
+    let thumb = r.picture();
     let title = widgets::display_title(&r.title);
     let facts = facts(r, v.settings.default_format);
     let badge = widgets::format_short(&shown_format(r, v.settings.default_format).format);
@@ -406,6 +412,7 @@ fn record_card(ui: &mut egui::Ui, v: &mut View, r: &MediaRecord) -> page::CardRe
             badge: Some(&badge),
             corner: (!r.scripts.is_empty()).then_some(icons::WAVEFORM),
             progress: r.progress().map(|p| p as f32),
+            watched: r.play_count > 0,
             favorite: r.favorite,
             dim: r.missing,
             more: true,
@@ -444,11 +451,11 @@ fn record_row(ui: &mut egui::Ui, v: &mut View, title: &str, records: &[MediaReco
 /// one watched.
 fn hero(ui: &mut egui::Ui, v: &mut View, rows: &HomeRows) {
     let (r, caption, resume) = match (rows.continue_watching.first(), &rows.last_watched) {
-        (Some(r), _) => (r, "Continue watching", true),
-        (None, Some(r)) => (r, "Watch again", false),
+        (Some(r), _) => (r, tr!("jf-continue"), true),
+        (None, Some(r)) => (r, tr!("library-watch-again"), false),
         _ => return,
     };
-    let key = thumb_key(r);
+    let key = r.picture();
     let resp = page::banner(ui, v.thumbs, key.as_deref(), 300.0, |inner| {
         inner.add_space(22.0);
         widgets::section_label(inner, caption);
@@ -463,7 +470,7 @@ fn hero(ui: &mut egui::Ui, v: &mut View, rows: &HomeRows) {
         let mut line = facts(r, v.settings.default_format);
         if resume && r.resume_position > 1.0 {
             let left = r.duration.unwrap_or(0.0) - r.resume_position;
-            line = format!("{line}  ·  {} left", fmt_time(left));
+            line = format!("{line}  ·  {}", tr!("jf-time-left", time = fmt_time(left)));
         }
         inner.label(
             RichText::new(line)
@@ -473,11 +480,22 @@ fn hero(ui: &mut egui::Ui, v: &mut View, rows: &HomeRows) {
         inner.add_space(18.0);
         inner.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 12.0;
-            let label = if resume { "Resume" } else { "Play" };
+            let label = if resume {
+                tr!("library-resume")
+            } else {
+                tr!("player-play")
+            };
             if widgets::button(ui, Some(icons::PLAY), label, Kind::Primary).clicked() {
                 v.actions.push(open_record(r));
             }
-            if widgets::button(ui, Some(icons::INFO), "Details", Kind::Secondary).clicked() {
+            if widgets::button(
+                ui,
+                Some(icons::INFO),
+                tr!("library-details"),
+                Kind::Secondary,
+            )
+            .clicked()
+            {
                 v.state.details = Some(r.id);
             }
         });
@@ -526,18 +544,16 @@ fn home(ui: &mut egui::Ui, v: &mut View) {
             page::empty_state(
                 ui,
                 icons::PLAY_CIRCLE,
-                "Nothing watched yet",
-                "Pick a source below: the videos on this headset, its microSD card and USB \
-                 drives, your Jellyfin, DLNA, SMB and WebDAV servers, or any DeoVR feed or \
-                 HereSphere API. What you watch shows up here.",
+                tr!("library-nothing-watched"),
+                tr!("library-home-empty-desc"),
                 |_| {},
             );
             ui.add_space(24.0);
         } else {
             hero(ui, v, &rows);
         }
-        record_row(ui, v, "Continue watching", &rows.continue_watching);
-        record_row(ui, v, "Favorites", &rows.favorites);
+        record_row(ui, v, tr!("jf-continue"), &rows.continue_watching);
+        record_row(ui, v, tr!("filter-favorites"), &rows.favorites);
         super::sources::source_row(ui, v, Screen::Home);
     });
     v.state.home = Some(rows);
@@ -549,14 +565,14 @@ fn filters(ui: &mut egui::Ui, g: &mut LibraryGrid) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        changed |= page::search_field(ui, &mut g.search, "Search titles, tags, folders", 260.0);
+        changed |= page::search_field(ui, &mut g.search, tr!("library-search"), 260.0);
         ui.add_space(10.0);
         for (f, label) in [
-            (FormatFilter::All, "All"),
-            (FormatFilter::Flat, "Flat"),
+            (FormatFilter::All, tr!("filter-all")),
+            (FormatFilter::Flat, tr!("filter-flat")),
             (FormatFilter::Vr180, "180°"),
             (FormatFilter::Vr360, "360°"),
-            (FormatFilter::Fisheye, "Fisheye"),
+            (FormatFilter::Fisheye, tr!("filter-fisheye")),
         ] {
             if widgets::chip(ui, label, g.format_filter == f).clicked() {
                 g.format_filter = f;
@@ -568,7 +584,14 @@ fn filters(ui: &mut egui::Ui, g: &mut LibraryGrid) -> bool {
             g.stereo_only = !g.stereo_only;
             changed = true;
         }
-        if widgets::chip_icon(ui, Some(icons::HEART), "Favorites", g.favorites_only).clicked() {
+        if widgets::chip_icon(
+            ui,
+            Some(icons::HEART),
+            tr!("filter-favorites"),
+            g.favorites_only,
+        )
+        .clicked()
+        {
             g.favorites_only = !g.favorites_only;
             changed = true;
         }
@@ -589,14 +612,16 @@ pub fn grid_page(
     let mut changed = filters(ui, g);
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        if page::sort_bar(ui, sorts, &mut g.sort) {
+        let picked = page::sort_bar(ui, sorts, &mut g.sort);
+        let again = g.sort == Sort::Random && page::shuffle_again(ui);
+        if picked || again {
             if g.sort == Sort::Random {
                 // A new shuffle each time it is picked.
                 g.base.random_seed = fp_core::playback::now_ms() as u64;
             }
             changed = true;
         }
-        page::count_label(ui, &page::plural(g.total, "video", "videos"));
+        page::count_label(ui, &tr!("count-videos", count = g.total));
     });
     ui.add_space(12.0);
     if changed {
@@ -621,15 +646,15 @@ pub fn grid_page(
         || g.stereo_only
         || g.format_filter != FormatFilter::All;
     let mut more = false;
-    page::scroll(ui, |ui| {
+    page::scroll_from(ui, changed, |ui| {
         ui.add_space(4.0);
         if results.is_empty() {
             if filtered {
                 page::empty_state(
                     ui,
                     icons::MAGNIFYING_GLASS,
-                    "Nothing matches",
-                    "Try another search, or clear the filters.",
+                    tr!("filter-nothing-matches"),
+                    tr!("filter-nothing-matches-desc"),
                     |_| {},
                 );
             } else {
@@ -637,12 +662,7 @@ pub fn grid_page(
             }
         }
         record_grid(ui, v, &results);
-        if results.len() < g.total {
-            ui.vertical_centered(|ui| {
-                more = widgets::button(ui, None, "Show more", Kind::Secondary).clicked();
-            });
-            ui.add_space(20.0);
-        }
+        more = results.len() < g.total && page::load_more(ui, false);
     });
     if more {
         g.page_size += 48;
@@ -656,7 +676,7 @@ fn history(ui: &mut egui::Ui, v: &mut View) {
     ui.add_space(12.0);
     ui.horizontal(|ui| {
         ui.label(
-            RichText::new("Watch history")
+            RichText::new(tr!("nav-history"))
                 .font(theme::font(Weight::Bold, 30.0))
                 .color(theme::TEXT),
         );
@@ -666,9 +686,9 @@ fn history(ui: &mut egui::Ui, v: &mut View) {
                 .clear_armed
                 .is_some_and(|t| t.elapsed().as_secs_f32() < 4.0);
             let label = if armed {
-                "Clear everything?"
+                tr!("library-clear-confirm")
             } else {
-                "Clear history"
+                tr!("library-clear-history")
             };
             let kind = if armed { Kind::Danger } else { Kind::Secondary };
             if v.state.history.total > 0
@@ -693,23 +713,23 @@ fn history(ui: &mut egui::Ui, v: &mut View) {
         v,
         &mut g,
         &[
-            (Sort::LastPlayed, "Recently watched"),
-            (Sort::Title, "Title"),
-            (Sort::PlayCount, "Most watched"),
-            (Sort::Rating, "Rating"),
-            (Sort::Duration, "Length"),
+            (Sort::LastPlayed, tr!("sort-recently-watched")),
+            (Sort::Title, tr!("sort-title")),
+            (Sort::PlayCount, tr!("sort-most-watched")),
+            (Sort::Rating, tr!("filter-rating")),
+            (Sort::Duration, tr!("filter-length")),
         ],
         |ui, v| {
             page::empty_state(
                 ui,
                 icons::CLOCK,
-                "Nothing watched yet",
-                "Videos you play from any source show up here, with where you left off.",
+                tr!("library-nothing-watched"),
+                tr!("library-history-empty-desc"),
                 |ui| {
                     if widgets::button(
                         ui,
                         Some(icons::HARD_DRIVES),
-                        "Browse sources",
+                        tr!("library-browse-sources"),
                         Kind::Primary,
                     )
                     .clicked()
@@ -732,7 +752,9 @@ fn details(ui: &mut egui::Ui, v: &mut View, id: fp_library::MediaId) {
         .auto_shrink(false)
         .show(ui, |ui| {
             ui.add_space(12.0);
-            if widgets::button(ui, Some(icons::ARROW_LEFT), "Back", Kind::Ghost).clicked() {
+            if widgets::button(ui, Some(icons::ARROW_LEFT), tr!("common-back"), Kind::Ghost)
+                .clicked()
+            {
                 v.state.details = None;
             }
             ui.add_space(12.0);
@@ -740,7 +762,7 @@ fn details(ui: &mut egui::Ui, v: &mut View, id: fp_library::MediaId) {
                 ui.spacing_mut().item_spacing.x = 28.0;
                 let (rect, _) = ui.allocate_exact_size(Vec2::new(512.0, 288.0), Sense::hover());
                 widgets::shadow(ui.painter(), rect, 16, 0.6);
-                let key = thumb_key(&r);
+                let key = r.picture();
                 page::picture(ui, v.thumbs, key.as_deref(), rect, 16, icons::FILM_STRIP);
                 ui.vertical(|ui| details_side(ui, v, &r));
             });
@@ -753,14 +775,14 @@ fn details(ui: &mut egui::Ui, v: &mut View, id: fp_library::MediaId) {
                 );
             }
             ui.add_space(28.0);
-            widgets::section_label(ui, "Format");
+            widgets::section_label(ui, tr!("adjust-format"));
             ui.add_space(2.0);
             let fmt = shown_format(&r, v.settings.default_format);
             ui.label(
-                RichText::new(format!(
-                    "Detected {} ({})",
-                    fmt.format.label(),
-                    fmt.evidence.label()
+                RichText::new(tr!(
+                    "adjust-detected",
+                    format = super::format_label(&fmt.format),
+                    evidence = super::evidence_label(fmt.evidence)
                 ))
                 .color(theme::TEXT_2),
             );
@@ -768,8 +790,13 @@ fn details(ui: &mut egui::Ui, v: &mut View, id: fp_library::MediaId) {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
                 let current = r.user_format;
-                if widgets::chip_icon(ui, Some(icons::MAGIC_WAND), "Automatic", current.is_none())
-                    .clicked()
+                if widgets::chip_icon(
+                    ui,
+                    Some(icons::MAGIC_WAND),
+                    tr!("adjust-format-automatic"),
+                    current.is_none(),
+                )
+                .clicked()
                 {
                     v.actions.push(Action::SetUserFormat(r.id, None));
                 }
@@ -780,7 +807,7 @@ fn details(ui: &mut egui::Ui, v: &mut View, id: fp_library::MediaId) {
                 }
             });
             ui.add_space(26.0);
-            widgets::section_label(ui, "File");
+            widgets::section_label(ui, tr!("library-file"));
             ui.add_space(2.0);
             ui.label(
                 RichText::new(crate::libraries::display_location(&r.location))
@@ -789,8 +816,13 @@ fn details(ui: &mut egui::Ui, v: &mut View, id: fp_library::MediaId) {
             );
             if r.last_played.is_some() {
                 ui.add_space(12.0);
-                if widgets::button(ui, Some(icons::TRASH), "Remove from history", Kind::Danger)
-                    .clicked()
+                if widgets::button(
+                    ui,
+                    Some(icons::TRASH),
+                    tr!("library-remove-from-history"),
+                    Kind::Danger,
+                )
+                .clicked()
                 {
                     v.actions.push(Action::RemoveFromHistory(r.id));
                     v.state.details = None;
@@ -824,10 +856,10 @@ fn details_side(ui: &mut egui::Ui, v: &mut View, r: &MediaRecord) {
         f.push(fmt_size(s));
     }
     if r.play_count > 0 {
-        f.push(format!("watched {}×", r.play_count));
+        f.push(tr!("library-watched-times", count = r.play_count));
     }
     if let Some(t) = r.last_played {
-        f.push(format!("last {}", super::fmt_date(t)));
+        f.push(tr!("library-last-watched", date = super::fmt_date(t)));
     }
     page::facts(ui, &f);
     ui.add_space(10.0);
@@ -835,9 +867,9 @@ fn details_side(ui: &mut egui::Ui, v: &mut View, r: &MediaRecord) {
         ui.spacing_mut().item_spacing.x = 12.0;
         let resume = r.resume_position > 1.0;
         let label = if resume {
-            format!("Resume from {}", fmt_time(r.resume_position))
+            tr!("jf-resume-from", time = fmt_time(r.resume_position))
         } else {
-            "Play".to_string()
+            tr!("player-play").to_string()
         };
         if widgets::button(ui, Some(icons::PLAY), &label, Kind::Primary).clicked() {
             v.actions.push(open_record(r));
@@ -846,7 +878,7 @@ fn details_side(ui: &mut egui::Ui, v: &mut View, r: &MediaRecord) {
             && widgets::button(
                 ui,
                 Some(icons::ARROW_COUNTER_CLOCKWISE),
-                "Start over",
+                tr!("jf-start-over"),
                 Kind::Secondary,
             )
             .clicked()
@@ -856,9 +888,9 @@ fn details_side(ui: &mut egui::Ui, v: &mut View, r: &MediaRecord) {
             v.actions.push(Action::Open(req));
         }
         let heart = if r.favorite {
-            "Favorite"
+            tr!("feed-favorite")
         } else {
-            "Add to favorites"
+            tr!("feed-add-favorite")
         };
         if widgets::chip_icon(ui, Some(icons::HEART), heart, r.favorite).clicked() {
             v.actions.push(Action::SetFavorite(r.id, !r.favorite));
@@ -907,9 +939,9 @@ fn details_side(ui: &mut egui::Ui, v: &mut View, r: &MediaRecord) {
         let n = r.scripts.len();
         ui.label(
             RichText::new(format!(
-                "{}  {n} haptic script{}",
+                "{}  {}",
                 icons::WAVEFORM,
-                if n == 1 { "" } else { "s" }
+                tr!("library-haptic-scripts", count = n)
             ))
             .color(theme::TEXT_2),
         );
@@ -917,19 +949,17 @@ fn details_side(ui: &mut egui::Ui, v: &mut View, r: &MediaRecord) {
     if let Some(e) = &r.probe_error {
         ui.label(
             RichText::new(format!(
-                "{}  Could not read the file: {e}",
-                icons::WARNING_CIRCLE
+                "{}  {}",
+                icons::WARNING_CIRCLE,
+                tr!("library-unreadable", error = e.as_str())
             ))
             .color(theme::ERROR),
         );
     }
     if r.missing {
         ui.label(
-            RichText::new(format!(
-                "{}  The file is missing (drive unplugged?)",
-                icons::WARNING
-            ))
-            .color(theme::WARN),
+            RichText::new(format!("{}  {}", icons::WARNING, tr!("library-missing")))
+                .color(theme::WARN),
         );
     }
 }

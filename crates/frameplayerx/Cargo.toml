@@ -29,10 +29,19 @@ fp-sources.workspace = true
 fp-updater.workspace = true
 fp-xr.workspace = true
 glam.workspace = true
+# Interface translations: Fluent messages built in (i18n/), their ids and
+# arguments checked against the English ones at build time.
+i18n-embed = { version = "0.16", features = ["fluent-system"] }
+i18n-embed-fl = "0.10"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 libc.workspace = true
 log.workspace = true
 # Source PIN protection PBKDF2 hashing.
 ring = "0.17"
+rust-embed = "8"
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+# Checks the translations against the English messages.
+fluent-syntax = "0.12"

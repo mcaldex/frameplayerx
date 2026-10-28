@@ -18,7 +18,7 @@ pub struct LocalView {
 
 /// The headset's folders; true when Back was clicked.
 pub fn page(ui: &mut egui::Ui, v: &mut View, l: &mut LocalView) -> bool {
-    let title = super::sources::LOCAL_NAME;
+    let title = super::sources::local_name();
     if let Some(b) = l.folder.as_mut() {
         let root = crate::services::builtin_sources()
             .into_iter()
@@ -27,12 +27,7 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, l: &mut LocalView) -> bool {
             .unwrap_or_default();
         return super::folders::page(ui, v, title, &root, b);
     }
-    let back = page::header(
-        ui,
-        title,
-        Some("Folders on the headset, its microSD card and USB drives"),
-        |_| {},
-    );
+    let back = page::header(ui, title, Some(tr!("sources-local-desc")), |_| {});
     roots(ui, v, l);
     back
 }
@@ -83,18 +78,18 @@ pub fn library_page(
     }
     let subtitle = match &scanning {
         Some(s) => s.clone(),
-        None if !present => format!("{card} is not inserted"),
+        None if !present => tr!("local-not-inserted", card = card.as_str()),
         None => crate::libraries::display_location(&cfg.root()),
     };
     let back = page::header(ui, name, Some(&subtitle), |ui| {
         if widgets::button_sized(
             ui,
             Some(icons::ARROWS_CLOCKWISE),
-            "Scan now",
+            tr!("local-scan-now"),
             Kind::Secondary,
             44.0,
         )
-        .tip("Look for new and removed videos")
+        .tip(tr!("local-scan-now-tip"))
         .clicked()
         {
             v.actions.push(Action::Rescan {
@@ -105,8 +100,8 @@ pub fn library_page(
     });
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        widgets::chip_icon(ui, Some(icons::FILM_STRIP), "Videos", true);
-        if widgets::chip_icon(ui, Some(icons::FOLDERS), "Folders", false).clicked() {
+        widgets::chip_icon(ui, Some(icons::FILM_STRIP), tr!("local-videos"), true);
+        if widgets::chip_icon(ui, Some(icons::FOLDERS), tr!("local-folders"), false).clicked() {
             l.folders = true;
             l.folder = Some(Browse {
                 source: source.to_string(),
@@ -125,25 +120,22 @@ pub fn library_page(
         v,
         &mut l.grid,
         &[
-            (Sort::Added, "Newest"),
-            (Sort::Title, "Title"),
-            (Sort::Duration, "Length"),
-            (Sort::Rating, "Rating"),
-            (Sort::Random, "Shuffle"),
+            (Sort::Added, tr!("sort-newest")),
+            (Sort::Title, tr!("sort-title")),
+            (Sort::Duration, tr!("filter-length")),
+            (Sort::Rating, tr!("filter-rating")),
+            (Sort::Random, tr!("sort-shuffle")),
         ],
         |ui, _| {
             let (title, body) = if scanning.is_some() {
-                ("Looking for videos", "They appear here as they are found.")
+                (tr!("local-scanning"), tr!("local-scanning-desc"))
             } else if !present {
                 (
-                    "Not inserted",
-                    "Insert the card or drive to see its videos.",
+                    tr!("local-not-inserted-title"),
+                    tr!("local-not-inserted-desc"),
                 )
             } else {
-                (
-                    "No videos here yet",
-                    "Copy some into this folder with FrameDrop or a USB drive.",
-                )
+                (tr!("local-empty"), tr!("local-empty-desc"))
             };
             page::empty_state(ui, icons::FILM_STRIP, title, body, |_| {});
         },
@@ -155,7 +147,7 @@ pub fn library_page(
 fn roots(ui: &mut egui::Ui, v: &mut View, l: &mut LocalView) {
     let mounts = crate::drives::removable_mounts();
     let drives = if mounts.is_empty() {
-        "None inserted".to_string()
+        tr!("local-no-drives").to_string()
     } else {
         mounts
             .iter()
@@ -209,7 +201,7 @@ fn roots(ui: &mut egui::Ui, v: &mut View, l: &mut LocalView) {
                                     open = widgets::button_sized(
                                         ui,
                                         Some(icons::FOLDER_OPEN),
-                                        "Browse",
+                                        tr!("sources-browse"),
                                         Kind::Secondary,
                                         44.0,
                                     )
