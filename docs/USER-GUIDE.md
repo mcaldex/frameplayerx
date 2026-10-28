@@ -413,14 +413,19 @@ can't cross far enough to see it as one. Settings › Video position ›
 **Autofocus** works on every 3D 180°, 360°, fisheye and EAC video, as
 DeoVR's does. It watches what is in the middle of your view, and when that
 is nearer than **Nearest distance** (0.7 m to start with), it moves the two
-eyes' pictures apart until it looks that far away. Look at something
-further off and the picture settles back over the **Refocus time**. The
-depth within the picture stays as filmed; only how near it all looks
-changes. Flat 3D films are left as they are.
+eyes' pictures apart until it looks that far away, starting and stopping
+gently and settling over the **Refocus time**. Something nearer is pushed
+back at once; look at something further off and the picture comes forward
+only once you have looked there for a moment, so glancing about leaves it
+still, and so do small changes. The depth within the picture stays as
+filmed; only how near it all looks changes. Flat 3D films are left as they
+are. Each refocus, and why, is in the log (`frameplayerx.log`).
 
 On a headset that tracks your eyes, such as the Steam Frame, it follows
-where they look; elsewhere, or with Settings › General › **Eye tracking**
-off, it follows where your head points. It needs something with detail to
+where they look, reads each thing they land on afresh, and does most of
+its moving while they jump from one thing to the next or blink, when a
+change is hardest to see; elsewhere, or with Settings › General › **Eye
+tracking** off, it follows where your head points. It needs something with detail to
 look at: on a blank wall or the sky it keeps what it last saw for a
 moment, then lets go. If it follows your head on a Frame, allow eye
 tracking for apps in the headset's settings. **Depth** in the player's ⚙ › Stereo still

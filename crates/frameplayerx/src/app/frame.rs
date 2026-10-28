@@ -583,6 +583,10 @@ impl App {
     /// isn't one it reads.
     fn autofocus(&mut self, reading: Option<fp_render::Focus>, dt: f32) -> f32 {
         let s = &self.settings.autofocus;
+        let eyes = crate::autofocus::Eyes {
+            landed: self.gaze.landed(),
+            unseen: self.gaze.unseen(),
+        };
         let Some(p) = &mut self.playback else {
             return 0.0;
         };
@@ -591,7 +595,7 @@ impl App {
             return 0.0;
         }
         let depth = p.shown_settings(&self.settings.default_view).ipd_offset;
-        p.autofocus.update(reading, depth, s, dt)
+        p.autofocus.update(reading, depth, s, eyes, dt)
     }
 
     /// What the compositor draws: panels back to front, then pointers,

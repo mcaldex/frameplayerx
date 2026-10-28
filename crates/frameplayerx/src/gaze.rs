@@ -62,6 +62,8 @@ pub struct GazeTracker {
     last: Option<Vec3>,
     /// The eyes are mid-saccade: the fixation waits for where they land.
     jumping: bool,
+    /// This frame a new fixation started.
+    landed: bool,
     /// Seconds since the eyes were last tracked.
     lost: f32,
     /// The head's forward, in the world.
@@ -80,6 +82,7 @@ impl GazeTracker {
     ) {
         self.head = head.map(|(_, q)| q * Vec3::NEG_Z);
         self.now = eyes.filter(|_| allowed);
+        self.landed = false;
         let Some(gaze) = self.now else {
             self.lost += dt;
             self.last = None;
@@ -105,7 +108,10 @@ impl GazeTracker {
                 .lerp(gaze.direction, 1.0 - (-dt / STEADY).exp())
                 .normalize(),
             // Landed: a new fixation starts where the eyes are.
-            _ => gaze.direction,
+            _ => {
+                self.landed = true;
+                gaze.direction
+            }
         });
         self.jumping = false;
     }
@@ -114,6 +120,18 @@ impl GazeTracker {
     /// tracking.
     pub fn now(&self) -> Option<Gaze> {
         self.now
+    }
+
+    /// The eyes landed on something new this frame: what was looked at
+    /// before is something else.
+    pub fn landed(&self) -> bool {
+        self.landed
+    }
+
+    /// The eyes are mid-saccade or closed (a blink), so take in little of
+    /// what is shown: a change made now is hard to see.
+    pub fn unseen(&self) -> bool {
+        self.fixation.is_some() && (self.jumping || self.now.is_none())
     }
 
     /// What you are looking at: the eyes' fixation, else straight ahead;
@@ -307,10 +325,14 @@ mod tests {
             t.update(at(dir(step, 0.0)), head(), true, DT);
             assert!(looking(&t).direction.distance(dir(0.0, 0.0)) < 1e-3);
             assert!(t.now().expect("raw").direction.distance(dir(step, 0.0)) < 1e-6);
+            assert!(t.unseen() && !t.landed(), "mid-jump");
         }
         // Landed, it is there at once.
         t.update(at(dir(30.0, 0.0)), head(), true, DT);
         assert!(looking(&t).direction.distance(dir(30.0, 0.0)) < 1e-6);
+        assert!(t.landed() && !t.unseen());
+        t.update(at(dir(30.0, 0.0)), head(), true, DT);
+        assert!(!t.landed(), "only the frame it lands");
     }
 
     #[test]
@@ -352,10 +374,12 @@ mod tests {
             t.update(None, head(), true, DT);
         }
         assert_eq!(looking(&t).source, Source::Eyes);
+        assert!(t.unseen(), "a blink");
         for _ in 0..(0.3 / DT) as usize {
             t.update(None, head(), true, DT);
         }
         assert_eq!(looking(&t).source, Source::Head);
+        assert!(!t.unseen(), "the eyes lost, not a blink");
     }
 
     #[test]
