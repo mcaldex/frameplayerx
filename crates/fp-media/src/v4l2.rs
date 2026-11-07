@@ -15,9 +15,10 @@
 //!    `REQBUFS` fails with `ENOMEM`, the declared height is lowered to the
 //!    largest 32-aligned height the driver accepts ([`capped_height`]).
 //! 2. In that case an embedded IDR picture (the "primer") is queued ahead of
-//!    the stream: a black HEVC frame of 8192x4080, which has just few enough
-//!    macroblocks to pass the check when CAPTURE is allocated, yet needs the
-//!    same 8192x4096 buffers as the stream ([`primer_matches`]).
+//!    the stream: a black HEVC frame with just few enough macroblocks to
+//!    pass the check when CAPTURE is allocated, yet the same coding tree
+//!    blocks and CAPTURE buffers as the stream ([`primer_matches`]):
+//!    8192x4080 for an 8-bit 8192x4096 stream, 8160x4096 for a 10-bit one.
 //! 3. When the real stream's `SOURCE_CHANGE` arrives, the existing CAPTURE
 //!    buffers are reused ([`can_reuse_capture`]): decoding resumes with
 //!    `V4L2_DEC_CMD_START`, which skips the check `STREAMON` would run again.
@@ -37,10 +38,11 @@
 //! 10-bit HEVC comes out correctly only as Q10C, Qualcomm's compressed TP10
 //! ([`Q10cLayout`]): asked for NV12, the decoder clamps the 10-bit samples
 //! to 8 bits instead of scaling them. Q10C pictures are copied out whole
-//! and only the GPU reads them. They get no primer: the driver sizes Q10C
-//! CAPTURE buffers by the exact picture height (8192x4080 and 8192x4096
-//! differ) and ignores a requested one, so a 10-bit 8K stream the admission
-//! check refuses decodes in software.
+//! and only the GPU reads them. Their primer is narrower instead of
+//! shorter: the driver sizes Q10C CAPTURE buffers by the exact picture
+//! height (8192x4080 and 8192x4096 differ, and a requested size is
+//! ignored) but rounds the width up to 192, so an 8160x4096 picture gets
+//! the buffers of an 8192x4096 one.
 
 /// Bitstream (OUTPUT) buffers to request.
 pub(crate) const OUTPUT_BUFFERS: u32 = 6;
@@ -89,17 +91,22 @@ impl Codec {
         }
     }
 
-    /// The primer: one black IDR picture (Annex B with parameter sets, no
-    /// SEI) and its size. Only HEVC has one; 8K H.264 is not something the
-    /// Frame needs. Generated with
+    /// The primer for 8-bit or 10-bit streams: one black IDR picture (Annex
+    /// B with parameter sets, no SEI) and its size. Only HEVC has them; 8K
+    /// H.264 is not something the Frame needs. Generated with
     /// `ffmpeg -f lavfi -i color=c=black:s=8192x4080:r=1 -frames:v 1
-    /// -pix_fmt yuv420p -c:v libx265 -profile:v main -x265-params info=0 -f hevc`.
-    pub(crate) fn primer(self) -> Option<(&'static [u8], (u32, u32))> {
-        match self {
-            Codec::H264 => None,
-            Codec::Hevc => Some((
+    /// -pix_fmt yuv420p -c:v libx265 -profile:v main -x265-params info=0 -f hevc`,
+    /// and for 10-bit with `s=8160x4096`, `-pix_fmt yuv420p10le -profile:v main10`.
+    pub(crate) fn primer(self, ten_bit: bool) -> Option<(&'static [u8], (u32, u32))> {
+        match (self, ten_bit) {
+            (Codec::H264, _) => None,
+            (Codec::Hevc, false) => Some((
                 include_bytes!("../assets/primer_8192x4080.hevc"),
                 (8192, 4080),
+            )),
+            (Codec::Hevc, true) => Some((
+                include_bytes!("../assets/primer_8160x4096_10bit.hevc"),
+                (8160, 4096),
             )),
         }
     }
@@ -142,13 +149,27 @@ pub(crate) fn capped_height(
 }
 
 /// Whether a primer of size `primer` can stand in for a stream of size
-/// `stream`: same width, the same height once aligned to 64-line coding tree
-/// blocks (so CAPTURE and internal buffers are identical), and fewer
-/// macroblocks (so it passes the admission check where the stream fails).
-pub(crate) fn primer_matches(stream: (u32, u32), primer: (u32, u32)) -> bool {
-    stream.0 == primer.0
-        && stream.1.next_multiple_of(64) == primer.1.next_multiple_of(64)
+/// `stream`: the same 64x64 coding tree blocks (the firmware's internal
+/// buffers), the same CAPTURE buffers, and fewer macroblocks (so it passes
+/// the admission check where the stream fails). NV12 buffers take the
+/// width as it is and the height aligned to coding tree blocks; Q10C ones
+/// ([`Q10cLayout`]) the width aligned to 192 and the height to 16.
+pub(crate) fn primer_matches(stream: (u32, u32), primer: (u32, u32), ten_bit: bool) -> bool {
+    let blocks = |(w, h): (u32, u32)| (w.div_ceil(64), h.div_ceil(64));
+    let capture = |(w, h): (u32, u32)| match ten_bit {
+        false => (w, h.next_multiple_of(64)),
+        true => (w.next_multiple_of(192), h.next_multiple_of(16)),
+    };
+    blocks(stream) == blocks(primer)
+        && capture(stream) == capture(primer)
         && macroblocks(primer.0, primer.1) < macroblocks(stream.0, stream.1)
+}
+
+/// Whether the check, which admits `width`-wide streams up to the aligned
+/// height `admitted` and refuses the next [`HEIGHT_STEP`], should take the
+/// primer: it has fewer macroblocks than that next step.
+pub(crate) fn primer_admitted(width: u32, admitted: u32, primer: (u32, u32)) -> bool {
+    macroblocks(primer.0, primer.1) < macroblocks(width, admitted + HEIGHT_STEP)
 }
 
 /// Whether the admission check takes a stream beside `others` other sessions:
@@ -1164,7 +1185,7 @@ mod linux {
             let mut t = BUF_TYPE_OUTPUT_MPLANE as i32;
             ioctl(&dec.fd, VIDIOC_STREAMON, &mut t).map_err(|e| err("STREAMON output", e))?;
             if dec.primed
-                && let Some((primer, _)) = codec.primer()
+                && let Some((primer, _)) = codec.primer(pixelformat == Q10C)
             {
                 dec.queue_bitstream(primer, 0)?;
             }
@@ -1301,8 +1322,8 @@ mod linux {
                 Err(e) if e.raw_os_error() == Some(libc::ENOMEM) => {
                     // The admission check: find the largest height admitted
                     // beside the sessions open, then declare that and open
-                    // CAPTURE through the primer, if one fits (NV12 only,
-                    // see the module docs).
+                    // CAPTURE through the primer, if one fits (see the
+                    // module docs).
                     let mut fits = |cand: u32| {
                         let ok = self.try_output(w, cand).is_ok();
                         if ok {
@@ -1311,13 +1332,15 @@ mod linux {
                         ok
                     };
                     let admitted = capped_height(h, MIN_DECLARED_HEIGHT.min(h), &mut fits);
-                    let primer =
-                        self.codec.primer().map(|(_, size)| size).filter(|size| {
-                            self.pixelformat == NV12 && primer_matches((w, h), *size)
-                        });
+                    let ten_bit = self.pixelformat == Q10C;
+                    let primer = self
+                        .codec
+                        .primer(ten_bit)
+                        .map(|(_, size)| size)
+                        .filter(|&size| primer_matches((w, h), size, ten_bit));
                     // No primer for this stream, or not even it is admitted.
                     let Some(capped) =
-                        admitted.filter(|&c| primer.is_some_and(|p| c + HEIGHT_STEP > p.1))
+                        admitted.filter(|&c| primer.is_some_and(|p| primer_admitted(w, c, p)))
                     else {
                         return Err(self.busy(admitted, primer, &e));
                     };
@@ -2064,7 +2087,7 @@ mod tests {
 
     #[test]
     fn a_refused_stream_says_how_much_room_was_left() {
-        // 10-bit 8K gets no primer: beside one other session it is refused.
+        // Without its primer, 8K is refused beside one other session.
         let admitted = capped_height(4096, 512, iris_admits(2, 8192));
         assert_eq!(
             refused((8192, 4096), true, admitted, None, &[]).to_string(),
@@ -2103,7 +2126,8 @@ mod tests {
         // largest 8192-wide stream it takes, and 6K top-bottom is refused.
         assert!(iris_admits(1, 8192)(4320) && !iris_admits(1, 8192)(4352));
         assert!(!iris_admits(1, 6144)(6144) && iris_admits(1, 5760)(5760));
-        assert!(!primer_matches((6144, 6144), (8192, 4080)));
+        assert!(!primer_matches((6144, 6144), (8192, 4080), false));
+        assert!(!primer_matches((6144, 6144), (8160, 4096), true));
         let holders = [holder("steam", 0, 1)];
         for (stream, text) in [
             (
@@ -2158,21 +2182,22 @@ mod tests {
             None,
             &[recording.clone(), browser.clone()]
         ));
-        // The primer fits beside one more; beside two it doesn't.
-        let primer = Some((8192, 4080));
+        // The primers fit beside one more; beside two they don't.
         let one = holder("steamwebhelper", 1, 0);
-        assert!(blocks(
-            (8192, 4096),
-            false,
-            primer,
-            &[recording.clone(), one.clone()]
-        ));
-        assert!(!blocks(
-            (8192, 4096),
-            false,
-            primer,
-            &[recording.clone(), browser.clone()]
-        ));
+        for (ten_bit, primer) in [(false, (8192, 4080)), (true, (8160, 4096))] {
+            assert!(blocks(
+                (8192, 4096),
+                ten_bit,
+                Some(primer),
+                &[recording.clone(), one.clone()]
+            ));
+            assert!(!blocks(
+                (8192, 4096),
+                ten_bit,
+                Some(primer),
+                &[recording.clone(), browser.clone()]
+            ));
+        }
         // Not Steam's recording: others on the encoder, Steam on the decoder.
         assert!(!blocks((8192, 4096), true, None, &[holder("obs", 0, 1)]));
         assert!(!blocks((8192, 4096), true, None, &[holder("steam", 1, 0)]));
@@ -2180,11 +2205,12 @@ mod tests {
 
     #[test]
     fn fits_beside_follows_the_driver_and_the_primer() {
-        let primer = Some((8192, 4080));
         assert!(fits_beside((8192, 4096), None, 0));
         assert!(!fits_beside((8192, 4096), None, 1));
-        assert!(fits_beside((8192, 4096), primer, 1));
-        assert!(!fits_beside((8192, 4096), primer, 2));
+        for primer in [Some((8192, 4080)), Some((8160, 4096))] {
+            assert!(fits_beside((8192, 4096), primer, 1));
+            assert!(!fits_beside((8192, 4096), primer, 2));
+        }
         assert!(fits_beside((7680, 4320), None, 1));
         assert!(!fits_beside((7680, 4320), None, 2));
         assert!(fits_beside((8192, 4320), None, 0));
@@ -2271,18 +2297,54 @@ mod tests {
 
     #[test]
     fn primer_only_for_streams_with_its_buffers() {
-        let primer = Codec::Hevc.primer().unwrap().1;
+        let primer = Codec::Hevc.primer(false).unwrap().1;
         assert_eq!(primer, (8192, 4080));
-        assert!(primer_matches((8192, 4096), primer));
-        assert!(primer_matches((8192, 4088), primer));
+        assert!(primer_matches((8192, 4096), primer, false));
+        assert!(primer_matches((8192, 4088), primer, false));
         // Smaller than the primer: the primer would not help.
-        assert!(!primer_matches((8192, 4080), primer));
-        assert!(!primer_matches((8192, 4064), primer));
+        assert!(!primer_matches((8192, 4080), primer, false));
+        assert!(!primer_matches((8192, 4064), primer, false));
         // Other sizes need other buffers.
-        assert!(!primer_matches((8192, 4320), primer));
-        assert!(!primer_matches((7680, 4096), primer));
-        assert!(!primer_matches((8192, 8192), primer));
-        assert!(Codec::H264.primer().is_none());
+        assert!(!primer_matches((8192, 4320), primer, false));
+        assert!(!primer_matches((7680, 4096), primer, false));
+        assert!(!primer_matches((8192, 8192), primer, false));
+        // Q10C buffers follow the exact height: the 8-bit primer's differ.
+        assert!(!primer_matches((8192, 4096), primer, true));
+
+        let primer = Codec::Hevc.primer(true).unwrap().1;
+        assert_eq!(primer, (8160, 4096));
+        assert!(primer_matches((8192, 4096), primer, true));
+        // Q10C heights are rounded up to 16 lines (1080 to 1088).
+        assert!(primer_matches((8192, 4088), primer, true));
+        // As many macroblocks as the 8-bit primer: what one other session
+        // leaves.
+        assert_eq!(macroblocks(primer.0, primer.1), MAX_CORE_MACROBLOCKS / 2);
+        // NV12 buffers take the width as it is.
+        assert!(!primer_matches((8192, 4096), primer, false));
+        // Another height, or another coding tree block column (8128 would
+        // get the same Q10C buffers, but not the same internal ones).
+        assert!(!primer_matches((8192, 4080), primer, true));
+        assert!(!primer_matches((8192, 4320), primer, true));
+        assert!(!primer_matches((8192, 4096), (8128, 4096), true));
+        assert!(!primer_matches((8256, 4096), primer, true));
+        assert!(!primer_matches((8160, 4096), primer, true));
+        assert!(Codec::H264.primer(false).is_none() && Codec::H264.primer(true).is_none());
+    }
+
+    #[test]
+    fn primers_are_admitted_where_the_stream_is_not() {
+        for ten_bit in [false, true] {
+            let (_, primer) = Codec::Hevc.primer(ten_bit).unwrap();
+            // Beside one other session (Steam's recording, or vrlink).
+            let admitted = capped_height(4096, 512, iris_admits(2, 8192)).unwrap();
+            assert!(!iris_admits(2, 8192)(4096));
+            assert!(primer_admitted(8192, admitted, primer), "{primer:?}");
+            assert!(iris_admits(2, primer.0)(primer.1), "{primer:?}");
+            // Beside two, neither is.
+            let admitted = capped_height(4096, 512, iris_admits(3, 8192)).unwrap();
+            assert!(!primer_admitted(8192, admitted, primer), "{primer:?}");
+            assert!(!iris_admits(3, primer.0)(primer.1), "{primer:?}");
+        }
     }
 
     #[test]
@@ -2317,9 +2379,12 @@ mod tests {
             assert_eq!((l.uv_offset, l.size, l.rows), (uv_offset, size, fmt.1));
             assert_eq!((l.width, l.height), visible);
         }
-        // The 8192x4080 primer gets smaller buffers than an 8192x4096 stream.
+        // The 8192x4080 primer gets smaller buffers than an 8192x4096 stream;
+        // the 8160x4096 one gets the same (measured).
         let primer = Q10cLayout::new((8256, 4080), 11008, 67_751_936, (8192, 4080)).unwrap();
         assert!(primer.size < 67_928_064);
+        let primer = Q10cLayout::new((8256, 4096), 11008, 67_928_064, (8160, 4096)).unwrap();
+        assert_eq!((primer.size, primer.uv_offset), (67_928_064, 45_285_376));
         // A stride or size the rules don't give is not a layout we know.
         assert!(Q10cLayout::new((1920, 1088), 2048, 4_210_688, (1920, 1080)).is_none());
         assert!(Q10cLayout::new((1920, 1088), 2560, 4_210_689, (1920, 1080)).is_none());
@@ -2353,16 +2418,18 @@ mod tests {
 
     #[test]
     fn primers_match_their_codecs() {
-        let (h, _) = Codec::Hevc.primer().unwrap();
-        assert!(h.starts_with(&[0, 0, 0, 1, 0x40, 0x01]), "HEVC VPS first");
-        // VPS, SPS, PPS, one IDR slice; no SEI.
-        let nal_types: Vec<u8> = h
-            .windows(4)
-            .filter(|w| w[..3] == [0, 0, 1])
-            .map(|w| (w[3] >> 1) & 0x3f)
-            .collect();
-        assert_eq!(nal_types, [32, 33, 34, 20]);
-        assert!(h.len() < 16 * 1024);
+        for ten_bit in [false, true] {
+            let (h, _) = Codec::Hevc.primer(ten_bit).unwrap();
+            assert!(h.starts_with(&[0, 0, 0, 1, 0x40, 0x01]), "HEVC VPS first");
+            // VPS, SPS, PPS, one IDR slice; no SEI.
+            let nal_types: Vec<u8> = h
+                .windows(4)
+                .filter(|w| w[..3] == [0, 0, 1])
+                .map(|w| (w[3] >> 1) & 0x3f)
+                .collect();
+            assert_eq!(nal_types, [32, 33, 34, 20]);
+            assert!(h.len() < 16 * 1024);
+        }
         assert_eq!(Codec::Hevc.fourcc(), fourcc(b"HEVC"));
         assert_eq!(macroblocks(8192, 4096), 131_072);
         assert_eq!(macroblocks(1920, 1080), 120 * 68);
