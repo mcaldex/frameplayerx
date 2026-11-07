@@ -635,9 +635,9 @@ playing:
 | 2 | 2720 |
 | 3 | 2016 |
 
-Beside one other session, 8K UHD (7680×4320), 5760×5760 and 8-bit 8192×4096
-HEVC still play in hardware; 10-bit 8192×4096 HEVC, 8192×4096 H.264 and
-8192×4320 need nothing else open. The warning pill's tip names who holds the
+Beside one other session, 8K UHD (7680×4320), 5760×5760 and 8192×4096 HEVC
+(8- and 10-bit) still play in hardware; 8192×4096 H.264 and 8192×4320 need
+nothing else open. The warning pill's tip names who holds the
 decoder, and the decoder pill's tip also says how much room was left.
 
 Recording in the background in Steam holds a session while an app is
@@ -678,8 +678,7 @@ ffmpeg -i video.mp4 -map 0:v:0 -map 0:a? -c:v libx265 -preset fast -crf 20 -prof
 
 These make 8-bit HEVC, which always plays in hardware. To keep a 10-bit or
 HDR video at 10 bits, use `-profile:v main10` with `-pix_fmt p010le`
-(NVIDIA) or `-pix_fmt yuv420p10le` (any PC); it plays in hardware too, but
-at 8192×4096 only while nothing else is using the decoder.
+(NVIDIA) or `-pix_fmt yuv420p10le` (any PC); it plays in hardware too.
 
 Or in HandBrake: the **H.265** encoder for your graphics card (NVEnc, AMD
 VCE or Intel QSV; the 10-bit one for a 10-bit or HDR video), Constant
