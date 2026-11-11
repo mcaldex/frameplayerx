@@ -1154,6 +1154,9 @@ pub fn adjust_panel(ctx: &egui::Context, v: &mut View) {
                     return;
                 }
                 let before = pb.settings;
+                let tracks_eyes = v
+                    .gaze
+                    .is_some_and(|g| g != crate::gaze::GazeStatus::NoEyeTracking);
                 match v.state.adjust_tab {
                     0 => format_tab(ui, pb, v.settings, v.actions),
                     1 => {
@@ -1169,7 +1172,11 @@ pub fn adjust_panel(ctx: &egui::Context, v: &mut View) {
                             format: Some(pb.format),
                             eye_spacing: v.eye_spacing,
                             subtitles: true,
-                            auto: pb.autofocus.as_ref().map(|a| (a.distance(), a.status())),
+                            auto: pb
+                                .autofocus
+                                .as_ref()
+                                .map(crate::autofocus::AutoFocus::shown),
+                            aim_with: tracks_eyes.then_some(&mut v.settings.focus_aim),
                         },
                     ),
                     3 => picture_tab(ui, &mut pb.settings),
@@ -1568,7 +1575,7 @@ fn position_tab(
 /// Depth and eye alignment, with subtitle depth unless `subtitles` is off
 /// (Settings has it with the subtitles).
 /// What the Stereo tab shows beside a video's adjustments.
-pub(super) struct StereoContext {
+pub(super) struct StereoContext<'a> {
     /// The video's format; `None` in Settings, where they are where videos
     /// start.
     pub format: Option<VideoFormat>,
@@ -1576,9 +1583,23 @@ pub(super) struct StereoContext {
     pub eye_spacing: Option<f32>,
     /// Subtitle depth among them (Settings has it with the subtitles).
     pub subtitles: bool,
-    /// Where automatic focus draws, metres, and what it is doing, while
-    /// it runs.
-    pub auto: Option<(f32, crate::autofocus::Status)>,
+    /// What automatic focus shows, while it runs.
+    pub auto: Option<crate::autofocus::Shown>,
+    /// What automatic focus aims with (a setting of the player's, not the
+    /// video's), where the headset tracks the eyes.
+    pub aim_with: Option<&'a mut crate::settings::FocusAim>,
+}
+
+/// What aims automatic focus, in words, where the eyes were chosen to.
+fn aim_note(note: crate::gaze::GazeStatus) -> Option<&'static str> {
+    use crate::gaze::GazeStatus;
+    Some(match note {
+        GazeStatus::Eyes => tr!("adjust-focus-by-eyes"),
+        GazeStatus::Blink => tr!("adjust-focus-by-blink"),
+        GazeStatus::Lost => tr!("adjust-focus-by-lost"),
+        GazeStatus::NotDelivering => tr!("adjust-focus-by-idle"),
+        GazeStatus::NoEyeTracking => return None,
+    })
 }
 
 /// Automatic focus's status, in words.
@@ -1614,7 +1635,7 @@ fn auto_status(status: crate::autofocus::Status) -> String {
     }
 }
 
-pub(super) fn stereo_tab(ui: &mut egui::Ui, s: &mut ViewSettings, c: StereoContext) {
+pub(super) fn stereo_tab(ui: &mut egui::Ui, s: &mut ViewSettings, mut c: StereoContext) {
     let d = ViewSettings::default();
     let subtitles = c.subtitles;
     widgets::rows(ui, |r| {
@@ -1657,7 +1678,7 @@ pub(super) fn stereo_tab(ui: &mut egui::Ui, s: &mut ViewSettings, c: StereoConte
             );
         }
     });
-    focus_rows(ui, s, &c);
+    focus_rows(ui, s, &mut c);
 }
 
 /// A distance in metres on a proportional rail, over the distances
@@ -1677,8 +1698,13 @@ fn distance_slider(ui: &mut egui::Ui, value: &mut f32, default: f32) -> bool {
 /// Automatic focus: what it is doing, then the nearest and farthest it
 /// follows and how fast.
 fn auto_rows(r: &mut widgets::Rows, s: &mut ViewSettings, c: &StereoContext) {
-    if let Some((_, status)) = c.auto {
-        r.content(|ui| ui.label(RichText::new(auto_status(status)).color(theme::TEXT_2)));
+    if let Some(a) = c.auto {
+        r.content(|ui| {
+            ui.label(RichText::new(auto_status(a.status)).color(theme::TEXT_2));
+            if let Some(note) = a.aim.and_then(aim_note) {
+                ui.label(RichText::new(note).color(theme::TEXT_3));
+            }
+        });
     }
     let d = ViewSettings::default();
     if r.row(
@@ -1714,7 +1740,7 @@ fn auto_rows(r: &mut widgets::Rows, s: &mut ViewSettings, c: &StereoContext) {
 
 /// Stereo focus: its mode, then while it is on the distance and the
 /// camera's lens spacing. Dimmed, with why, for a video it can't redraw.
-fn focus_rows(ui: &mut egui::Ui, s: &mut ViewSettings, c: &StereoContext) {
+fn focus_rows(ui: &mut egui::Ui, s: &mut ViewSettings, c: &mut StereoContext) {
     let applies = c.format.is_none_or(|f| f.is_forward_stereo());
     if !applies {
         ui.label(RichText::new(tr!("adjust-focus-not-here")).color(theme::TEXT_2));
@@ -1730,14 +1756,34 @@ fn focus_rows(ui: &mut egui::Ui, s: &mut ViewSettings, c: &StereoContext) {
                 ] {
                     if widgets::chip(ui, label, s.focus == mode).clicked() {
                         // Manual starts where automatic was.
-                        if let (Focus::Auto, Focus::Manual, Some((at, _))) = (s.focus, mode, c.auto)
-                        {
-                            s.focus_distance = at;
+                        if let (Focus::Auto, Focus::Manual, Some(a)) = (s.focus, mode, c.auto) {
+                            s.focus_distance = a.distance;
                         }
                         s.focus = mode;
                     }
                 }
             });
+            // What automatic aims with: under it, and in Settings with the
+            // starting values.
+            if let Some(with) = c.aim_with.as_deref_mut()
+                && (s.focus == Focus::Auto || c.format.is_none())
+            {
+                use crate::settings::FocusAim;
+                r.row(
+                    tr!("adjust-focus-aim"),
+                    Some(tr!("adjust-focus-aim-desc")),
+                    |ui| {
+                        for (aim, label) in [
+                            (FocusAim::Head, tr!("adjust-focus-aim-head")),
+                            (FocusAim::Eyes, tr!("adjust-focus-aim-eyes")),
+                        ] {
+                            if widgets::chip(ui, label, *with == aim).clicked() {
+                                *with = aim;
+                            }
+                        }
+                    },
+                );
+            }
             match s.focus {
                 Focus::Off => return,
                 Focus::Manual => {

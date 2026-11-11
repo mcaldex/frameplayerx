@@ -2,7 +2,7 @@
 //! draws.
 
 use super::*;
-use crate::autofocus::AutoFocus;
+use crate::autofocus::{Aiming, AutoFocus};
 use fp_core::autofocus::Follow;
 use fp_core::view::Focus;
 
@@ -709,18 +709,19 @@ impl App {
         let a = p
             .autofocus
             .get_or_insert_with(|| AutoFocus::new(s.focus_distance));
-        // Where the head faces, in the world.
-        let look = input
-            .head
-            .map_or(video.anchor * Vec3::NEG_Z, |(_, rot)| rot * Vec3::NEG_Z);
+        let head = input.head.map_or(video.anchor, |(_, rot)| rot);
+        let eyes = self.settings.focus_aim == crate::settings::FocusAim::Eyes;
+        let aiming = Aiming::new(eyes, self.aim.as_ref(), head);
         let follow = Follow {
             speed: s.focus_speed,
             nearest: s.focus_nearest,
             farthest: s.focus_farthest,
+            eyes: aiming.eyes,
         };
         let position = p.player.position();
-        video.auto_focus =
-            Some(a.frame(renderer, input.time, position, video, look, shown, &follow));
+        video.auto_focus = Some(a.frame(
+            renderer, input.time, position, video, &aiming, shown, &follow,
+        ));
         if a.take_status_change() {
             self.panels[ADJUST].request_repaint();
         }
@@ -756,14 +757,23 @@ impl App {
             p.update_fade(input.dt);
         }
         self.dot.update_fade(input.dt);
-        // The check's dot while one is under way, else the gaze's.
-        let at = self.check_dot.or(self.aim.and_then(|a| a.gaze));
+        // The check's dot while one is under way, else the gaze's: at the
+        // distance stereo focus draws the video in focus, so both eyes
+        // converge on it where the picture is right, else where the eyes
+        // rest easily.
+        let (at, distance) = match self.check_dot {
+            Some(d) => (Some(d), crate::gaze::DOT_DISTANCE),
+            None => (
+                self.aim.and_then(|a| a.gaze),
+                self.focus_drawn.unwrap_or(crate::gaze::DOT_DISTANCE),
+            ),
+        };
         if let (Some(head), Some(gaze)) = (input.head, at)
             && self.dot.visible
         {
             let half =
                 crate::gaze::DOT_RING * ui::gaze::DOT_PX as f32 / (2.0 * ui::gaze::DOT_RING_PX);
-            let (pose, size) = crate::gaze::dot_place(head, gaze, crate::gaze::DOT_DISTANCE, half);
+            let (pose, size) = crate::gaze::dot_place(head, gaze, distance, half);
             self.dot.pose = pose;
             self.dot.size = Vec2::splat(size);
         }

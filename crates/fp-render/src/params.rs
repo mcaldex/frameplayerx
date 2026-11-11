@@ -248,23 +248,32 @@ pub(crate) fn eye_offsets(axes: Quat, eyes: [Vec3; 2], spacing_mm: f32) -> [Vec3
     [0, 1].map(|i| axes * (eyes[i] - middle) - cameras[i])
 }
 
+/// The distance stereo focus draws `video` exact at this frame, metres:
+/// the manual distance or automatic's, within the distances offered;
+/// `None` when it is off or the video isn't two forward-facing cameras'.
+pub fn focus_distance(video: &VideoParams) -> Option<f32> {
+    let s = &video.settings;
+    let distance = match s.focus {
+        Focus::Off => return None,
+        Focus::Manual => s.focus_distance,
+        Focus::Auto => video.auto_focus.unwrap_or(s.focus_distance),
+    };
+    // Nearer than the nearest offered, the sphere would close in round the
+    // eye; a zero would divide.
+    (video.format.is_forward_stereo() && distance.is_finite())
+        .then(|| distance.clamp(*FOCUS_DISTANCES.start(), *FOCUS_DISTANCES.end()))
+}
+
 /// The shader's `focus`: per eye, its offset from its camera and the
 /// distance stereo focus is exact at, metres; all zero when focus is off
 /// or the video isn't two forward-facing cameras'.
 fn focus(video: &VideoParams, eyes: [Vec3; 2]) -> [Vec4; 2] {
-    let s = &video.settings;
-    let distance = match s.focus {
-        Focus::Off => return [Vec4::ZERO; 2],
-        Focus::Manual => s.focus_distance,
-        Focus::Auto => video.auto_focus.unwrap_or(s.focus_distance),
-    };
-    if !video.format.is_forward_stereo() || !distance.is_finite() {
-        return [Vec4::ZERO; 2];
+    match focus_distance(video) {
+        Some(d) => {
+            eye_offsets(video_axes(video), eyes, video.settings.lens_spacing).map(|p| p.extend(d))
+        }
+        None => [Vec4::ZERO; 2],
     }
-    // Nearer than the nearest offered, the sphere would close in round the
-    // eye; a zero would divide.
-    let distance = distance.clamp(*FOCUS_DISTANCES.start(), *FOCUS_DISTANCES.end());
-    eye_offsets(video_axes(video), eyes, s.lens_spacing).map(|p| p.extend(distance))
 }
 
 /// The uniforms for drawing `video` (shown as `frame`) to eyes at world
@@ -688,6 +697,29 @@ mod tests {
         // A broken lens spacing is the usual one.
         let nan = block(&focused(1.0, f32::NAN));
         assert_eq!(nan, block(&focused(1.0, LENS_SPACING)));
+    }
+
+    #[test]
+    fn the_distance_drawn_at_follows_the_mode_and_the_video() {
+        let mut v = focused(0.8, 63.0);
+        assert_eq!(focus_distance(&v), Some(0.8));
+        v.auto_focus = Some(2.5);
+        assert_eq!(focus_distance(&v), Some(0.8), "manual ignores automatic's");
+        v.settings.focus = Focus::Auto;
+        assert_eq!(focus_distance(&v), Some(2.5));
+        v.auto_focus = None;
+        assert_eq!(
+            focus_distance(&v),
+            Some(0.8),
+            "automatic before it measured"
+        );
+        v.auto_focus = Some(0.01);
+        assert_eq!(focus_distance(&v), Some(*FOCUS_DISTANCES.start()));
+        v.settings.focus = Focus::Off;
+        assert_eq!(focus_distance(&v), None);
+        v.settings.focus = Focus::Manual;
+        v.format = VideoFormat::new(Projection::EQUIRECT_360, StereoLayout::TopBottom);
+        assert_eq!(focus_distance(&v), None, "a video it doesn't apply to");
     }
 
     #[test]

@@ -2,9 +2,12 @@
 //! focus controller ([`fp_core::autofocus`]), takes in a finished match,
 //! hands grids the renderer has finished to a worker thread to match
 //! ([`fp_core::depth::Matcher`]), and, when both are free, asks the
-//! renderer for the next measurement along the aim. The render thread only
-//! ever tries the worker's channel; nothing waits.
+//! renderer for the next measurement along the aim: where the eyes look,
+//! where the headset tracks them and the viewer chose so, else the middle
+//! of the view. The render thread only ever tries the worker's channel;
+//! nothing waits.
 
+use crate::gaze::{Aim, GazeStatus};
 use fp_core::autofocus::{Activity, Controller, Follow, Hold, MIN_CONFIDENCE, SIDE, Side, Tag};
 use fp_core::depth::{Angles, Grids, Matcher, Measurement, Outcome, Plan, Request, Window};
 use fp_core::format::VideoFormat;
@@ -68,6 +71,52 @@ impl Status {
             (a, b) => a == b,
         }
     }
+}
+
+/// What aims automatic focus this frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Aiming {
+    /// Where, in the world.
+    pub look: Vec3,
+    /// A measurement may start along it (not while the aim is only held
+    /// through a blink).
+    pub usable: bool,
+    /// The eyes aim it: the match window is wider, by about the gaze's
+    /// error, and small changes are followed faster.
+    pub eyes: bool,
+    /// What aims, where the eyes were chosen to (`None`: the head, plainly).
+    pub note: Option<GazeStatus>,
+}
+
+impl Aiming {
+    /// The aim for a head turned `head` (world), from the gaze filter's
+    /// `aim` if the viewer chose the eyes (`eyes`) and the headset tracks
+    /// them; else the middle of the view.
+    pub fn new(eyes: bool, aim: Option<&Aim>, head: glam::Quat) -> Aiming {
+        match aim.filter(|a| eyes && a.status != GazeStatus::NoEyeTracking) {
+            Some(a) => Aiming {
+                look: head * a.direction,
+                usable: a.usable,
+                eyes: a.from_eyes,
+                note: Some(a.status),
+            },
+            None => Aiming {
+                look: head * Vec3::NEG_Z,
+                usable: true,
+                eyes: false,
+                note: None,
+            },
+        }
+    }
+}
+
+/// What it shows: where it draws, metres, what it is doing, and what
+/// aims it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Shown {
+    pub distance: f32,
+    pub status: Status,
+    pub aim: Option<GazeStatus>,
 }
 
 /// What makes a rig's learned vertical offset another rig's: the format,
@@ -153,6 +202,7 @@ pub struct AutoFocus {
     /// The coarse picture of the last measurement back.
     picture: Vec<f32>,
     status: Status,
+    aim_note: Option<GazeStatus>,
     status_at: f64,
     status_changed: bool,
     tally: Tally,
@@ -187,6 +237,7 @@ impl AutoFocus {
             rig: None,
             picture: Vec::new(),
             status: Status::Measuring,
+            aim_note: None,
             status_at: f64::MIN,
             status_changed: true,
             tally: Tally::default(),
@@ -205,6 +256,15 @@ impl AutoFocus {
         self.status
     }
 
+    /// Where it draws, what it shows it is doing, and what aims it.
+    pub fn shown(&self) -> Shown {
+        Shown {
+            distance: self.distance(),
+            status: self.status,
+            aim: self.aim_note,
+        }
+    }
+
     /// Whether the status changed since this was last asked.
     pub fn take_status_change(&mut self) -> bool {
         std::mem::take(&mut self.status_changed)
@@ -219,9 +279,9 @@ impl AutoFocus {
     }
 
     /// One frame at `now` (seconds) with the playback at `position`
-    /// (seconds), drawing `video`, the viewer looking along `look` (world)
-    /// and `shown` whether a frame of the video is shown. Returns the
-    /// distance to draw this frame at, metres.
+    /// (seconds), drawing `video`, aimed by `aiming`, `shown` whether a
+    /// frame of the video is shown. Returns the distance to draw this frame
+    /// at, metres.
     #[allow(clippy::too_many_arguments)]
     pub fn frame(
         &mut self,
@@ -229,7 +289,7 @@ impl AutoFocus {
         now: f64,
         position: f64,
         video: &VideoParams,
-        look: Vec3,
+        aiming: &Aiming,
         shown: bool,
         follow: &Follow,
     ) -> f32 {
@@ -254,10 +314,12 @@ impl AutoFocus {
         if let Some((id, grids)) = renderer.take_depth() {
             self.hand_over(id, grids);
         }
-        if shown && !self.broken {
-            self.ask(renderer, video, look, now, follow);
+        // Held through a blink, the aim starts nothing (one under way still
+        // counts).
+        if shown && !self.broken && aiming.usable {
+            self.ask(renderer, video, aiming, now, follow);
         }
-        self.update_status(now, renderer.measures_depth());
+        self.update_status(now, renderer.measures_depth(), aiming.note);
         self.controller.distance()
     }
 
@@ -354,7 +416,7 @@ impl AutoFocus {
         &mut self,
         renderer: &mut Renderer,
         video: &VideoParams,
-        look: Vec3,
+        aiming: &Aiming,
         now: f64,
         follow: &Follow,
     ) {
@@ -366,10 +428,14 @@ impl AutoFocus {
         }
         let tag = self.controller.ask();
         let request = Request {
-            aim: aim(video, look, tag.side),
+            aim: aim(video, aiming.look, tag.side),
             baseline: video.settings.lens_spacing / 1000.0,
             nearest: follow.nearest / SEARCH_NEARER,
-            window: Window::HEAD,
+            window: if aiming.eyes {
+                Window::EYES
+            } else {
+                Window::HEAD
+            },
         };
         match matcher.plan(&request) {
             Ok(plan) => {
@@ -387,7 +453,7 @@ impl AutoFocus {
         }
     }
 
-    fn update_status(&mut self, now: f64, measures: bool) {
+    fn update_status(&mut self, now: f64, measures: bool, aim: Option<GazeStatus>) {
         let distance = self.controller.distance();
         let current = if self.broken || !measures {
             Status::Unavailable { distance }
@@ -401,8 +467,10 @@ impl AutoFocus {
                 Activity::Holding(why) => Status::Holding { distance, why },
             }
         };
-        if !current.shows_as(&self.status) && now - self.status_at >= STATUS_EVERY {
+        let changed = !current.shows_as(&self.status) || aim != self.aim_note;
+        if changed && now - self.status_at >= STATUS_EVERY {
             self.status = current;
+            self.aim_note = aim;
             self.status_at = now;
             self.status_changed = true;
         }
@@ -507,12 +575,13 @@ mod tests {
                 let r = &mut self.renderer;
                 r.begin_frame().unwrap();
                 r.set_video(Some(frame)).unwrap();
+                let ahead = Aiming::new(false, None, Quat::IDENTITY);
                 let d = self.focus.frame(
                     r,
                     self.now,
                     self.position,
                     &self.video,
-                    Vec3::NEG_Z,
+                    &ahead,
                     true,
                     &follow,
                 );
@@ -526,6 +595,46 @@ mod tests {
             }
             self.eyes.read(&self.renderer, 0).unwrap()
         }
+    }
+
+    #[test]
+    fn the_eyes_aim_where_chosen_and_tracked_else_the_head() {
+        use crate::gaze::Aim;
+        let head = Quat::from_rotation_y(0.3);
+        let left = crate::gaze::direction(glam::Vec2::new(-0.3, 0.1));
+        let aim = |status, usable, from_eyes| Aim {
+            direction: left,
+            usable,
+            from_eyes,
+            status,
+            gaze: Some(left),
+            current: true,
+        };
+        let cases = [
+            (aim(GazeStatus::Eyes, true, true), true, true),
+            (aim(GazeStatus::Blink, false, false), false, false),
+            (aim(GazeStatus::Lost, true, false), true, false),
+            (aim(GazeStatus::NotDelivering, true, false), true, false),
+        ];
+        for (a, usable, eyes) in cases {
+            let by_eyes = Aiming::new(true, Some(&a), head);
+            assert_eq!(by_eyes.look, head * left, "{:?}", a.status);
+            assert_eq!(
+                (by_eyes.usable, by_eyes.eyes),
+                (usable, eyes),
+                "{:?}",
+                a.status
+            );
+            assert_eq!(by_eyes.note, Some(a.status));
+            // Chosen to aim with the head: the eyes are ignored.
+            let by_head = Aiming::new(false, Some(&a), head);
+            assert_eq!(by_head.look, head * Vec3::NEG_Z);
+            assert!(by_head.usable && !by_head.eyes && by_head.note.is_none());
+        }
+        // Without eye tracking, or before any gaze: the head, plainly.
+        let none = aim(GazeStatus::NoEyeTracking, true, false);
+        assert_eq!(Aiming::new(true, Some(&none), head).note, None);
+        assert_eq!(Aiming::new(true, None, head).look, head * Vec3::NEG_Z);
     }
 
     #[test]
@@ -607,5 +716,149 @@ mod tests {
         let line = p.focus.take_log_line().expect("measured");
         eprintln!("{line}");
         p.eyes.destroy(&p.renderer);
+    }
+
+    /// A 180° side-by-side frame of a textured disc 0.8 m away 20° to the
+    /// left, in front of a textured wall 3 m away.
+    fn disc_and_wall() -> Arc<fp_media::VideoFrame> {
+        use fp_core::depth::scenes::Shape;
+        let (w, h) = (2048, 1024);
+        let g = PictureGeometry::new(
+            &VideoFormat::FALLBACK,
+            &ViewSettings::default(),
+            w,
+            h,
+            1.0,
+            0,
+        );
+        let left = 20f32.to_radians();
+        let scene = Scene::new(vec![
+            Surface::new(
+                Shape::Disc {
+                    centre: [-0.8 * left.sin(), 0.0, -0.8 * left.cos()],
+                    normal: [0.0, 0.0, 1.0],
+                    radius: 0.15,
+                },
+                Texture::Noise {
+                    feature: 0.005,
+                    contrast: 1.0,
+                    seed: 5,
+                },
+            ),
+            Surface::wall(
+                3.0,
+                Texture::Noise {
+                    feature: 0.018,
+                    contrast: 1.0,
+                    seed: 6,
+                },
+            ),
+        ]);
+        let (luma, _) =
+            Picture::new([&scene, &scene], Rig::new(0.065), g, w as usize, h as usize).render();
+        let rgba: Vec<u8> = luma
+            .iter()
+            .flat_map(|l| {
+                let v = (l * 255.0).round() as u8;
+                [v, v, v, 255]
+            })
+            .collect();
+        Arc::new(fp_media::VideoFrame::from_rgba(w, h, &rgba).unwrap())
+    }
+
+    #[test]
+    fn the_eyes_aim_it_through_blinks_and_losses_and_the_head_can_instead() {
+        use crate::gaze::{Correction, GazeFilter, Reading};
+        let gpu = match Gpu::headless() {
+            Ok(g) => Arc::new(g),
+            Err(e) => {
+                eprintln!("skipping: no Vulkan device ({e})");
+                return;
+            }
+        };
+        let mut renderer = Renderer::new(gpu, ash::vk::Format::R8G8B8A8_SRGB).unwrap();
+        let eyes = OffscreenEyes::new(&renderer, 48, 48).unwrap();
+        let settings = ViewSettings {
+            focus: Focus::Auto,
+            focus_distance: 1.5,
+            lens_spacing: 65.0,
+            ..ViewSettings::default()
+        };
+        let video = VideoParams {
+            format: VideoFormat::FALLBACK,
+            settings,
+            ..Default::default()
+        };
+        let frame = disc_and_wall();
+        let mut focus = AutoFocus::new(settings.focus_distance);
+        focus.lockstep = true;
+        let mut filter = GazeFilter::default();
+        let mut now = 0.0f64;
+        let head = Quat::IDENTITY;
+        // `seconds` at 90 Hz with the eyes at `yaw` degrees (`None`: no
+        // gaze), aiming with the eyes or the head.
+        let mut run = |focus: &mut AutoFocus, seconds: f64, yaw: Option<f32>, by_eyes: bool| {
+            for _ in 0..(seconds * 90.0).round() as u32 {
+                now += 1.0 / 90.0;
+                let reading = yaw.map(|y| Reading {
+                    direction: crate::gaze::direction(glam::Vec2::new(y.to_radians(), 0.0)),
+                    time: Some(now),
+                    age: Some(0.0),
+                });
+                let aim = filter.update(now, head, true, reading, &Correction::default());
+                let aiming = Aiming::new(by_eyes, Some(&aim), head);
+                let follow = Follow {
+                    eyes: aiming.eyes,
+                    ..Follow::default()
+                };
+                renderer.begin_frame().unwrap();
+                renderer.set_video(Some(&frame)).unwrap();
+                let d = focus.frame(&mut renderer, now, now, &video, &aiming, true, &follow);
+                let shown = VideoParams {
+                    auto_focus: Some(d),
+                    ..video
+                };
+                renderer
+                    .draw(&eyes.targets(), &Player::eyes(), &shown, &[])
+                    .unwrap();
+                renderer.end_frame().unwrap();
+            }
+            focus.distance()
+        };
+        let near = |d: f32, want: f32| (d / want - 1.0).abs() < 0.03;
+        // Along the gaze 20° left the disc is 0.8 m away; 20° right, the
+        // wall is 3 / cos 20° = 3.19 m.
+        let d = run(&mut focus, 2.5, Some(-20.0), true);
+        eprintln!("eyes left: {d:.3} m");
+        assert!(near(d, 0.8), "eyes left: {d} m");
+        assert_eq!(focus.shown().aim, Some(GazeStatus::Eyes));
+        let d = run(&mut focus, 2.5, Some(20.0), true);
+        eprintln!("eyes right: {d:.3} m");
+        assert!(near(d, 3.0 / 20f32.to_radians().cos()), "eyes right: {d} m");
+        // A blink starts nothing and moves it under 1%.
+        let asked = focus.next_id;
+        let before = focus.distance();
+        let d = run(&mut focus, 0.2, None, true);
+        eprintln!(
+            "blink: {before:.3} -> {d:.3} m, {} asked",
+            focus.next_id - asked
+        );
+        assert!((d / before - 1.0).abs() < 0.01, "{before} -> {d} m");
+        assert!(
+            focus.next_id <= asked + 1,
+            "measurements started in a blink"
+        );
+        // Left again, then lost: the aim glides to straight ahead, measured
+        // there (the wall, 3 m).
+        let d = run(&mut focus, 2.5, Some(-20.0), true);
+        assert!(near(d, 0.8), "eyes left again: {d} m");
+        let d = run(&mut focus, 2.5, None, true);
+        eprintln!("eyes lost: {d:.3} m");
+        assert!(near(d, 3.0), "eyes lost: {d} m");
+        // Aimed with the head, the eyes on the disc don't matter.
+        let d = run(&mut focus, 2.5, Some(-20.0), false);
+        eprintln!("the head aims: {d:.3} m");
+        assert!(near(d, 3.0), "the head aims: {d} m");
+        eprintln!("{}", focus.take_log_line().unwrap());
     }
 }

@@ -461,6 +461,16 @@ adjust-focus-holding-see-through = Holding at { $metres } m: see-through there
 adjust-focus-holding-near = Holding at { $metres } m: nearer than it follows
 adjust-focus-holding-far = Holding at { $metres } m: farther than it follows
 adjust-focus-unavailable = Can't measure on this device: at { $metres } m
+# Under automatic Stereo focus's status: what aims it, where the eyes were chosen to.
+adjust-focus-by-eyes = Aimed by your eyes
+adjust-focus-by-blink = Held through a blink
+adjust-focus-by-lost = Your eyes were lost, so your head aims
+adjust-focus-by-idle = The eye tracker isn't sending, so your head aims
+# A row under automatic Stereo focus, where the headset tracks the eyes, with two chips. Short: the chips.
+adjust-focus-aim = Aims with
+adjust-focus-aim-desc = Your eyes: what you look at. Your head: the middle of the view.
+adjust-focus-aim-eyes = Eyes
+adjust-focus-aim-head = Head
 # Slider rows under automatic Stereo focus.
 adjust-focus-nearest = Nearest it follows
 adjust-focus-nearest-desc = Anything nearer, it holds. Raise it if it jumps to something close.

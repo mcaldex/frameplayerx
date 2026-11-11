@@ -627,10 +627,13 @@ at 63 mm. Your own eye spacing comes from the headset: the line under it
 shows what the headset measures. Both are kept with the video's other
 adjustments, and Settings › Picture sets where videos start.
 
-**Automatic** measures how far away what is in the middle of your view
-is, from the video's two pictures, and keeps the focus there as you look
-round and as things move, gliding to a new distance about as fast as
-your eyes turn in or out. It starts from the focus distance set by hand,
+**Automatic** measures how far away what you look at is, from the
+video's two pictures, and keeps the focus there as you look round and as
+things move, gliding to a new distance about as fast as your eyes turn
+in or out. On a headset that tracks your eyes it aims where they look;
+**Aims with**, under it, can make it aim with your head instead, the
+middle of your view (that choice is kept for all videos, and Settings ›
+Picture has it too). Without eye tracking it always aims with your head. It starts from the focus distance set by hand,
 and choosing **Manual** keeps the distance where automatic had it. It
 changes the distance only when what is round the middle of your view
 agrees, so it stays steady at the edge of a face against a far wall. A
@@ -639,6 +642,9 @@ never saved with the video. A line under it says what it is doing:
 
 - **Measuring…** until it has a first distance.
 - **Following** at a distance, and how sure the last measurement was.
+  Aimed by your eyes, a second line says so, or that it holds through a
+  blink, or that your head aims because your eyes were lost or the eye
+  tracker isn't sending.
 - **Holding** where it is, and why: nothing to match there (a plain
   wall, darkness), a repeating pattern, the two eyes don't show the same
   thing (something only one camera sees, a reflection), too near the
@@ -896,7 +902,8 @@ isn't, check that eye tracking is on, and allowed for apps, in the
 headset's settings. **Gaze dot** shows a small dot where your eyes look,
 inside a thin ring about as wide as the tracker's error, so you can see
 how close it gets. The dot hides while you blink or the tracker loses
-your eyes.
+your eyes. With stereo focus on it sits at the distance in focus, so
+your eyes meet on it where the picture is right; otherwise 2 m away.
 
 An eye tracker is often a few degrees off for a given person, which the
 dot makes plain. **Gaze check** corrects it: press **Start**, and the
@@ -904,8 +911,8 @@ panels make way for five dots, one at a time, for about 8 seconds: in
 the middle, then above, below, left and right of it. Look at each until
 the next shows; the dots move with your head, so turning it doesn't
 matter. A line then says how far off your gaze was before and after,
-and the correction is kept for the dot until you press **Reset**.
-Foveated rendering keeps the tracker's own gaze. If the tracker stops sending, your
+and the correction is kept for the dot and for automatic focus until you
+press **Reset**. Foveated rendering keeps the tracker's own gaze. If the tracker stops sending, your
 eyes are lost too often, or they don't seem to follow the dots, it says
 so and keeps nothing; **Back** stops a check.
 
