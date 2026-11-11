@@ -307,6 +307,8 @@ fn general(ui: &mut egui::Ui, v: &mut View) {
         );
     });
     display(ui, &mut s.display);
+    super::gaze::group(ui, v);
+    let s = &mut *v.settings;
     heading(ui, tr!("settings-thumbnails"));
     widgets::rows(ui, |r| {
         r.switch(

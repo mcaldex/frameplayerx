@@ -60,6 +60,35 @@ const BLEND: f64 = 0.3;
 /// all ends it at once.
 const CURRENT: f64 = 0.05;
 
+/// The gaze dot's ring's angular radius, radians: 1.25°, about the
+/// tracker's error left after a gaze check (and a third of what it was
+/// before one), so the viewer sees how close the gaze can be.
+pub const DOT_RING: f32 = 1.25 * std::f32::consts::PI / 180.0;
+
+/// How far away the gaze dot is when nothing sets it, metres: 2, as far
+/// as the panels and where the eyes rest easily.
+pub const DOT_DISTANCE: f32 = 2.0;
+
+/// Where the gaze dot goes for a head at `head` (position, orientation,
+/// world) looking along `gaze` (head axes): centred on the gaze ray
+/// `distance` metres out, facing back along it, its own up the head's,
+/// and how wide a square it is, metres, for its picture's half-width to
+/// span `half_angle` radians whatever the distance.
+pub fn dot_place(
+    head: (Vec3, Quat),
+    gaze: Vec3,
+    distance: f32,
+    half_angle: f32,
+) -> (glam::Mat4, f32) {
+    let (at, turn) = head;
+    let along = turn * Quat::from_rotation_arc(Vec3::NEG_Z, gaze.normalize_or(Vec3::NEG_Z));
+    let centre = at + along * Vec3::NEG_Z * distance;
+    (
+        glam::Mat4::from_rotation_translation(along, centre),
+        2.0 * distance * half_angle.tan(),
+    )
+}
+
 /// One gaze reading from the headset.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Reading {
@@ -545,6 +574,29 @@ mod tests {
         );
         assert_eq!(f.smoothed, before.smoothed);
         assert!((deg(yaw_pitch(a.direction)) - Vec2::new(4.0, 2.0)).length() < 0.01);
+    }
+
+    #[test]
+    fn the_dot_sits_on_the_gaze_facing_back_at_one_angular_size() {
+        let head = (Vec3::new(0.2, 1.6, -0.1), Quat::from_rotation_y(0.4));
+        let gaze = direction(Vec2::new(0.2, -0.1));
+        let mut sizes = Vec::new();
+        for distance in [0.5f32, 2.0, 8.0] {
+            let (pose, size) = dot_place(head, gaze, distance, DOT_RING);
+            let centre = pose.transform_point3(Vec3::ZERO);
+            let ray = head.1 * gaze;
+            // On the gaze ray, that far out.
+            assert!(((centre - head.0) - ray * distance).length() < 1e-4);
+            // Facing back along it: its +Z towards the head.
+            let facing = pose.transform_vector3(Vec3::Z);
+            assert!(facing.angle_between(-ray) < 1e-4);
+            // The same angle across.
+            sizes.push((size / 2.0 / distance).atan());
+        }
+        assert!(
+            sizes.iter().all(|a| (a - DOT_RING).abs() < 1e-5),
+            "{sizes:?}"
+        );
     }
 
     #[test]

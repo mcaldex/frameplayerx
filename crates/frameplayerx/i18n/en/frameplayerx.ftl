@@ -74,6 +74,17 @@ settings-render-resolution = Render resolution
 settings-render-resolution-desc = Pixels across each eye's picture. Higher is sharper and shimmers less, and works the GPU harder.
 settings-foveation = Foveated rendering
 settings-foveation-desc = Less detail where you aren't looking, following your eyes, so high resolutions keep up. High gives up more.
+# A heading in Settings › General, shown only where the headset tracks the eyes.
+settings-eye-tracking = Eye tracking
+# A row under Eye tracking: whether the eye tracker sends the player where you look.
+settings-eye-tracker = Eye tracker
+settings-eye-tracker-on = Sending where you look
+settings-eye-tracker-off = Not sending where you look
+# Under Eye tracking while the tracker sends nothing.
+settings-eye-tracker-hint = Check that eye tracking is on, and allowed for apps, in the headset's settings.
+# A switch under Eye tracking.
+settings-gaze-dot = Gaze dot
+settings-gaze-dot-desc = A dot where your eyes look. The ring round it is about how far off the tracker may be.
 # Short: a chip.
 foveation-off = Off
 # Short: a chip.

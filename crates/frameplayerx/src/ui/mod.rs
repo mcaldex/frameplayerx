@@ -9,6 +9,7 @@ pub mod depth;
 pub mod errors;
 pub mod feeds;
 pub mod folders;
+pub mod gaze;
 pub mod icons;
 pub mod keyboard;
 pub mod library;
@@ -1013,6 +1014,9 @@ pub struct View<'a> {
     /// How far apart the viewer's eyes are, metres, once the headset has
     /// said ([`crate::app::FrameInput::eye_spacing`]).
     pub eye_spacing: Option<f32>,
+    /// What aims: the eyes, or why not ([`crate::gaze`]); `None` before
+    /// the headset has given a head.
+    pub gaze: Option<crate::gaze::GazeStatus>,
 }
 
 #[cfg(test)]
