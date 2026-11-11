@@ -109,7 +109,7 @@ impl ButtonAction {
 }
 
 /// What a thumbstick axis does. Right and up are the positive directions:
-/// forward, louder, tilt up, turn right, zoom out, higher.
+/// forward, louder, tilt up, turn right, zoom out, higher, focus farther.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AxisAction {
@@ -121,16 +121,19 @@ pub enum AxisAction {
     Turn,
     Zoom,
     Height,
+    /// Stereo focus's distance ([`fp_core::view::Focus`]).
+    Focus,
 }
 
 impl AxisAction {
-    pub const ALL: [AxisAction; 7] = [
+    pub const ALL: [AxisAction; 8] = [
         AxisAction::Seek,
         AxisAction::Volume,
         AxisAction::Tilt,
         AxisAction::Turn,
         AxisAction::Zoom,
         AxisAction::Height,
+        AxisAction::Focus,
         AxisAction::Nothing,
     ];
 
@@ -143,6 +146,7 @@ impl AxisAction {
             AxisAction::Turn => tr!("action-turn"),
             AxisAction::Zoom => tr!("adjust-zoom"),
             AxisAction::Height => tr!("action-height"),
+            AxisAction::Focus => tr!("action-focus"),
         }
     }
 
@@ -152,6 +156,7 @@ impl AxisAction {
             AxisAction::Tilt => tr!("action-short-tilt"),
             AxisAction::Turn => tr!("action-short-turn"),
             AxisAction::Height => tr!("settings-height"),
+            AxisAction::Focus => tr!("action-short-focus"),
             other => other.label(),
         }
     }
