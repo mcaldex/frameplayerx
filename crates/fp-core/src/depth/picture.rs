@@ -1,7 +1,7 @@
 //! How a frame holds a 3D video's two pictures, as the projection
 //! shader's uniforms describe it; and, for tests, where a direction of a
 //! camera's view is in the frame, as the eye passes find it (fp-render's
-//! `scene.wgsl`: `equirect_uv`, `fisheye_uv`, `to_eye_rect`, `stored_uv`),
+//! `picture.wgsl`: `equirect_uv`, `fisheye_uv`, `to_eye_rect`, `stored_uv`),
 //! and a frame in memory read there as the GPU reads one: the CPU
 //! yardstick for the measurement pass.
 

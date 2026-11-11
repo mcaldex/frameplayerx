@@ -7,7 +7,7 @@ use fp_media::frame::{ColorInfo, Matrix};
 use fp_media::info::Transfer;
 use glam::{EulerRot, Mat4, Quat, Vec3, Vec4};
 
-/// Matches `struct Params` in shaders/scene.wgsl (std140-compatible: every
+/// Matches `struct Params` in shaders/picture.wgsl (std140-compatible: every
 /// member is 16-byte aligned).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
