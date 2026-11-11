@@ -20,7 +20,7 @@
 //! | `stick X Y FRAMES` | hold the thumbstick |
 //! | `squeeze` | squeeze and release the grip |
 //! | `grip V` / `trigger V` | hold the grip / trigger at V (0..1) until changed |
-//! | `status` | print what is playing and the view settings |
+//! | `status` | print what is playing, the view settings and what stereo focus is doing |
 //! | `open LOCATION` | open a file or URL |
 //! | `close` | close the open video, as its Close button does |
 //! | `seek SECONDS` | play the open video from SECONDS |

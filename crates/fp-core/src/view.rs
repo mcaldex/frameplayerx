@@ -43,7 +43,23 @@ pub enum Focus {
     Off,
     /// Exact for things [`ViewSettings::focus_distance`] from the camera.
     Manual,
+    /// Exact for what the viewer looks at: its distance measured from the
+    /// video's two pictures ([`crate::autofocus`]), followed between
+    /// [`ViewSettings::focus_nearest`] and [`ViewSettings::focus_farthest`]
+    /// at [`ViewSettings::focus_speed`].
+    Auto,
 }
+
+/// The nearest distance automatic focus follows to start with, metres.
+/// Advice for filming 180° video keeps people a metre or more from the
+/// camera and close-ups past half of one; nearer is rare, and searching no
+/// nearer than this (less a quarter) halves the room a repeating pattern
+/// has to fit a second depth, against searching to 0.3 m.
+pub const FOCUS_NEAREST: f32 = 0.5;
+
+/// Automatic focus's glide speeds offered: a quarter to four times the
+/// eyes' own pace (an interface range we chose).
+pub const FOCUS_SPEEDS: std::ops::RangeInclusive<f32> = 0.25..=4.0;
 
 /// Everything the viewer can adjust about how a video is shown. Defaults are
 /// neutral. Persisted per video by the library and applied by the renderer.
@@ -115,6 +131,12 @@ pub struct ViewSettings {
     /// are where real ones would be, whatever the head does.
     pub focus: Focus,
     pub focus_distance: f32,
+    /// Automatic focus: how fast it glides, 1 the eyes' own pace; and the
+    /// nearest and farthest distances it follows, metres (outside them it
+    /// holds; either end of [`FOCUS_DISTANCES`] is no limit).
+    pub focus_speed: f32,
+    pub focus_nearest: f32,
+    pub focus_farthest: f32,
     /// How far apart the two lenses of the camera that filmed the video
     /// were, millimetres: a property of the video, not of the viewer.
     pub lens_spacing: f32,
@@ -154,6 +176,9 @@ impl Default for ViewSettings {
             key_own: Some(false),
             focus: Focus::Off,
             focus_distance: FOCUS_DISTANCE,
+            focus_speed: 1.0,
+            focus_nearest: FOCUS_NEAREST,
+            focus_farthest: *FOCUS_DISTANCES.end(),
             lens_spacing: LENS_SPACING,
         }
     }
@@ -209,6 +234,13 @@ impl ViewSettings {
             key_own: if t < 0.5 { self.key_own } else { other.key_own },
             focus: if t < 0.5 { self.focus } else { other.focus },
             focus_distance: lerp_distance(self.focus_distance, other.focus_distance, t),
+            // A multiplier: even steps in its logarithm.
+            focus_speed: (self.focus_speed.max(0.01).ln()
+                + (other.focus_speed.max(0.01).ln() - self.focus_speed.max(0.01).ln())
+                    * t.clamp(0.0, 1.0))
+            .exp(),
+            focus_nearest: lerp_distance(self.focus_nearest, other.focus_nearest, t),
+            focus_farthest: lerp_distance(self.focus_farthest, other.focus_farthest, t),
             // A spacing between two cameras' means nothing.
             lens_spacing: if t < 0.5 {
                 self.lens_spacing
@@ -450,6 +482,35 @@ mod tests {
             ..near
         };
         assert!(nan.lerp(&far, 0.5).focus_distance.is_finite());
+    }
+
+    #[test]
+    fn automatic_focus_settings_glide_as_the_distance_does() {
+        let a = ViewSettings {
+            focus: Focus::Auto,
+            focus_speed: 0.5,
+            focus_nearest: 0.4,
+            focus_farthest: 20.0,
+            ..ViewSettings::default()
+        };
+        let b = ViewSettings {
+            focus_speed: 2.0,
+            focus_nearest: 1.0,
+            focus_farthest: 4.0,
+            ..a
+        };
+        let mid = a.lerp(&b, 0.5);
+        assert!((mid.focus_speed - 1.0).abs() < 1e-5, "{}", mid.focus_speed);
+        assert!((mid.focus_nearest - 1.0 / 1.75).abs() < 1e-5);
+        assert!((mid.focus_farthest - 1.0 / 0.15).abs() < 1e-3);
+        let old: ViewSettings = serde_json::from_str(r#"{"focus":"manual"}"#).unwrap();
+        assert_eq!(
+            (old.focus_speed, old.focus_nearest, old.focus_farthest),
+            (1.0, FOCUS_NEAREST, 20.0)
+        );
+        let json = serde_json::to_string(&b).unwrap();
+        assert!(json.contains(r#""focus":"auto""#), "{json}");
+        assert_eq!(serde_json::from_str::<ViewSettings>(&json).unwrap(), b);
     }
 
     #[test]

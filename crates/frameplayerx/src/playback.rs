@@ -131,6 +131,8 @@ pub struct Playback {
     /// What the server is transcoding it to; `None` for the file as it is.
     pub transcoding: Option<TranscodeTarget>,
     pub source_tracks: Vec<fp_sources::PlaybackTrack>,
+    /// Automatic stereo focus, while it is on for this video.
+    pub autofocus: Option<crate::autofocus::AutoFocus>,
 }
 
 /// The size, each way, the backdrop's picture is scaled to fit: plenty of
@@ -722,6 +724,7 @@ pub fn open(
             targets,
             transcoding,
             source_tracks,
+            autofocus: None,
         },
         scripts,
     })

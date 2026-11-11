@@ -58,23 +58,42 @@ pub struct FrameInput {
 }
 
 /// Stereo focus for the preview's `status`: `focus=off`, or the mode,
-/// distance and lens spacing, and `(not here)` for a video it doesn't
-/// apply to.
+/// distance and lens spacing, `(not here)` for a video it doesn't apply
+/// to, and what automatic is doing (`measuring`, `following 1.02 sure
+/// 0.93`, `holding 1.50 flat`, `unavailable`).
 fn focus_status(p: &Playback) -> String {
+    use crate::autofocus::Status;
     let s = &p.settings;
-    let mode = match s.focus {
+    let (mode, distance) = match s.focus {
         fp_core::view::Focus::Off => return "focus=off".into(),
-        fp_core::view::Focus::Manual => "manual",
+        fp_core::view::Focus::Manual => ("manual", s.focus_distance),
+        fp_core::view::Focus::Auto => (
+            "auto",
+            p.autofocus
+                .as_ref()
+                .map_or(s.focus_distance, crate::autofocus::AutoFocus::distance),
+        ),
+    };
+    let doing = match p
+        .autofocus
+        .as_ref()
+        .map(crate::autofocus::AutoFocus::status)
+    {
+        None => String::new(),
+        Some(Status::Measuring) => " measuring".into(),
+        Some(Status::Following { confidence, .. }) => format!(" following sure={confidence:.2}"),
+        Some(Status::Holding { why, .. }) => format!(" holding {why:?}"),
+        Some(Status::Unavailable { .. }) => " unavailable".into(),
     };
     format!(
-        "focus={mode} distance={:.2} spacing={:.0}{}",
-        s.focus_distance,
+        "focus={mode} distance={distance:.2} spacing={:.0}{doing}{} unsaved={}",
         s.lens_spacing,
         if p.format.is_forward_stereo() {
             ""
         } else {
             " (not here)"
-        }
+        },
+        p.settings_dirty
     )
 }
 

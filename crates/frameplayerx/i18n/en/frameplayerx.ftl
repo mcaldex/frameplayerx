@@ -425,6 +425,26 @@ adjust-focus-desc = Redraws the 3D for where your eyes are, so it holds together
 adjust-focus-off = Off
 # Short: a chip, stereo focus at a distance set by hand.
 adjust-focus-manual = Manual
+# Short: a chip, stereo focus following the distance of what you look at by itself.
+adjust-focus-auto = Automatic
+# Under Stereo focus while it is automatic: what it is doing. { $metres } is like 1.25, { $sure } like 85.
+adjust-focus-measuring = Measuring…
+adjust-focus-following = Following at { $metres } m, { $sure }% sure
+adjust-focus-holding-flat = Holding at { $metres } m: nothing to match there
+adjust-focus-holding-repeating = Holding at { $metres } m: a repeating pattern there
+adjust-focus-holding-mismatch = Holding at { $metres } m: the two eyes don't show the same thing there
+adjust-focus-holding-edge = Holding at { $metres } m: too near the edge of the picture
+adjust-focus-holding-see-through = Holding at { $metres } m: see-through there
+adjust-focus-holding-near = Holding at { $metres } m: nearer than it follows
+adjust-focus-holding-far = Holding at { $metres } m: farther than it follows
+adjust-focus-unavailable = Can't measure on this device: at { $metres } m
+# Slider rows under automatic Stereo focus.
+adjust-focus-nearest = Nearest it follows
+adjust-focus-nearest-desc = Anything nearer, it holds. Raise it if it jumps to something close.
+adjust-focus-farthest = Farthest it follows
+adjust-focus-farthest-desc = Anything farther, it holds. At 20 m, as far as anything.
+adjust-focus-speed = Speed
+adjust-focus-speed-desc = How fast it moves to a new distance; 1× is about your eyes' own pace.
 # Above the dimmed stereo focus rows, and as a message on moving its thumbstick, for a video it can't redraw.
 adjust-focus-not-here = Stereo focus is for 3D 180° and fisheye videos.
 # A slider row under Stereo focus.

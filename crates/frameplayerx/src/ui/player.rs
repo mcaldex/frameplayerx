@@ -8,7 +8,7 @@ use crate::subtitles::Pick;
 use egui::{Align, Color32, Layout, RichText, Sense, Vec2};
 use fp_core::format::{Projection, StereoLayout, VideoFormat};
 use fp_core::view::{
-    FOCUS_DISTANCE, FOCUS_DISTANCES, Focus, LENS_SPACING, LENS_SPACINGS, ViewSettings,
+    FOCUS_DISTANCE, FOCUS_DISTANCES, FOCUS_SPEEDS, Focus, LENS_SPACING, LENS_SPACINGS, ViewSettings,
 };
 use fp_media::PlayerState;
 
@@ -1169,6 +1169,7 @@ pub fn adjust_panel(ctx: &egui::Context, v: &mut View) {
                             format: Some(pb.format),
                             eye_spacing: v.eye_spacing,
                             subtitles: true,
+                            auto: pb.autofocus.as_ref().map(|a| (a.distance(), a.status())),
                         },
                     ),
                     3 => picture_tab(ui, &mut pb.settings),
@@ -1575,6 +1576,42 @@ pub(super) struct StereoContext {
     pub eye_spacing: Option<f32>,
     /// Subtitle depth among them (Settings has it with the subtitles).
     pub subtitles: bool,
+    /// Where automatic focus draws, metres, and what it is doing, while
+    /// it runs.
+    pub auto: Option<(f32, crate::autofocus::Status)>,
+}
+
+/// Automatic focus's status, in words.
+fn auto_status(status: crate::autofocus::Status) -> String {
+    use crate::autofocus::Status;
+    use fp_core::autofocus::Hold;
+    let m = |d: f32| format!("{d:.2}");
+    match status {
+        Status::Measuring => tr!("adjust-focus-measuring").to_string(),
+        Status::Following {
+            distance,
+            confidence,
+        } => tr!(
+            "adjust-focus-following",
+            metres = m(distance),
+            sure = format!("{:.0}", confidence * 100.0)
+        ),
+        Status::Holding { distance, why } => {
+            let metres = m(distance);
+            match why {
+                Hold::Flat => tr!("adjust-focus-holding-flat", metres = metres),
+                Hold::Repeating => tr!("adjust-focus-holding-repeating", metres = metres),
+                Hold::Mismatch => tr!("adjust-focus-holding-mismatch", metres = metres),
+                Hold::Edge => tr!("adjust-focus-holding-edge", metres = metres),
+                Hold::SeeThrough => tr!("adjust-focus-holding-see-through", metres = metres),
+                Hold::TooNear => tr!("adjust-focus-holding-near", metres = metres),
+                Hold::TooFar => tr!("adjust-focus-holding-far", metres = metres),
+            }
+        }
+        Status::Unavailable { distance } => {
+            tr!("adjust-focus-unavailable", metres = m(distance))
+        }
+    }
 }
 
 pub(super) fn stereo_tab(ui: &mut egui::Ui, s: &mut ViewSettings, c: StereoContext) {
@@ -1623,6 +1660,58 @@ pub(super) fn stereo_tab(ui: &mut egui::Ui, s: &mut ViewSettings, c: StereoConte
     focus_rows(ui, s, &c);
 }
 
+/// A distance in metres on a proportional rail, over the distances
+/// offered.
+fn distance_slider(ui: &mut egui::Ui, value: &mut f32, default: f32) -> bool {
+    widgets::slider_control_scaled(
+        ui,
+        value,
+        FOCUS_DISTANCES,
+        default,
+        " m",
+        2,
+        widgets::Scale::Proportional,
+    )
+}
+
+/// Automatic focus: what it is doing, then the nearest and farthest it
+/// follows and how fast.
+fn auto_rows(r: &mut widgets::Rows, s: &mut ViewSettings, c: &StereoContext) {
+    if let Some((_, status)) = c.auto {
+        r.content(|ui| ui.label(RichText::new(auto_status(status)).color(theme::TEXT_2)));
+    }
+    let d = ViewSettings::default();
+    if r.row(
+        tr!("adjust-focus-nearest"),
+        Some(tr!("adjust-focus-nearest-desc")),
+        |ui| distance_slider(ui, &mut s.focus_nearest, d.focus_nearest),
+    ) {
+        s.focus_farthest = s.focus_farthest.max(s.focus_nearest);
+    }
+    if r.row(
+        tr!("adjust-focus-farthest"),
+        Some(tr!("adjust-focus-farthest-desc")),
+        |ui| distance_slider(ui, &mut s.focus_farthest, d.focus_farthest),
+    ) {
+        s.focus_nearest = s.focus_nearest.min(s.focus_farthest);
+    }
+    r.row(
+        tr!("adjust-focus-speed"),
+        Some(tr!("adjust-focus-speed-desc")),
+        |ui| {
+            widgets::slider_control_scaled(
+                ui,
+                &mut s.focus_speed,
+                FOCUS_SPEEDS,
+                1.0,
+                "×",
+                2,
+                widgets::Scale::Proportional,
+            )
+        },
+    );
+}
+
 /// Stereo focus: its mode, then while it is on the distance and the
 /// camera's lens spacing. Dimmed, with why, for a video it can't redraw.
 fn focus_rows(ui: &mut egui::Ui, s: &mut ViewSettings, c: &StereoContext) {
@@ -1635,32 +1724,31 @@ fn focus_rows(ui: &mut egui::Ui, s: &mut ViewSettings, c: &StereoContext) {
             r.row(tr!("adjust-focus"), Some(tr!("adjust-focus-desc")), |ui| {
                 // Right to left: the first choice last.
                 for (mode, label) in [
+                    (Focus::Auto, tr!("adjust-focus-auto")),
                     (Focus::Manual, tr!("adjust-focus-manual")),
                     (Focus::Off, tr!("adjust-focus-off")),
                 ] {
                     if widgets::chip(ui, label, s.focus == mode).clicked() {
+                        // Manual starts where automatic was.
+                        if let (Focus::Auto, Focus::Manual, Some((at, _))) = (s.focus, mode, c.auto)
+                        {
+                            s.focus_distance = at;
+                        }
                         s.focus = mode;
                     }
                 }
             });
-            if s.focus == Focus::Off {
-                return;
+            match s.focus {
+                Focus::Off => return,
+                Focus::Manual => {
+                    r.row(
+                        tr!("adjust-focus-distance"),
+                        Some(tr!("adjust-focus-distance-desc")),
+                        |ui| distance_slider(ui, &mut s.focus_distance, FOCUS_DISTANCE),
+                    );
+                }
+                Focus::Auto => auto_rows(r, s, c),
             }
-            r.row(
-                tr!("adjust-focus-distance"),
-                Some(tr!("adjust-focus-distance-desc")),
-                |ui| {
-                    widgets::slider_control_scaled(
-                        ui,
-                        &mut s.focus_distance,
-                        FOCUS_DISTANCES,
-                        FOCUS_DISTANCE,
-                        " m",
-                        2,
-                        widgets::Scale::Proportional,
-                    )
-                },
-            );
             r.row_with(
                 tr!("adjust-lens-spacing"),
                 Some(tr!("adjust-lens-spacing-desc")),

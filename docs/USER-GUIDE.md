@@ -627,6 +627,30 @@ at 63 mm. Your own eye spacing comes from the headset: the line under it
 shows what the headset measures. Both are kept with the video's other
 adjustments, and Settings › Picture sets where videos start.
 
+**Automatic** measures how far away what is in the middle of your view
+is, from the video's two pictures, and keeps the focus there as you look
+round and as things move, gliding to a new distance about as fast as
+your eyes turn in or out. It starts from the focus distance set by hand,
+and choosing **Manual** keeps the distance where automatic had it. It
+changes the distance only when what is round the middle of your view
+agrees, so it stays steady at the edge of a face against a far wall. A
+skip, a cut or another video starts it afresh, and what it measures is
+never saved with the video. A line under it says what it is doing:
+
+- **Measuring…** until it has a first distance.
+- **Following** at a distance, and how sure the last measurement was.
+- **Holding** where it is, and why: nothing to match there (a plain
+  wall, darkness), a repeating pattern, the two eyes don't show the same
+  thing (something only one camera sees, a reflection), too near the
+  edge of the picture, see-through there, or nearer or farther than it
+  follows.
+
+**Nearest it follows** (0.5 m to start) and **Farthest it follows**
+(20 m, as far as anything) are where it holds instead: raise the nearest
+if it jumps to something close, as a pattern repeating on a wall can
+make it. **Speed** makes it follow faster or slower than your eyes' own
+pace. They are kept with the video like the rest.
+
 It is for 3D 180° and fisheye videos: a 360° video is stitched from more
 cameras, and flat 3D has nothing to redraw, so for those its rows are
 dimmed. Keyframes glide the focus distance as your eyes would turn in
@@ -635,7 +659,8 @@ and out, and change the lens spacing halfway between two.
 A thumbstick direction can move the focus distance: in Settings ›
 Controller, set one to **Stereo focus distance**. Up is farther, down
 nearer, by the same share near or far, and a message shows the
-distance; moving it turns stereo focus on.
+distance. Moving it turns stereo focus on, or from automatic to manual
+where automatic was.
 
 ### Fisheye lenses
 
