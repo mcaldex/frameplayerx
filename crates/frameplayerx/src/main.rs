@@ -16,6 +16,7 @@ mod controls;
 mod crash;
 mod drives;
 mod gaze;
+mod gaze_check;
 mod image_cache;
 mod jobs;
 mod libraries;

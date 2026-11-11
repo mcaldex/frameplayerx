@@ -63,6 +63,8 @@ impl App {
         let playing = self.playback.is_some();
         match c {
             Cmd::TogglePause => self.apply(Action::TogglePause),
+            // Back gives a gaze check up.
+            Cmd::Back if self.check.is_some() => self.check = None,
             Cmd::Back => self.back(),
             Cmd::Menu => {
                 if playing {
