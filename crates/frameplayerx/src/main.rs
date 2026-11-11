@@ -15,6 +15,7 @@ mod bindings;
 mod controls;
 mod crash;
 mod drives;
+mod gaze;
 mod image_cache;
 mod jobs;
 mod libraries;
@@ -475,8 +476,9 @@ fn run_xr(args: &Args) -> Result<(), Error> {
     // The refresh rate, resolution and foveation in use.
     let mut display: Option<fp_core::display::Display> = None;
     // Each frame's gaze angle from where the head faces, when eye tracking
-    // gave one.
+    // gave one, and how long before the frame is shown it was sampled.
     let mut gaze_deg: Vec<f32> = Vec::new();
+    let mut gaze_age_ms: Vec<f32> = Vec::new();
     let layers = session.supports_quad_layers();
     log::info!(
         "UI as compositor quad layers: {}",
@@ -506,6 +508,9 @@ fn run_xr(args: &Args) -> Result<(), Error> {
         if let (Some((_, gaze)), Some((_, head))) = (input.gaze, frame.head) {
             let ahead = head * glam::Vec3::NEG_Z;
             gaze_deg.push((gaze * glam::Vec3::NEG_Z).angle_between(ahead).to_degrees());
+            if let Some(s) = input.gaze_sample {
+                gaze_age_ms.push(s.age * 1000.0);
+            }
         }
         let dt = last.elapsed().as_secs_f32().min(0.1);
         last = Instant::now();
@@ -526,6 +531,12 @@ fn run_xr(args: &Args) -> Result<(), Error> {
                     .map(|ns| 1e9 / ns as f32),
                 recentred,
                 eye_spacing: frame.eyes.as_ref().map(app::eye_spacing),
+                eye_tracking: input.eye_tracking,
+                gaze: input.gaze.map(|(_, q)| gaze::Reading {
+                    direction: q * glam::Vec3::NEG_Z,
+                    time: input.gaze_sample.map(|s| s.time),
+                    age: input.gaze_sample.map(|s| s.age),
+                }),
             },
         );
         frames += 1;
@@ -632,6 +643,18 @@ fn run_xr(args: &Args) -> Result<(), Error> {
                     at(1.0)
                 );
                 gaze_deg.clear();
+                // How stale samples come, to set the gaze filter's limit by.
+                if !gaze_age_ms.is_empty() {
+                    gaze_age_ms.sort_by(f32::total_cmp);
+                    let at = |q: f32| gaze_age_ms[((gaze_age_ms.len() - 1) as f32 * q) as usize];
+                    log::info!(
+                        "eye gaze sampled before display: median {:.0} ms, 95% {:.0} ms, max {:.0} ms",
+                        at(0.5),
+                        at(0.95),
+                        at(1.0)
+                    );
+                    gaze_age_ms.clear();
+                }
             }
             if let Some(pb) = &app.playback {
                 let st = pb.player.stats();

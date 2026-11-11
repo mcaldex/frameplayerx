@@ -151,6 +151,15 @@ impl App {
         if input.eye_spacing.is_some() {
             self.eye_spacing = input.eye_spacing;
         }
+        self.aim = input.head.map(|(_, head)| {
+            self.gaze.update(
+                input.time,
+                head,
+                input.eye_tracking,
+                input.gaze,
+                &crate::gaze::Correction::default(),
+            )
+        });
         let anchor = self.anchor(&input);
         let eye = input.head.map(|h| h.0).unwrap_or(anchor.w_axis.truncate());
         self.update_visibility();

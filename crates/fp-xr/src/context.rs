@@ -5,6 +5,23 @@ use ash::vk::{self, Handle};
 use fp_xr_loader::{self as loader, RuntimeManifest};
 use openxr as xr;
 
+/// Whether `system` says it supports eye gaze interaction; only to ask
+/// with `XR_EXT_eye_gaze_interaction` enabled.
+fn tracks_eyes(instance: &xr::Instance, system: xr::SystemId) -> bool {
+    let mut gaze = xr::sys::SystemEyeGazeInteractionPropertiesEXT {
+        ty: xr::sys::SystemEyeGazeInteractionPropertiesEXT::TYPE,
+        next: std::ptr::null_mut(),
+        supports_eye_gaze_interaction: xr::sys::FALSE,
+    };
+    let mut props = xr::sys::SystemProperties::out(&mut gaze as *mut _ as *mut _);
+    // SAFETY: the output chain is a SystemProperties with the extension's
+    // properties struct, both alive for the call; the extension is enabled.
+    let r = unsafe {
+        (instance.fp().get_system_properties)(instance.as_raw(), system, props.as_mut_ptr())
+    };
+    r.into_raw() >= 0 && gaze.supports_eye_gaze_interaction == xr::sys::TRUE
+}
+
 /// Defines `/interaction_profiles/valve/frame_controller_valve`. Not in the
 /// Khronos registry yet; SteamVR on the Steam Frame provides it.
 pub const FRAME_CONTROLLER_EXTENSION: &[u8] = b"XR_VALVE_frame_controller_interaction\0";
@@ -17,6 +34,10 @@ pub struct XrContext {
     pub system_name: String,
     /// Extensions we enabled.
     pub enabled: xr::ExtensionSet,
+    /// The system says it can track the eyes (`XR_EXT_eye_gaze_interaction`'s
+    /// system property): a runtime may offer the extension on a headset
+    /// without the hardware.
+    pub eye_tracking: bool,
     pub blend_modes: Vec<xr::EnvironmentBlendMode>,
 }
 
@@ -85,6 +106,7 @@ impl XrContext {
         let blend_modes = instance
             .enumerate_environment_blend_modes(system, xr::ViewConfigurationType::PRIMARY_STEREO)
             .ctx("xrEnumerateEnvironmentBlendModes")?;
+        let eye_tracking = e.ext_eye_gaze_interaction && tracks_eyes(&instance, system);
         log::info!(
             "OpenXR: {} {} on {}",
             props.runtime_name,
@@ -98,6 +120,7 @@ impl XrContext {
             runtime: format!("{} {}", props.runtime_name, props.runtime_version),
             system_name: sp.system_name,
             enabled: e,
+            eye_tracking,
             blend_modes,
         })
     }

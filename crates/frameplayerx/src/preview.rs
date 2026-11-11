@@ -11,7 +11,7 @@
 //! | `wait-playing [TIMEOUT]` | run until a video is playing |
 //! | `look YAW PITCH [ROLL]` | head direction (and roll, to lie on your side) in degrees |
 //! | `recenter` | recenter on where the head faces |
-//! | `gaze YAW PITCH` / `gaze off` | where the eyes look, in degrees from where the head faces (simulated eye tracking) |
+//! | `gaze YAW PITCH` / `gaze idle` / `gaze off` | where the eyes look, in degrees from where the head faces (simulated eye tracking); `idle`: a tracker that isn't delivering; `off`: no eye tracking |
 //! | `foveation off/low/high` | set Settings › General › Display › Foveated rendering |
 //! | `aim YAW PITCH` | controller ray direction in degrees |
 //! | `point PANEL X Y` | aim at a panel (`main`, `bar`, `adjust`, `keyboard`, `tracks`, `perf`) at fractional X, Y |
@@ -59,8 +59,10 @@ struct Sim {
     eyes: OffscreenEyes,
     size: u32,
     head: Quat,
-    /// Where the eyes look, from where the head faces.
+    /// Where the eyes look, from where the head faces, and whether the
+    /// headset tracks the eyes at all.
     gaze: Option<Quat>,
+    eye_tracking: bool,
     hand: Hand,
     start: Instant,
     last: Instant,
@@ -110,6 +112,12 @@ impl Sim {
                 display_hz: None,
                 recentred: false,
                 eye_spacing: Some(crate::app::eye_spacing(&eyes)),
+                eye_tracking: self.eye_tracking,
+                gaze: self.gaze.map(|g| crate::gaze::Reading {
+                    direction: self.head * g * Vec3::NEG_Z,
+                    time: Some(self.start.elapsed().as_secs_f64()),
+                    age: Some(0.0),
+                }),
             },
         );
         if let Err(e) = self.renderer.set_video(out.frame.as_ref()) {
@@ -546,9 +554,10 @@ impl Sim {
                 self.head = dir_quat(num(1)?, num(2)?) * Quat::from_rotation_z(roll);
             }
             Some("gaze") => {
-                self.gaze = match parts.get(1) {
-                    Some(&"off") => None,
-                    _ => Some(dir_quat(num(1)?, num(2)?)),
+                (self.eye_tracking, self.gaze) = match parts.get(1) {
+                    Some(&"off") => (false, None),
+                    Some(&"idle") => (true, None),
+                    _ => (true, Some(dir_quat(num(1)?, num(2)?))),
                 };
             }
             Some("recenter") => {
@@ -942,6 +951,7 @@ pub fn run(args: &Args, out: &Path) -> Result<(), Error> {
         size,
         head: Quat::IDENTITY,
         gaze: None,
+        eye_tracking: false,
         hand: Hand {
             active: true,
             aim: None,
