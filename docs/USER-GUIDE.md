@@ -733,7 +733,10 @@ and open the video again.
 
 "Decoder refused it" means the decoder tried and refused the file;
 frameplayerx.log says why. A video whose pictures the hardware decoder
-reads as broken, picture after picture, plays in software instead.
+reads as broken, picture after picture, plays in software instead. A
+damaged stretch of a file, such as a part a download in progress hasn't
+filled in yet, doesn't send it to software: the picture holds still until
+the next keyframe, then the video plays on in hardware.
 
 The pill next to the format on the control bar says which decoder plays
 the video: HW, or SW in amber, with the codec and bit depth. Point at it

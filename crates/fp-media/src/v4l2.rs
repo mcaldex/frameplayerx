@@ -31,7 +31,10 @@
 //!
 //! Seeks never restart a queue (that would re-run the check): queued
 //! bitstream from before the seek is decoded and its frames are dropped by
-//! timestamp.
+//! timestamp. A damaged stretch of a file (zeros where a download hasn't
+//! arrived yet, which the Annex B filter refuses) keeps the session too: the
+//! packets are dropped up to the next keyframe, which is fed as after a seek
+//! ([`Resync`]).
 //!
 //! The player's decoder lends its CAPTURE buffers out with the frames,
 //! exported as DMA-BUFs ([`crate::SharedPicture`]), and the renderer reads
@@ -258,6 +261,141 @@ pub(crate) fn hvcc_copy_after_own(data: &[u8], extradata: &[u8]) -> Option<std::
     let own = own.filter(|&own| own < inserted)?;
     // Most files repeat the hvcC's own parameter sets: nothing to move.
     (data[own..inserted] != *extradata).then_some(own..irap)
+}
+
+/// What the Annex B filter made of one packet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Filtered {
+    /// Refused as malformed: a damaged packet, such as zeros where a file
+    /// still downloading has no data yet. Its keyframe flag went with it.
+    Refused,
+    /// Converted to nothing. `h264_mp4toannexb` skips NAL units of length
+    /// 0: H.264 zeros end up here when they fill whole length prefixes, and
+    /// are refused when a part of one is left over.
+    Empty,
+    /// Converted, with the demuxer's keyframe flag.
+    Converted { key: bool },
+}
+
+/// What to do with a packet the filter has dealt with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Verdict {
+    Queue,
+    /// Queue it: the keyframe that ends a skip of `dropped` packets.
+    Resume {
+        dropped: u64,
+    },
+    /// Drop it; `starts_skip` for the damaged packet that starts a skip.
+    Drop {
+        starts_skip: bool,
+    },
+}
+
+/// Skipping to the next keyframe after a damaged packet. The pictures that
+/// follow it refer to what it held: fed to the decoder, they would come out
+/// broken, soon enough in a row for it to count as failed
+/// ([`MAX_BROKEN_PICTURES`]). From a keyframe on, it decodes as after a seek.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Resync {
+    /// Packets dropped so far, refused ones included; `None` when not
+    /// skipping.
+    dropped: Option<u64>,
+}
+
+impl Resync {
+    pub(crate) fn verdict(&mut self, packet: Filtered) -> Verdict {
+        match (self.dropped, packet) {
+            (None, Filtered::Converted { .. }) => Verdict::Queue,
+            (None, Filtered::Empty) => Verdict::Drop { starts_skip: false },
+            (None, Filtered::Refused) => {
+                self.dropped = Some(1);
+                Verdict::Drop { starts_skip: true }
+            }
+            (Some(dropped), Filtered::Converted { key: true }) => {
+                self.dropped = None;
+                Verdict::Resume { dropped }
+            }
+            (Some(dropped), _) => {
+                self.dropped = Some(dropped + 1);
+                Verdict::Drop { starts_skip: false }
+            }
+        }
+    }
+
+    /// Ends the skip under way, if any, returning how many packets it
+    /// dropped: after a seek, the packets come from its own keyframe.
+    pub(crate) fn reset(&mut self) -> Option<u64> {
+        self.dropped.take()
+    }
+}
+
+/// What [`next_from_filter`] found.
+pub(crate) enum Next {
+    /// A packet to queue. `resumes` when it is the keyframe ending a skip:
+    /// pictures that come out ahead of it are then dropped, as after a seek.
+    Packet {
+        pkt: crate::decode::Packet,
+        resumes: bool,
+    },
+    /// Nothing until the filter gets another packet (or it has ended).
+    Input,
+}
+
+/// Takes packets out of the Annex B filter `bsf` (initialised) until one is
+/// worth queuing. A packet the filter refuses as malformed is no error: it
+/// starts a skip to the next keyframe ([`Resync`]), logged when it starts
+/// and when a keyframe ends it. Any other filter error is returned.
+pub(crate) fn next_from_filter(
+    bsf: *mut fp_ffmpeg_sys::AVBSFContext,
+    resync: &mut Resync,
+) -> crate::Result<Next> {
+    loop {
+        let out = crate::decode::Packet::new();
+        // SAFETY: an initialised filter (the caller's); out is a fresh packet.
+        let r = unsafe { fp_ffmpeg_sys::av_bsf_receive_packet(bsf, out.as_ptr()) };
+        if r == fp_ffmpeg_sys::AVERROR_EAGAIN || r == fp_ffmpeg_sys::AVERROR_EOF_ {
+            return Ok(Next::Input);
+        }
+        // The filter has freed a packet it refuses and takes the next one as
+        // usual: there is nothing to retry.
+        let filtered = if r == fp_ffmpeg_sys::AVERROR_INVALIDDATA_ {
+            Filtered::Refused
+        } else {
+            crate::check(r, "bitstream filter")?;
+            // SAFETY: a valid packet from the filter.
+            let (size, flags) = unsafe {
+                let p = &*out.as_ptr();
+                (p.size, p.flags)
+            };
+            // V4L2 would read an empty OUTPUT buffer as a full one.
+            if size <= 0 {
+                Filtered::Empty
+            } else {
+                Filtered::Converted {
+                    key: flags & fp_ffmpeg_sys::AV_PKT_FLAG_KEY as i32 != 0,
+                }
+            }
+        };
+        match resync.verdict(filtered) {
+            Verdict::Queue => {
+                return Ok(Next::Packet {
+                    pkt: out,
+                    resumes: false,
+                });
+            }
+            Verdict::Resume { dropped } => {
+                log::warn!("V4L2: resuming at a keyframe after dropping {dropped} packets");
+                return Ok(Next::Packet {
+                    pkt: out,
+                    resumes: true,
+                });
+            }
+            Verdict::Drop { starts_skip: true } => log::warn!(
+                "V4L2: damaged packet (the Annex B filter refused it); skipping to the next keyframe"
+            ),
+            Verdict::Drop { starts_skip: false } => {}
+        }
+    }
 }
 
 /// The error for a stream of size `stream` the admission check refuses,
@@ -962,6 +1100,8 @@ mod linux {
         /// IRAP pictures with parameter sets unlike the hvcC's were seen
         /// (logged).
         in_band_parameter_sets: bool,
+        /// Skipping to a keyframe after a packet the filter refused.
+        resync: Resync,
         /// CAPTURE buffers flagged as broken since the last good picture.
         broken_in_a_row: u32,
         out_free: Vec<u32>,
@@ -1227,6 +1367,7 @@ mod linux {
                 bsf: std::ptr::null_mut(),
                 hvcc_parameter_sets: Vec::new(),
                 in_band_parameter_sets: false,
+                resync: Resync::default(),
                 broken_in_a_row: 0,
                 out_free: Vec::new(),
                 pending: VecDeque::new(),
@@ -1517,25 +1658,23 @@ mod linux {
             Ok(())
         }
 
-        /// Moves everything the bitstream filter has ready into `pending`.
+        /// Moves everything the bitstream filter has ready into `pending`,
+        /// except what a skip after a damaged packet drops.
         fn drain_bsf(&mut self) -> Result<()> {
-            loop {
-                let out = Packet::new();
-                // SAFETY: our filter; out is a fresh packet.
-                let r = unsafe { ff::av_bsf_receive_packet(self.bsf, out.as_ptr()) };
-                if r == ff::AVERROR_EAGAIN || r == ff::AVERROR_EOF_ {
-                    return Ok(());
+            while let Next::Packet { pkt: out, resumes } =
+                next_from_filter(self.bsf, &mut self.resync)?
+            {
+                if resumes {
+                    // Pictures that come out ahead of this keyframe refer to
+                    // dropped packets (an open GOP's leading pictures), or
+                    // come from before the damage: dropped, as after a seek.
+                    self.arm_floor = true;
                 }
-                crate::check(r, "bitstream filter")?;
                 // SAFETY: a valid packet from the filter.
                 let (pts, dts, duration, size) = unsafe {
                     let p = &*out.as_ptr();
                     (p.pts, p.dts, p.duration, p.size)
                 };
-                if size <= 0 {
-                    // V4L2 would read an empty OUTPUT buffer as a full one.
-                    continue;
-                }
                 if !self.hvcc_parameter_sets.is_empty() {
                     let sets = &self.hvcc_parameter_sets;
                     // SAFETY: the filter's packet holds size bytes at data.
@@ -1570,6 +1709,7 @@ mod linux {
                 let id = self.ts.insert(pts, duration);
                 self.pending.push_back((out, id));
             }
+            Ok(())
         }
 
         /// Sends a packet, or end of stream when `pkt` is null. Returns false
@@ -1585,6 +1725,11 @@ mod linux {
                     // SAFETY: a null packet signals EOF to the filter.
                     unsafe { ff::av_bsf_send_packet(self.bsf, std::ptr::null_mut()) };
                     self.drain_bsf()?;
+                    if let Some(dropped) = self.resync.reset() {
+                        log::warn!(
+                            "V4L2: end of stream ended the skip after dropping {dropped} packets"
+                        );
+                    }
                     self.eos_input = true;
                 }
                 self.pump_output()?;
@@ -2205,6 +2350,9 @@ mod linux {
             self.pending.clear();
             // SAFETY: our filter.
             unsafe { ff::av_bsf_flush(self.bsf) };
+            if let Some(dropped) = self.resync.reset() {
+                log::warn!("V4L2: a seek ended the skip after dropping {dropped} packets");
+            }
             self.ts.invalidate();
             self.pts_floor = None;
             self.arm_floor = true;
@@ -2254,6 +2402,12 @@ mod linux {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decode::Packet;
+    use crate::input::Input;
+    use fp_core::source::FileSource;
+    use fp_ffmpeg_sys as ff;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     /// The iris driver's check: every open instance counts with the new
     /// session's macroblocks, and one session has a limit of its own.
@@ -2736,5 +2890,295 @@ mod tests {
             sent(&[own_vps, own_sps, own_pps, vps, sps, pps, idr], &[]),
             None
         );
+    }
+
+    const KEY: Filtered = Filtered::Converted { key: true };
+    const DELTA: Filtered = Filtered::Converted { key: false };
+    const QUEUE: Verdict = Verdict::Queue;
+    const DROP: Verdict = Verdict::Drop { starts_skip: false };
+    const STARTS: Verdict = Verdict::Drop { starts_skip: true };
+
+    fn verdicts(r: &mut Resync, packets: &[Filtered]) -> Vec<Verdict> {
+        packets.iter().map(|&p| r.verdict(p)).collect()
+    }
+
+    #[test]
+    fn undamaged_packets_all_pass() {
+        let mut r = Resync::default();
+        assert_eq!(
+            verdicts(&mut r, &[KEY, DELTA, DELTA, KEY, DELTA]),
+            [QUEUE; 5]
+        );
+        // Empty ones are dropped, as ever, and start nothing.
+        assert_eq!(verdicts(&mut r, &[Filtered::Empty, DELTA]), [DROP, QUEUE]);
+        assert_eq!(r.reset(), None);
+    }
+
+    #[test]
+    fn a_damaged_packet_skips_to_the_next_keyframe() {
+        let mut r = Resync::default();
+        let packets = [
+            KEY,
+            DELTA,
+            Filtered::Refused,
+            DELTA,
+            Filtered::Refused,
+            Filtered::Empty,
+            DELTA,
+            KEY,
+            DELTA,
+            KEY,
+        ];
+        // One start, and the count at the end has the refused ones too.
+        let want = [
+            QUEUE,
+            QUEUE,
+            STARTS,
+            DROP,
+            DROP,
+            DROP,
+            DROP,
+            Verdict::Resume { dropped: 5 },
+            QUEUE,
+            QUEUE,
+        ];
+        assert_eq!(verdicts(&mut r, &packets), want);
+    }
+
+    #[test]
+    fn a_refused_keyframe_does_not_end_a_skip() {
+        // Its keyframe flag went with it: refused is refused.
+        let mut r = Resync::default();
+        assert_eq!(
+            verdicts(
+                &mut r,
+                &[Filtered::Refused, DELTA, Filtered::Refused, DELTA, KEY]
+            ),
+            [STARTS, DROP, DROP, DROP, Verdict::Resume { dropped: 4 }]
+        );
+    }
+
+    #[test]
+    fn a_seek_ends_a_skip() {
+        let mut r = Resync::default();
+        verdicts(&mut r, &[Filtered::Refused, DELTA]);
+        assert_eq!(r.reset(), Some(2));
+        assert_eq!(verdicts(&mut r, &[DELTA, KEY]), [QUEUE; 2]);
+        assert_eq!(r.reset(), None);
+    }
+
+    #[test]
+    fn a_skip_without_a_keyframe_drops_everything() {
+        let mut r = Resync::default();
+        let rest = [DELTA, Filtered::Refused, Filtered::Empty].repeat(100);
+        assert_eq!(r.verdict(Filtered::Refused), STARTS);
+        assert!(verdicts(&mut r, &rest).iter().all(|&v| v == DROP));
+        assert_eq!(r.reset(), Some(301));
+    }
+
+    /// HEVC Main 10 with B-frames, a keyframe every 10 pictures, open-GOP
+    /// CRAs and leading pictures after one of them.
+    const CRA_CLIP: &str = "hevc10_cra_every10.mp4";
+
+    /// An Annex B filter set up as [`V4l2Decoder`]'s own; freed on drop.
+    struct Filter(*mut ff::AVBSFContext);
+
+    impl Drop for Filter {
+        fn drop(&mut self) {
+            // SAFETY: our own filter (null-safe).
+            unsafe { ff::av_bsf_free(&mut self.0) };
+        }
+    }
+
+    /// The test clip's video packets in decode order, and an Annex B filter
+    /// for them.
+    fn clip() -> (Filter, Vec<Packet>) {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data")
+            .join(CRA_CLIP);
+        let mut input = Input::open(
+            Arc::new(FileSource::open(&path).unwrap()),
+            CRA_CLIP,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        let vi = input.best_stream(ff::AVMEDIA_TYPE_VIDEO).unwrap();
+        let mut filter = Filter(std::ptr::null_mut());
+        // SAFETY: the stream belongs to the open input; the filter is set up
+        // as `init_bsf` sets up the decoder's.
+        unsafe {
+            let stream = &*input.streams()[vi];
+            let codec = Codec::from_ffmpeg((*stream.codecpar).codec_id).unwrap();
+            let f = ff::av_bsf_get_by_name(codec.annexb_filter().as_ptr());
+            assert!(!f.is_null());
+            assert!(ff::av_bsf_alloc(f, &mut filter.0) >= 0);
+            assert!(ff::avcodec_parameters_copy((*filter.0).par_in, stream.codecpar) >= 0);
+            (*filter.0).time_base_in = stream.time_base;
+            assert!(ff::av_bsf_init(filter.0) >= 0);
+        }
+        let (mut pkt, mut packets) = (Packet::new(), Vec::new());
+        while input.read(pkt.as_ptr()).unwrap() {
+            if pkt.stream_index() == vi {
+                packets.push(pkt.take());
+            } else {
+                pkt.unref();
+            }
+        }
+        (filter, packets)
+    }
+
+    /// Zeroes a packet's payload, as a part of a file not downloaded yet
+    /// reads.
+    fn zero(pkt: &Packet) {
+        // SAFETY: a writable packet holds size bytes at data.
+        unsafe {
+            assert!(ff::av_packet_make_writable(pkt.as_ptr()) >= 0);
+            let p = &*pkt.as_ptr();
+            std::slice::from_raw_parts_mut(p.data, p.size as usize).fill(0);
+        }
+    }
+
+    /// A packet's pts, and whether it went in flagged as a keyframe or came
+    /// out ending a skip.
+    type Seen = (i64, bool);
+
+    /// Sends the test clip's video packets through the filter, zeroing those
+    /// at `damaged` (in decode order), and drains it with
+    /// [`next_from_filter`] after each and at end of stream. What went in
+    /// and what came out to be queued.
+    fn filter_clip(damaged: &[usize]) -> (Vec<Seen>, Vec<Seen>) {
+        let (filter, packets) = clip();
+        let mut resync = Resync::default();
+        let (mut sent, mut queued) = (Vec::new(), Vec::new());
+        let mut drain = |resync: &mut Resync| {
+            while let Next::Packet { pkt, resumes } = next_from_filter(filter.0, resync).unwrap() {
+                // SAFETY: a packet from the filter.
+                queued.push((unsafe { (*pkt.as_ptr()).pts }, resumes));
+            }
+        };
+        for (i, pkt) in packets.iter().enumerate() {
+            // Read first: sending leaves the packet blank.
+            // SAFETY: a packet just read.
+            let p = unsafe { &*pkt.as_ptr() };
+            sent.push((p.pts, p.flags & ff::AV_PKT_FLAG_KEY as i32 != 0));
+            if damaged.contains(&i) {
+                zero(pkt);
+            }
+            // SAFETY: the filter takes over the packet's reference.
+            assert_eq!(unsafe { ff::av_bsf_send_packet(filter.0, pkt.as_ptr()) }, 0);
+            drain(&mut resync);
+        }
+        // SAFETY: a null packet ends the stream.
+        let ended = unsafe { ff::av_bsf_send_packet(filter.0, std::ptr::null_mut()) };
+        assert_eq!(ended, 0);
+        drain(&mut resync);
+        (sent, queued)
+    }
+
+    /// Where the test clip's keyframes are, read from it: another x265 may
+    /// place them elsewhere.
+    fn keyframes(sent: &[Seen]) -> Vec<usize> {
+        let keys: Vec<usize> = (0..sent.len()).filter(|&i| sent[i].1).collect();
+        assert!(keys.len() >= 3, "keyframes at {keys:?}");
+        keys
+    }
+
+    /// What comes out when the packets at `kept` do, the one at `resume`
+    /// ending a skip.
+    fn expected(
+        sent: &[Seen],
+        kept: impl Iterator<Item = usize>,
+        resume: Option<usize>,
+    ) -> Vec<Seen> {
+        kept.map(|i| (sent[i].0, Some(i) == resume)).collect()
+    }
+
+    #[test]
+    fn an_undamaged_clip_comes_out_whole() {
+        let (sent, queued) = filter_clip(&[]);
+        keyframes(&sent);
+        assert_eq!(queued, expected(&sent, 0..sent.len(), None));
+    }
+
+    #[test]
+    fn the_filter_refuses_a_zeroed_packet_and_takes_the_next() {
+        // The failure the skip is for: this fails if the filter ever takes
+        // zeros.
+        let (filter, packets) = clip();
+        let receive = || {
+            let out = Packet::new();
+            // SAFETY: our filter; out is a fresh packet.
+            unsafe { ff::av_bsf_receive_packet(filter.0, out.as_ptr()) }
+        };
+        zero(&packets[1]);
+        for (i, pkt) in packets[..3].iter().enumerate() {
+            // SAFETY: the filter takes over the packet's reference.
+            assert_eq!(unsafe { ff::av_bsf_send_packet(filter.0, pkt.as_ptr()) }, 0);
+            let want = if i == 1 { ff::AVERROR_INVALIDDATA_ } else { 0 };
+            assert_eq!(receive(), want, "packet {i}");
+            assert_eq!(
+                receive(),
+                ff::AVERROR_EAGAIN,
+                "packet {i}: nothing to retry"
+            );
+        }
+    }
+
+    #[test]
+    fn a_damaged_picture_drops_the_rest_up_to_the_next_keyframe() {
+        let (sent, _) = filter_clip(&[]);
+        let keys = keyframes(&sent);
+        let damaged = keys[0] + 1;
+        assert!(damaged < keys[1]);
+        let (_, queued) = filter_clip(&[damaged]);
+        let kept = (0..damaged).chain(keys[1]..sent.len());
+        assert_eq!(queued, expected(&sent, kept, Some(keys[1])));
+    }
+
+    #[test]
+    fn a_damaged_keyframe_skips_to_the_one_after() {
+        let (sent, _) = filter_clip(&[]);
+        let keys = keyframes(&sent);
+        let (_, queued) = filter_clip(&[keys[1]]);
+        let kept = (0..keys[1]).chain(keys[2]..sent.len());
+        assert_eq!(queued, expected(&sent, kept, Some(keys[2])));
+    }
+
+    #[test]
+    fn damage_after_the_last_keyframe_drops_the_rest_and_ends_cleanly() {
+        let (sent, _) = filter_clip(&[]);
+        let damaged = keyframes(&sent).last().unwrap() + 1;
+        assert!(damaged < sent.len());
+        let (_, queued) = filter_clip(&[damaged]);
+        assert_eq!(queued, expected(&sent, 0..damaged, None));
+    }
+
+    #[test]
+    fn two_damaged_pictures_between_keyframes_are_one_skip() {
+        let (sent, _) = filter_clip(&[]);
+        let keys = keyframes(&sent);
+        let (first, second) = (keys[0] + 1, keys[1] - 1);
+        assert!(first < second);
+        let (_, queued) = filter_clip(&[first, second]);
+        let kept = (0..first).chain(keys[1]..sent.len());
+        assert_eq!(queued, expected(&sent, kept, Some(keys[1])));
+    }
+
+    #[test]
+    fn a_skip_can_resume_at_a_keyframe_with_leading_pictures() {
+        // An open GOP's CRA followed, in decode order, by pictures shown
+        // before it, which refer to what came before it: why resuming
+        // raises the pts floor.
+        let (sent, _) = filter_clip(&[]);
+        let keys = keyframes(&sent);
+        let open = *keys[1..]
+            .iter()
+            .find(|&&k| sent.get(k + 1).is_some_and(|next| next.0 < sent[k].0))
+            .expect("a keyframe with leading pictures");
+        assert!(!sent[open - 1].1);
+        let (_, queued) = filter_clip(&[open - 1]);
+        let at = queued.iter().position(|q| q.1).expect("a resume");
+        assert_eq!(queued[at].0, sent[open].0);
+        assert!(queued[at + 1].0 < queued[at].0, "{queued:?}");
     }
 }

@@ -787,23 +787,41 @@ impl PlayerConfig {
     }
 }
 
+/// Packets queued below which a decoder has used up its input and is
+/// starved: audio always, video while the player buffers
+/// ([`video_starved`]).
+const STARVED_BELOW: usize = 4;
+
+/// Whether video is starved: the file has video, the player is buffering
+/// with its clock held, and the video decoder has used up its packets. A
+/// decoder skipping to a keyframe after damaged packets shows nothing and
+/// takes every packet, and with the clock held the read-ahead budget never
+/// frees up. A decoder too slow for the video keeps its packets queued, so
+/// it doesn't count.
+fn video_starved(has_video: bool, buffering: bool, video_packets: usize) -> bool {
+    has_video && buffering && video_packets < STARVED_BELOW
+}
+
 /// Whether the demuxer has read far enough ahead for now, aiming for `target`
 /// seconds: `ahead` seconds and `bytes` of packets queued, `video_packets` of
-/// them video.
+/// them video. A `starved` decoder, audio or video, may read past the
+/// budget.
 fn read_enough(
     cfg: &PlayerConfig,
     target: f64,
     ahead: f64,
     bytes: usize,
     video_packets: usize,
-    audio_starved: bool,
+    starved: bool,
 ) -> bool {
     let budget = ahead > target || bytes > cfg.read_ahead_bytes || video_packets > 600;
-    // Starved audio may read past the budget to find its next packets, but
-    // only so far: audio that ended early, or lags far behind, would
-    // otherwise queue the rest of the video in memory.
+    // A starved decoder may read past the budget to find its next packets:
+    // audio whose packets lie further on in the file, video whose next
+    // keyframe lies beyond the budget while the clock waits for it. But only
+    // so far: audio that ended early, or lags far behind, would otherwise
+    // queue the rest of the video in memory.
     let ceiling = bytes > cfg.read_ahead_bytes.saturating_mul(4) || video_packets > 2400;
-    ceiling || (budget && !audio_starved)
+    ceiling || (budget && !starved)
 }
 
 /// Which queued frame (times oldest first) to show at clock `t`; the ones
@@ -930,8 +948,14 @@ fn demux_thread(
         let target = cfg.read_ahead_target(first_video_ts.map_or(0.0, |f| now - f));
         sh.read_target.store(target.to_bits(), Ordering::Relaxed);
         let bytes = sh.vpkts.bytes.load(Ordering::Relaxed) + sh.apkts.bytes.load(Ordering::Relaxed);
-        let audio_starved = sh.has_audio.load(Ordering::Acquire) && sh.apkts.len() < 4;
-        let enough = read_enough(&cfg, target, ahead, bytes, sh.vpkts.len(), audio_starved);
+        let video_packets = sh.vpkts.len();
+        let starved = (sh.has_audio.load(Ordering::Acquire) && sh.apkts.len() < STARVED_BELOW)
+            || video_starved(
+                video_index.is_some(),
+                sh.buffering.load(Ordering::Acquire),
+                video_packets,
+            );
+        let enough = read_enough(&cfg, target, ahead, bytes, video_packets, starved);
         sh.read_enough.store(enough, Ordering::Relaxed);
         if enough {
             let c = sh.ctl();
@@ -1458,7 +1482,7 @@ mod tests {
     }
 
     #[test]
-    fn starved_audio_reads_ahead_only_so_far() {
+    fn a_starved_decoder_reads_ahead_only_so_far() {
         let cfg = PlayerConfig {
             read_ahead_secs: 4.0,
             read_ahead_bytes: 1000,
@@ -1471,10 +1495,24 @@ mod tests {
             "a grown target"
         );
         assert!(read_enough(&cfg, 4.0, 1.0, 1500, 10, false), "bytes");
-        // Waiting for audio packets: past the budget, up to four times it.
+        // Waiting for audio packets, or video ones: past the budget, up to
+        // four times it.
         assert!(!read_enough(&cfg, 4.0, 60.0, 3000, 10, true));
         assert!(read_enough(&cfg, 4.0, 60.0, 4001, 10, true));
         assert!(read_enough(&cfg, 4.0, 60.0, 100, 2401, true));
+    }
+
+    #[test]
+    fn video_starves_only_while_buffering_with_its_packets_used_up() {
+        // Skipping to a keyframe: nothing shown, every packet taken.
+        assert!(video_starved(true, true, 0));
+        assert!(video_starved(true, true, STARVED_BELOW - 1));
+        // Audio alone; a clock still running, which frees the budget as it
+        // goes; a decoder too slow to take its packets.
+        assert!(!video_starved(false, true, 0));
+        assert!(!video_starved(true, false, 0));
+        assert!(!video_starved(true, true, STARVED_BELOW));
+        assert!(!video_starved(true, true, 600));
     }
 
     struct Remote(Arc<dyn ByteSource>);
