@@ -5,7 +5,7 @@ use fp_core::view::{FOCUS_DISTANCES, Focus, LENS_SPACING, LENS_SPACINGS, ViewSet
 use fp_media::PixelLayout;
 use fp_media::frame::{ColorInfo, Matrix};
 use fp_media::info::Transfer;
-use glam::{EulerRot, Mat4, Quat, Vec3, Vec4};
+use glam::{EulerRot, Mat4, Quat, Vec2, Vec3, Vec4};
 
 /// Matches `struct Params` in shaders/picture.wgsl (std140-compatible: every
 /// member is 16-byte aligned).
@@ -179,6 +179,54 @@ pub fn video_axes(video: &VideoParams) -> Quat {
     picture.inverse() * video.anchor.inverse()
 }
 
+/// The shader's `off_centre`: the direction from the centre of a sphere of
+/// radius `r` to where a ray from `p` along `d` meets it.
+fn off_centre(d: Vec3, p: Vec3, r: f32) -> Vec3 {
+    if p.dot(p) < 1e-8 {
+        return d;
+    }
+    let q = p * (0.9 * r / p.length()).min(1.0);
+    let b = q.dot(d);
+    let t = -b + (b * b - q.dot(q) + r * r).sqrt();
+    (q + t * d).normalize()
+}
+
+/// The shader's `zoom_dir`: the angle from the forward axis scaled down by
+/// `zoom`.
+fn zoom_dir(d: Vec3, zoom: f32) -> Vec3 {
+    if (zoom - 1.0).abs() < 1e-4 {
+        return d;
+    }
+    let theta = (-d.z).clamp(-1.0, 1.0).acos();
+    let r = Vec2::new(d.x, d.y).length();
+    if r < 1e-6 {
+        return d;
+    }
+    let t2 = (theta / zoom).min(std::f32::consts::PI);
+    let phi = Vec2::new(d.x, d.y) / r;
+    (phi * t2.sin()).extend(-t2.cos())
+}
+
+/// Where a look from between the eyes along world direction `look` lands
+/// in a 180° or 360° video's own axes: what the eye passes do to a ray
+/// (shaders/scene.wgsl `fs_main`) but the per-eye terms, the recentring
+/// anchor, the picture's rotation, the viewer's height and forward, and
+/// the zoom. Where automatic focus measures what is looked at.
+pub fn look_in_video(video: &VideoParams, look: Vec3) -> Vec3 {
+    let s = &video.settings;
+    let correction = Mat4::from_euler(
+        EulerRot::YXZ,
+        s.yaw.to_radians(),
+        s.pitch.to_radians(),
+        s.roll.to_radians(),
+    )
+    .inverse();
+    let d = Mat4::from_quat(video.anchor.inverse()).transform_vector3(look);
+    let d = correction.transform_vector3(d).normalize();
+    let viewer = correction.transform_vector3(Vec3::new(0.0, s.height, -s.forward));
+    zoom_dir(off_centre(d, viewer, SPHERE_RADIUS), s.zoom.max(0.05))
+}
+
 /// Each eye's offset from its own camera, in the video's axes, metres:
 /// `axes · (eye − middle) − camera`, `eyes` the eyes' world positions and
 /// the cameras `spacing_mm` apart on the x axis, the middle of the eyes
@@ -343,9 +391,9 @@ pub(crate) fn build(
 
 /// Chroma (BT.709 Cb, Cr) of an sRGB-encoded colour, as the shader computes it
 /// from the video's samples.
-pub(crate) fn chroma(rgb: [f32; 3]) -> glam::Vec2 {
+pub(crate) fn chroma(rgb: [f32; 3]) -> Vec2 {
     let [r, g, b] = rgb;
-    glam::Vec2::new(
+    Vec2::new(
         -0.1146 * r - 0.3854 * g + 0.5 * b,
         0.5 * r - 0.4542 * g - 0.0458 * b,
     )
@@ -497,17 +545,6 @@ mod tests {
         assert!(near(screen(180, 1.0), (6.0, 3.375, 2)));
         // 4:3 pixels widen a 16:9 frame to 2.37:1.
         assert!(near(screen(0, 4.0 / 3.0), (6.0, 6.0 * 1080.0 / 2560.0, 0)));
-    }
-
-    /// The shader's `off_centre`.
-    fn off_centre(d: Vec3, p: Vec3, r: f32) -> Vec3 {
-        if p.dot(p) < 1e-8 {
-            return d;
-        }
-        let q = p * (0.9 * r / p.length()).min(1.0);
-        let b = q.dot(d);
-        let t = -b + (b * b - q.dot(q) + r * r).sqrt();
-        (q + t * d).normalize()
     }
 
     /// Repeatable numbers in `lo..hi` (xorshift).

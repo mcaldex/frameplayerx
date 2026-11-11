@@ -1,5 +1,5 @@
 // The video as uploaded or converted planes (I420, NV12 or P010), for
-// scene.wgsl (build.rs joins them).
+// scene.wgsl and measure.wgsl (build.rs joins them).
 
 @group(0) @binding(2) var plane0: texture_2d<f32>;
 @group(0) @binding(3) var plane1: texture_2d<f32>;

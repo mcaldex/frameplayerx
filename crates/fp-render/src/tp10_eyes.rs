@@ -281,6 +281,28 @@ impl Tp10Eyes {
 
     /// Binds the pipeline and slot `slot`'s descriptors for the eye passes.
     pub fn bind(&self, gpu: &Gpu, cmd: vk::CommandBuffer, slot: usize) {
+        // SAFETY: recording; the pipeline is valid.
+        unsafe {
+            gpu.device
+                .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
+        }
+        self.bind_descriptors(cmd, slot, self.layout);
+    }
+
+    /// The descriptor set layout of the eye passes' descriptors, for
+    /// another pipeline reading them (the depth measurement).
+    pub fn set_layout(&self) -> vk::DescriptorSetLayout {
+        self.set_layout
+    }
+
+    /// Binds slot `slot`'s descriptors, as the eye passes wrote them this
+    /// frame, for a pipeline of `layout` made with [`Tp10Eyes::set_layout`].
+    pub fn bind_descriptors(
+        &self,
+        cmd: vk::CommandBuffer,
+        slot: usize,
+        layout: vk::PipelineLayout,
+    ) {
         let Some(s) = self.slots.get(slot) else {
             return;
         };
@@ -290,16 +312,14 @@ impl Tp10Eyes {
                 vk::BufferUsageFlags::RESOURCE_DESCRIPTOR_BUFFER_EXT
                     | vk::BufferUsageFlags::SAMPLER_DESCRIPTOR_BUFFER_EXT,
             )];
-        // SAFETY: recording; the pipeline, layout and buffer are valid, and
-        // the slot's descriptors were written for this frame.
+        // SAFETY: recording; the layout and buffer are valid, and the slot's
+        // descriptors were written for this frame.
         unsafe {
-            gpu.device
-                .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
             self.db.cmd_bind_descriptor_buffers(cmd, &binding);
             self.db.cmd_set_descriptor_buffer_offsets(
                 cmd,
                 vk::PipelineBindPoint::GRAPHICS,
-                self.layout,
+                layout,
                 0,
                 &[0],
                 &[0],
