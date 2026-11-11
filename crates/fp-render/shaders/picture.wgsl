@@ -1,9 +1,10 @@
-// How the eye passes read a video's picture, kept apart from them so
-// another pass can read a frame exactly as they do (build.rs puts this
-// file in front of scene.wgsl, followed by planes.wgsl or
-// planes_tp10.wgsl): the uniform block and its bindings, the full-screen
-// triangle, the projections, the eye's half of the frame, the frame's
-// turn, the chroma key and packed mask, and the transfer to linear light.
+// How the eye passes read a video's picture, shared with the depth
+// measurement pass so it reads a frame exactly as they do (build.rs puts
+// this file in front of scene.wgsl and measure.wgsl, each followed by
+// planes.wgsl or planes_tp10.wgsl): the uniform block and its bindings,
+// the full-screen triangle, the projections, the eye's half of the frame,
+// the frame's turn, the chroma key and packed mask, and the transfer to
+// linear light.
 
 struct Params {
     inv_view_proj: array<mat4x4<f32>, 2>,

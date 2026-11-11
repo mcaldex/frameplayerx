@@ -1,9 +1,10 @@
-// A Q10C picture sampled in the decoder's buffer, for scene.wgsl (build.rs
-// joins them into scene_tp10): each plane through TP10 texture descriptors
-// (src/q10c.rs, src/tp10_eyes.rs). One descriptor can't hold a whole 8K
-// plane, so each plane is read in overlapping bands of rows, and a sample
-// comes from the band whose middle is nearest: its bilinear neighbours are
-// then always in the same band. TP10 gives 10-bit values, not P010's.
+// A Q10C picture sampled in the decoder's buffer, for scene.wgsl and
+// measure.wgsl (build.rs joins them into scene_tp10 and measure_tp10):
+// each plane through TP10 texture descriptors (src/q10c.rs,
+// src/tp10_eyes.rs). One descriptor can't hold a whole 8K plane, so each
+// plane is read in overlapping bands of rows, and a sample comes from the
+// band whose middle is nearest: its bilinear neighbours are then always in
+// the same band. TP10 gives 10-bit values, not P010's.
 
 @group(0) @binding(2) var luma0: texture_2d<f32>;
 @group(0) @binding(3) var luma1: texture_2d<f32>;

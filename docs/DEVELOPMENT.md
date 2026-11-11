@@ -166,6 +166,23 @@ as bytes, so this pipeline takes all its descriptors from descriptor
 buffers, the scene's parameters included. HDR 10-bit frames are still
 converted, as their scenes are measured in the converted planes.
 
+**Depth for automatic stereo focus.** How far away what the viewer looks
+at is comes from the frame the eye passes just showed. The measurement
+pass (`fp-render/src/measure.rs`, `shaders/measure.wgsl`) is recorded in
+the same command buffer right after them, so a frame in the decoder's
+buffer is still acquired, and reads the frame through their own code:
+`shaders/picture.wgsl` holds what they share (the uniforms and bindings,
+the projections, the eye's half of the frame, the frame's turn, the
+chroma key and packed mask, the transfer to linear light), followed by
+`planes.wgsl` or `planes_tp10.wgsl` as for the eye passes, with the
+slot's own uniforms and descriptors (the TP10 one's from its descriptor
+buffer, bound with the pass's layout). It draws, for each camera, a grid
+of luminance on lines through the cameras' baseline round the aim, and
+a coarse picture of the left camera's view, into a small float target
+copied to host memory and read once the slot's fence has signalled, two
+frames on, without waiting. `fp_core::depth` matches the grids; its CPU
+reference sampler is what the pass is tested against.
+
 **Sources and browsing.** Every source implements one `Source` trait
 (`list`, `open`, `details`). Each kind gets its own browser in `ui/`:
 `local.rs`, `folders.rs`, `catalog.rs` and `feeds.rs`, built from the

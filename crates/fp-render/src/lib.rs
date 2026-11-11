@@ -14,6 +14,8 @@
 //!   scene peak, which `peak` measures from the frames.
 //! - [`backdrop`]: finds the green or blue screen behind a video in a
 //!   picture of one of its frames, the colour its chroma key starts with.
+//! - `measure`: samples a 3D video's two pictures for automatic stereo
+//!   focus's depth measurements, as the eye passes read them.
 
 pub mod backdrop;
 pub mod capture;
@@ -21,6 +23,7 @@ mod foveation;
 pub mod gpu;
 pub mod hdr;
 pub mod math;
+mod measure;
 pub mod mem;
 pub mod params;
 mod peak;
@@ -74,3 +77,6 @@ pub(crate) const Q10C_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/q10
 pub(crate) const PEAK_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/peak.spv"));
 pub(crate) const SCENE_TP10_SPV: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/scene_tp10.spv"));
+pub(crate) const MEASURE_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/measure.spv"));
+pub(crate) const MEASURE_TP10_SPV: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/measure_tp10.spv"));

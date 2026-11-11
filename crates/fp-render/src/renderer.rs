@@ -9,6 +9,7 @@
 use crate::foveation::{Foveation, RateMaps};
 use crate::gpu::Gpu;
 use crate::hdr::PeakDetector;
+use crate::measure::{Bind, MeasurePass};
 use crate::mem::{self, Buffer, Image};
 use crate::params::{self, SceneParams, VideoParams};
 use crate::peak::PeakPass;
@@ -20,6 +21,7 @@ use crate::video::VideoPlanes;
 use crate::{Result, VkContext};
 use ash::vk;
 use egui::epaint::{ClippedPrimitive, Primitive, TextureId, textures::TexturesDelta};
+use fp_core::depth::{GridSpec, Grids};
 use fp_media::VideoFrame;
 use glam::{Mat4, Vec2, Vec3};
 use gpu_allocator::MemoryLocation;
@@ -207,6 +209,9 @@ pub struct Renderer {
     /// default peak.
     peak: Option<PeakPass>,
     hdr_peak: PeakDetector,
+    /// Samples automatic stereo focus's depth measurements; without it
+    /// automatic focus doesn't measure.
+    depth: Option<MeasurePass>,
     /// Times each frame's parts on the GPU, where it has timestamps.
     timer: Option<FrameTimer>,
     /// The parts of the last frame the GPU finished.
@@ -422,6 +427,7 @@ impl Renderer {
                     .inspect_err(|e| log::warn!("HDR scenes aren't measured: {e}"))
                     .ok(),
                 hdr_peak: PeakDetector::default(),
+                depth: None,
                 timer: FrameTimer::new(&gpu, SLOTS),
                 gpu_times: None,
                 imports: Default::default(),
@@ -473,6 +479,9 @@ impl Renderer {
                 r.q10c.is_some(),
                 video_rate,
             );
+            r.depth = MeasurePass::new(&r.gpu, scene_layout, r.tp10_eyes.as_ref())
+                .inspect_err(|e| log::warn!("automatic stereo focus can't measure depth: {e}"))
+                .ok();
             if !foveatable {
                 log::info!("eye passes can't be foveated: no fragment shading rate attachments");
             }
@@ -762,6 +771,9 @@ impl Renderer {
         let cmd = slot.cmd;
         if let Some(hist) = self.peak.as_mut().and_then(|p| p.take(self.current)) {
             self.hdr_peak.add(&hist);
+        }
+        if let Some(m) = self.depth.as_mut() {
+            m.collect(self.current);
         }
         if let Some(t) = self.timer.as_mut() {
             // Read before `begin` resets the queries for this frame.
@@ -1690,7 +1702,54 @@ impl Renderer {
                 );
             }
         }
+        // A depth measurement asked for, from the frame just shown, while
+        // a frame in the decoder's buffer is still acquired. Its GPU time
+        // counts in the eye passes'.
+        if let Some(m) = self.depth.as_mut()
+            && m.can_draw(tp10)
+            && slot.has_video
+            && video.format.is_forward_stereo()
+        {
+            let bind = match self.tp10_eyes.as_ref().filter(|_| tp10) {
+                Some(t) => Bind::Tp10(t),
+                None => Bind::Set(slot.scene_set),
+            };
+            m.record(gpu, cmd, slot_idx, bind);
+        }
         Ok(())
+    }
+
+    /// Asks for a depth measurement's grids, tagged `tag`, drawn from the
+    /// next frame shown of a video stereo focus applies to (see
+    /// [`fp_core::depth::grid`]). Refused (false) while one is asked for,
+    /// on its way or not yet taken, for grids too large, and where depth
+    /// can't be measured.
+    pub fn ask_depth(&mut self, tag: u64, spec: &GridSpec) -> bool {
+        self.depth.as_mut().is_some_and(|m| m.ask(tag, spec))
+    }
+
+    /// The measurement asked for, once drawn and back: from the frame two
+    /// after the one it was drawn in, read without waiting.
+    pub fn take_depth(&mut self) -> Option<(u64, Grids)> {
+        self.depth.as_mut()?.take()
+    }
+
+    /// Whether a measurement is asked for or on its way.
+    pub fn depth_pending(&self) -> bool {
+        self.depth.as_ref().is_some_and(MeasurePass::busy)
+    }
+
+    /// Forgets the measurement asked for, on its way or back: it never
+    /// comes back.
+    pub fn cancel_depth(&mut self) {
+        if let Some(m) = self.depth.as_mut() {
+            m.cancel();
+        }
+    }
+
+    /// Whether depth can be measured here at all.
+    pub fn measures_depth(&self) -> bool {
+        self.depth.is_some()
     }
 
     /// Ends recording and submits the frame.
@@ -2071,6 +2130,9 @@ impl Drop for Renderer {
             }
             if let Some(mut p) = self.peak.take() {
                 p.destroy(&gpu);
+            }
+            if let Some(mut m) = self.depth.take() {
+                m.destroy(&gpu);
             }
             if let Some(mut t) = self.timer.take() {
                 t.destroy(&gpu);
