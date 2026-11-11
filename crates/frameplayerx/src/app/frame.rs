@@ -160,6 +160,14 @@ impl App {
                 &crate::gaze::Correction::default(),
             )
         });
+        let was = self.aim_status;
+        self.aim_status = self.aim.map(|a| a.status);
+        // The tracker's state shows in Settings › General.
+        if self.aim_status != was {
+            self.panels[MAIN].request_repaint();
+        }
+        self.dot.visible =
+            self.settings.gaze_dot && self.aim.is_some_and(|a| a.current && a.gaze.is_some());
         let anchor = self.anchor(&input);
         let eye = input.head.map(|h| h.0).unwrap_or(anchor.w_axis.truncate());
         self.update_visibility();
@@ -168,6 +176,11 @@ impl App {
         self.place_panels(anchor, kb_target);
         let buzz = self.route_input(&input, anchor);
         self.paint_panels(renderer, &input, kb_target);
+        if self.dot.needs_paint()
+            && let Err(e) = self.dot.paint(renderer, input.time, ui::gaze::dot_picture)
+        {
+            log::error!("painting the gaze dot: {e}");
+        }
         self.perf_overlay(renderer, &input);
         let (frame, video, passthrough) = self.video(renderer, &input, anchor);
         let (quads, layers) = self.compose(&input, eye);
@@ -510,6 +523,7 @@ impl App {
         let devices = self.services.haptic_statuses();
         let passthrough_available = input.passthrough_available;
         let eye_spacing = self.eye_spacing;
+        let gaze = self.aim.map(|a| a.status);
         for idx in [MAIN, BAR, ADJUST, TRACKS, TOAST] {
             if !self.panels[idx].needs_paint() {
                 continue;
@@ -535,6 +549,7 @@ impl App {
                 passthrough_available,
                 devices: &devices,
                 eye_spacing,
+                gaze,
             };
             let r = panels[idx].paint(renderer, input.time, |ctx| match idx {
                 MAIN => ui::library::browser(ctx, &mut view),
@@ -697,6 +712,16 @@ impl App {
         for p in self.panels.iter_mut().chain([&mut self.perf]) {
             p.update_fade(input.dt);
         }
+        self.dot.update_fade(input.dt);
+        if let (Some(head), Some(gaze)) = (input.head, self.aim.and_then(|a| a.gaze))
+            && self.dot.visible
+        {
+            let half =
+                crate::gaze::DOT_RING * ui::gaze::DOT_PX as f32 / (2.0 * ui::gaze::DOT_RING_PX);
+            let (pose, size) = crate::gaze::dot_place(head, gaze, crate::gaze::DOT_DISTANCE, half);
+            self.dot.pose = pose;
+            self.dot.size = Vec2::splat(size);
+        }
         let mut order: Vec<(u64, &Panel)> = self
             .panels
             .iter()
@@ -728,6 +753,9 @@ impl App {
         } else {
             quads.extend(self.pointer.quads(eye, any_ui));
         }
+        // The gaze dot over what is drawn into the eyes (the compositor's
+        // panel layers still cover it).
+        quads.extend(self.dot.quad());
         (quads, layers)
     }
 

@@ -116,6 +116,8 @@ pub struct Settings {
     pub loop_playlist: bool,
     /// The performance overlay (Settings › General › Diagnostics).
     pub perf_overlay: bool,
+    /// A dot where the eyes look (Settings › General › Eye tracking).
+    pub gaze_dot: bool,
     /// What the controller buttons and thumbsticks do.
     pub controls: crate::bindings::Bindings,
     /// Where the library and adjust panels were moved to: yaw and pitch in
@@ -264,6 +266,7 @@ impl Default for Settings {
             autoplay: false,
             loop_playlist: false,
             perf_overlay: false,
+            gaze_dot: false,
             controls: crate::bindings::Bindings::default(),
             panel_offsets: PanelOffsets::default(),
             browse_sort: fp_sources::EntrySort::default(),
@@ -428,6 +431,18 @@ mod tests {
         std::fs::write(&path, "garbage").unwrap();
         assert_eq!(Settings::load(&path).volume, 1.0);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn eye_tracking_settings_load_off_from_old_files_and_round_trip() {
+        let old: Settings = serde_json::from_str(r#"{"volume":0.5}"#).unwrap();
+        assert!(!old.gaze_dot);
+        let on = Settings {
+            gaze_dot: true,
+            ..Settings::default()
+        };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&on).unwrap()).unwrap();
+        assert!(back.gaze_dot);
     }
 
     #[test]

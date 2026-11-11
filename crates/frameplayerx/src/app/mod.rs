@@ -257,6 +257,9 @@ pub struct App {
     /// The gaze made steady enough to aim with, and its aim this frame.
     gaze: crate::gaze::GazeFilter,
     pub aim: Option<crate::gaze::Aim>,
+    aim_status: Option<crate::gaze::GazeStatus>,
+    /// The gaze dot (Settings › General › Eye tracking).
+    dot: Panel,
     quit: bool,
     restart: bool,
 }
@@ -386,6 +389,8 @@ impl App {
             eye_spacing: None,
             gaze: Default::default(),
             aim: None,
+            aim_status: None,
+            dot: panel([ui::gaze::DOT_PX; 2], 0.1, 1.0),
             quit: false,
             restart: false,
         };

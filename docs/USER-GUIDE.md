@@ -915,6 +915,16 @@ As they start, these settings play the most demanding videos (8K 10-bit,
 and passthrough videos with a mask) at full frame rate. With foveation off,
 8K 10-bit video needs a lower resolution or refresh rate to play smoothly.
 
+### Eye tracking
+
+On a headset that tracks your eyes, **Settings › General › Eye
+tracking** says whether the tracker is sending where you look. If it
+isn't, check that eye tracking is on, and allowed for apps, in the
+headset's settings. **Gaze dot** shows a small dot where your eyes look,
+inside a thin ring about as wide as the tracker's error, so you can see
+how close it gets. The dot hides while you blink or the tracker loses
+your eyes.
+
 ## Controls
 
 Each button does one thing: the right hand runs playback, the left hand the
