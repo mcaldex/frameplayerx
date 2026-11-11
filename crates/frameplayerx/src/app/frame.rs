@@ -151,13 +151,19 @@ impl App {
         if input.eye_spacing.is_some() {
             self.eye_spacing = input.eye_spacing;
         }
+        self.now = input.time;
+        self.gaze_check(&input);
+        let correction = self
+            .settings
+            .gaze_check
+            .map_or_else(Default::default, |f| f.correction);
         self.aim = input.head.map(|(_, head)| {
             self.gaze.update(
                 input.time,
                 head,
                 input.eye_tracking,
                 input.gaze,
-                &crate::gaze::Correction::default(),
+                &correction,
             )
         });
         let was = self.aim_status;
@@ -166,8 +172,8 @@ impl App {
         if self.aim_status != was {
             self.panels[MAIN].request_repaint();
         }
-        self.dot.visible =
-            self.settings.gaze_dot && self.aim.is_some_and(|a| a.current && a.gaze.is_some());
+        self.dot.visible = self.check_dot.is_some()
+            || (self.settings.gaze_dot && self.aim.is_some_and(|a| a.current && a.gaze.is_some()));
         let anchor = self.anchor(&input);
         let eye = input.head.map(|h| h.0).unwrap_or(anchor.w_axis.truncate());
         self.update_visibility();
@@ -402,6 +408,43 @@ impl App {
         // Said and gone: it doesn't come back when the library opens.
         if over_video && !live {
             self.ui.toast = None;
+        }
+        // A gaze check has the view to itself.
+        if self.check.is_some() {
+            for p in &mut self.panels {
+                p.visible = false;
+            }
+        }
+    }
+
+    /// The gaze check's frame: its dot, or its result once done, kept in
+    /// the settings or said why not on the panel it was started from.
+    fn gaze_check(&mut self, input: &FrameInput) {
+        let (Some(check), Some((_, head))) = (&mut self.check, input.head) else {
+            self.check_dot = None;
+            return;
+        };
+        match check.update(input.time, head, input.eye_tracking, input.gaze) {
+            crate::gaze_check::Step::Dot(d) => self.check_dot = Some(d),
+            crate::gaze_check::Step::Done(r) => {
+                match r {
+                    Ok(fit) => {
+                        log::info!(
+                            "gaze check: {:.1}° off before, {:.1}° after",
+                            fit.before,
+                            fit.after
+                        );
+                        self.settings.gaze_check = Some(fit);
+                    }
+                    Err(stop) => {
+                        log::info!("gaze check kept nothing: {stop:?}");
+                        self.ui.gaze_check_stop = Some(stop);
+                    }
+                }
+                self.check = None;
+                self.check_dot = None;
+                self.panels[MAIN].request_repaint();
+            }
         }
     }
 
@@ -713,7 +756,9 @@ impl App {
             p.update_fade(input.dt);
         }
         self.dot.update_fade(input.dt);
-        if let (Some(head), Some(gaze)) = (input.head, self.aim.and_then(|a| a.gaze))
+        // The check's dot while one is under way, else the gaze's.
+        let at = self.check_dot.or(self.aim.and_then(|a| a.gaze));
+        if let (Some(head), Some(gaze)) = (input.head, at)
             && self.dot.visible
         {
             let half =

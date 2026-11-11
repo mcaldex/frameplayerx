@@ -258,6 +258,11 @@ pub struct App {
     gaze: crate::gaze::GazeFilter,
     pub aim: Option<crate::gaze::Aim>,
     aim_status: Option<crate::gaze::GazeStatus>,
+    /// A gaze check under way, and the direction (head axes) of its dot.
+    check: Option<crate::gaze_check::GazeCheck>,
+    check_dot: Option<Vec3>,
+    /// The time of the frame under way ([`FrameInput::time`]).
+    now: f64,
     /// The gaze dot (Settings › General › Eye tracking).
     dot: Panel,
     quit: bool,
@@ -390,6 +395,9 @@ impl App {
             gaze: Default::default(),
             aim: None,
             aim_status: None,
+            check: None,
+            check_dot: None,
+            now: 0.0,
             dot: panel([ui::gaze::DOT_PX; 2], 0.1, 1.0),
             quit: false,
             restart: false,
@@ -457,6 +465,11 @@ impl App {
             Some(a) => format!("{line} gaze={:?}", a.status),
             None => line,
         }
+    }
+
+    /// Where the gaze check's dot is, head axes, while one is under way.
+    pub fn check_dot(&self) -> Option<Vec3> {
+        self.check_dot
     }
 
     /// World position of a fractional point on a visible panel (tests).

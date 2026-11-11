@@ -269,6 +269,10 @@ pub enum Action {
     ResetView,
     /// Saves the playing video's adjustments as a new preset.
     SavePreset,
+    /// Starts a gaze check (Settings › General › Eye tracking).
+    StartGazeCheck,
+    /// Forgets the gaze check's correction.
+    ResetGazeCheck,
     /// Sets this preset's adjustments on the playing video.
     ApplyPreset(usize),
     AddKeyframe,
@@ -847,6 +851,8 @@ pub struct UiState {
     pub update: UpdateStatus,
     pub adjust_open: bool,
     pub adjust_tab: usize,
+    /// Why the last gaze check kept nothing, until another starts.
+    pub gaze_check_stop: Option<crate::gaze_check::Stop>,
     /// The audio and subtitles picker shows above the control bar.
     pub tracks_open: bool,
     /// The last run crashed: asks whether to send a report.
@@ -911,6 +917,7 @@ impl Default for UiState {
             update: UpdateStatus::Unknown,
             adjust_open: false,
             adjust_tab: 0,
+            gaze_check_stop: None,
             tracks_open: false,
             crash: None,
             open_error: None,

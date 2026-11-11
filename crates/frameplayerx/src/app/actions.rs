@@ -121,6 +121,14 @@ impl App {
                 p.settings = s.new_video_view();
                 p.keyframes = Default::default();
             }),
+            Action::StartGazeCheck => {
+                self.ui.gaze_check_stop = None;
+                self.check = Some(crate::gaze_check::GazeCheck::new(self.now));
+            }
+            Action::ResetGazeCheck => {
+                self.settings.gaze_check = None;
+                self.ui.gaze_check_stop = None;
+            }
             Action::SavePreset => {
                 if let Some(p) = &self.playback {
                     let (view, format) = p.preset_parts();

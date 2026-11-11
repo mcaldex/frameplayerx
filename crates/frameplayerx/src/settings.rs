@@ -118,6 +118,9 @@ pub struct Settings {
     pub perf_overlay: bool,
     /// A dot where the eyes look (Settings › General › Eye tracking).
     pub gaze_dot: bool,
+    /// The last gaze check's correction for this viewer's eyes, and how far
+    /// off the gaze was before and after it.
+    pub gaze_check: Option<crate::gaze_check::Fit>,
     /// What the controller buttons and thumbsticks do.
     pub controls: crate::bindings::Bindings,
     /// Where the library and adjust panels were moved to: yaw and pitch in
@@ -267,6 +270,7 @@ impl Default for Settings {
             loop_playlist: false,
             perf_overlay: false,
             gaze_dot: false,
+            gaze_check: None,
             controls: crate::bindings::Bindings::default(),
             panel_offsets: PanelOffsets::default(),
             browse_sort: fp_sources::EntrySort::default(),
@@ -436,13 +440,23 @@ mod tests {
     #[test]
     fn eye_tracking_settings_load_off_from_old_files_and_round_trip() {
         let old: Settings = serde_json::from_str(r#"{"volume":0.5}"#).unwrap();
-        assert!(!old.gaze_dot);
+        assert!(!old.gaze_dot && old.gaze_check.is_none());
+        let fit = crate::gaze_check::Fit {
+            correction: crate::gaze::Correction {
+                offset: [0.03, -0.01],
+                gain: [[1.1, 0.02], [-0.01, 0.97]],
+            },
+            before: 3.3,
+            after: 0.8,
+        };
         let on = Settings {
             gaze_dot: true,
+            gaze_check: Some(fit),
             ..Settings::default()
         };
         let back: Settings = serde_json::from_str(&serde_json::to_string(&on).unwrap()).unwrap();
         assert!(back.gaze_dot);
+        assert_eq!(back.gaze_check, Some(fit));
     }
 
     #[test]

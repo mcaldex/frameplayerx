@@ -12,6 +12,8 @@
 //! | `look YAW PITCH [ROLL]` | head direction (and roll, to lie on your side) in degrees |
 //! | `recenter` | recenter on where the head faces |
 //! | `gaze YAW PITCH` / `gaze idle` / `gaze off` | where the eyes look, in degrees from where the head faces (simulated eye tracking); `idle`: a tracker that isn't delivering; `off`: no eye tracking |
+//! | `gaze follow YAW PITCH` | the eyes look at the gaze check's dot (else ahead), the tracker YAW and PITCH degrees off |
+//! | `gaze-check` | start a gaze check, as Settings › General › Eye tracking's Start does |
 //! | `foveation off/low/high` | set Settings › General › Display › Foveated rendering |
 //! | `aim YAW PITCH` | controller ray direction in degrees |
 //! | `point PANEL X Y` | aim at a panel (`main`, `bar`, `adjust`, `keyboard`, `tracks`, `perf`) at fractional X, Y |
@@ -63,6 +65,8 @@ struct Sim {
     /// headset tracks the eyes at all.
     gaze: Option<Quat>,
     eye_tracking: bool,
+    /// The eyes follow the gaze check's dot, the tracker this far off.
+    follow: Option<Quat>,
     hand: Hand,
     start: Instant,
     last: Instant,
@@ -89,6 +93,11 @@ impl Sim {
         self.last = Instant::now();
         self.renderer.begin_frame()?;
         self.gpu_ms.push(self.renderer.gpu_times());
+        // Simulated eyes on the gaze check's dot, the tracker off by `bias`.
+        if let Some(bias) = self.follow {
+            let dot = self.app.check_dot().unwrap_or(Vec3::NEG_Z);
+            self.gaze = Some(Quat::from_rotation_arc(Vec3::NEG_Z, dot) * bias);
+        }
         let hands = [Hand::default(), self.hand];
         let head = Some((self.head_pos(), self.head));
         // The eyes first, as a headset gives them before the frame.
@@ -554,11 +563,20 @@ impl Sim {
                 self.head = dir_quat(num(1)?, num(2)?) * Quat::from_rotation_z(roll);
             }
             Some("gaze") => {
+                self.follow = None;
                 (self.eye_tracking, self.gaze) = match parts.get(1) {
                     Some(&"off") => (false, None),
                     Some(&"idle") => (true, None),
+                    Some(&"follow") => {
+                        self.follow = Some(dir_quat(num(2)?, num(3)?));
+                        (true, self.follow)
+                    }
                     _ => (true, Some(dir_quat(num(1)?, num(2)?))),
                 };
+            }
+            Some("gaze-check") => {
+                self.app.apply(crate::ui::Action::StartGazeCheck);
+                self.run_frames(1)?;
             }
             Some("recenter") => {
                 self.app.apply(crate::ui::Action::Recenter);
@@ -952,6 +970,7 @@ pub fn run(args: &Args, out: &Path) -> Result<(), Error> {
         head: Quat::IDENTITY,
         gaze: None,
         eye_tracking: false,
+        follow: None,
         hand: Hand {
             active: true,
             aim: None,

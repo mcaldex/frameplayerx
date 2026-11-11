@@ -85,6 +85,18 @@ settings-eye-tracker-hint = Check that eye tracking is on, and allowed for apps,
 # A switch under Eye tracking.
 settings-gaze-dot = Gaze dot
 settings-gaze-dot-desc = A dot where your eyes look. The ring round it is about how far off the tracker may be.
+# A row under Eye tracking, and its button. Short: the button.
+settings-gaze-check = Gaze check
+settings-gaze-check-desc = Look at five dots in turn, for 8 seconds, so the gaze lands where you look. Back stops it.
+settings-gaze-check-start = Start
+# Under Gaze check when a check kept nothing, saying why.
+settings-gaze-check-tracker = Stopped: the eye tracker stopped sending where you look.
+settings-gaze-check-lost = Stopped: your eyes were lost too often. Try again, blinking less.
+settings-gaze-check-not-followed = Nothing kept: your eyes didn't seem to follow the dots.
+# A row under Gaze check after a check; its description is the result, like "2.2° → 0.1°". Short: the button.
+settings-gaze-check-done = Corrected for your eyes
+settings-gaze-check-result = Off by { $before }° before, { $after }° now
+settings-gaze-check-reset = Reset
 # Short: a chip.
 foveation-off = Off
 # Short: a chip.

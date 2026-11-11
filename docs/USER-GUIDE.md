@@ -898,6 +898,17 @@ inside a thin ring about as wide as the tracker's error, so you can see
 how close it gets. The dot hides while you blink or the tracker loses
 your eyes.
 
+An eye tracker is often a few degrees off for a given person, which the
+dot makes plain. **Gaze check** corrects it: press **Start**, and the
+panels make way for five dots, one at a time, for about 8 seconds: in
+the middle, then above, below, left and right of it. Look at each until
+the next shows; the dots move with your head, so turning it doesn't
+matter. A line then says how far off your gaze was before and after,
+and the correction is kept for the dot until you press **Reset**.
+Foveated rendering keeps the tracker's own gaze. If the tracker stops sending, your
+eyes are lost too often, or they don't seem to follow the dots, it says
+so and keeps nothing; **Back** stops a check.
+
 ## Controls
 
 Each button does one thing: the right hand runs playback, the left hand the

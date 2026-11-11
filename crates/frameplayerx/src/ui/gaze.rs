@@ -1,8 +1,10 @@
 //! Eye tracking: its group in Settings › General, and the gaze dot's
 //! picture.
 
-use super::{View, theme, widgets};
+use super::widgets::Kind;
+use super::{Action, View, theme, widgets};
 use crate::gaze::GazeStatus;
+use crate::gaze_check::Stop;
 use egui::{Color32, RichText, Stroke};
 
 /// The gaze dot's picture, pixels square, and the radius of its ring in
@@ -31,8 +33,8 @@ pub fn dot_picture(ctx: &egui::Context) {
 }
 
 /// Eye tracking's group: whether the tracker sends where you look (with
-/// a hint when it doesn't), and the gaze dot. Only where the headset
-/// tracks the eyes.
+/// a hint when it doesn't), the gaze dot, and the gaze check with its
+/// result. Only where the headset tracks the eyes.
 pub fn group(ui: &mut egui::Ui, v: &mut View) {
     let Some(status) = v.gaze.filter(|s| *s != GazeStatus::NoEyeTracking) else {
         return;
@@ -40,6 +42,7 @@ pub fn group(ui: &mut egui::Ui, v: &mut View) {
     ui.add_space(12.0);
     widgets::section_label(ui, tr!("settings-eye-tracking"));
     let s = &mut *v.settings;
+    let (actions, stop) = (&mut *v.actions, v.state.gaze_check_stop);
     widgets::rows(ui, |r| {
         let delivering = status != GazeStatus::NotDelivering;
         r.info(
@@ -60,5 +63,36 @@ pub fn group(ui: &mut egui::Ui, v: &mut View) {
             Some(tr!("settings-gaze-dot-desc")),
             &mut s.gaze_dot,
         );
+        r.row(
+            tr!("settings-gaze-check"),
+            Some(tr!("settings-gaze-check-desc")),
+            |ui| {
+                let start = tr!("settings-gaze-check-start");
+                if widgets::button(ui, None, start, Kind::Secondary).clicked() {
+                    actions.push(Action::StartGazeCheck);
+                }
+            },
+        );
+        if let Some(why) = stop {
+            let said = match why {
+                Stop::Tracker => tr!("settings-gaze-check-tracker"),
+                Stop::Lost => tr!("settings-gaze-check-lost"),
+                Stop::NotFollowed => tr!("settings-gaze-check-not-followed"),
+            };
+            r.content(|ui| ui.label(RichText::new(said).color(theme::TEXT_2)));
+        }
+        if let Some(fit) = s.gaze_check {
+            let result = tr!(
+                "settings-gaze-check-result",
+                before = format!("{:.1}", fit.before),
+                after = format!("{:.1}", fit.after)
+            );
+            r.row(tr!("settings-gaze-check-done"), Some(&result), |ui| {
+                let reset = tr!("settings-gaze-check-reset");
+                if widgets::button(ui, None, reset, Kind::Secondary).clicked() {
+                    actions.push(Action::ResetGazeCheck);
+                }
+            });
+        }
     });
 }
