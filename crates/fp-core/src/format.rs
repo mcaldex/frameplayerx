@@ -120,6 +120,12 @@ pub struct VideoFormat {
     pub alpha_packed: bool,
 }
 
+/// The widest equirectangular picture, degrees, still taken as two
+/// forward-facing cameras' ([`VideoFormat::is_forward_stereo`]): a 180°
+/// one, or a wide fisheye pair turned equirectangular. Wider, it is most
+/// likely stitched from more cameras than two.
+pub const FORWARD_STEREO_FOV: f32 = 200.0;
+
 /// Size of an alpha-packed video's masks relative to the eye they belong
 /// to. The left half's mask is centred on the frame's top middle, the right
 /// half's on its corner (wrapping round the edges).
@@ -162,6 +168,22 @@ impl VideoFormat {
             StereoLayout::Mono => format!("{} mono", self.projection.label()),
             s => format!("{} {}", self.projection.label(), s.label()),
         }
+    }
+
+    /// Whether the video was filmed by two cameras side by side, facing
+    /// forward: a 3D fisheye, or a 3D equirectangular picture up to
+    /// [`FORWARD_STEREO_FOV`] across. Only such a video's two pictures are
+    /// two fixed cameras' that stereo focus can redraw for where the eyes
+    /// are ([`crate::view::Focus`]). A 360° picture (equirectangular or a
+    /// cubemap) is stitched from several cameras, a flat one has no
+    /// directions to redraw, and the 180° cubemap is a crop of a 360° one.
+    pub fn is_forward_stereo(&self) -> bool {
+        self.stereo.is_stereo()
+            && match self.projection {
+                Projection::Fisheye { .. } => true,
+                Projection::Equirect { h_fov, .. } => h_fov <= FORWARD_STEREO_FOV,
+                Projection::Flat | Projection::Eac { .. } => false,
+            }
     }
 
     /// Scale of the packed passthrough mask, if the video has one that can
@@ -836,6 +858,74 @@ mod tests {
         let j = serde_json::to_string(&f).unwrap();
         assert_eq!(serde_json::from_str::<VideoFormat>(&j).unwrap(), f);
         assert!(j.contains("\"kind\":\"fisheye\""), "{j}");
+    }
+
+    #[test]
+    fn stereo_focus_applies_to_two_cameras_facing_forward() {
+        let layouts = [
+            S::Mono,
+            S::SideBySide,
+            S::HalfSideBySide,
+            S::TopBottom,
+            S::HalfTopBottom,
+            S::FrameSequential,
+        ];
+        let projections = [
+            P::Flat,
+            P::EQUIRECT_180,
+            P::Equirect {
+                h_fov: 200.0,
+                v_fov: 180.0,
+            },
+            P::Equirect {
+                h_fov: 220.0,
+                v_fov: 180.0,
+            },
+            P::EQUIRECT_360,
+            P::fisheye(180.0),
+            P::fisheye(190.0),
+            P::fisheye(220.0),
+            P::Eac { h_fov: 180.0 },
+            P::Eac { h_fov: 360.0 },
+        ];
+        for projection in projections {
+            for stereo in layouts {
+                for swapped in [false, true] {
+                    let f = VideoFormat {
+                        eyes_swapped: swapped,
+                        ..VideoFormat::new(projection, stereo)
+                    };
+                    let want = stereo != S::Mono
+                        && match projection {
+                            P::Fisheye { .. } => true,
+                            P::Equirect { h_fov, .. } => h_fov <= 200.0,
+                            _ => false,
+                        };
+                    assert_eq!(f.is_forward_stereo(), want, "{f:?}");
+                }
+            }
+        }
+        // Every format detection gives: 180° and fisheye 3D, but not 360°,
+        // cubemaps, flat 3D or 2D.
+        let named = |n: &str| detect_from_name(n).unwrap().is_forward_stereo();
+        for n in [
+            "a_180_LR.mp4",
+            "a_180_TB.mp4",
+            "a_FISHEYE190_RL.mp4",
+            "a_MKX200.mp4",
+        ] {
+            assert!(named(n), "{n}");
+        }
+        for n in [
+            "a_360_TB.mp4",
+            "a_EAC360.mp4",
+            "a_EAC180_LR.mp4",
+            "a_SBS.mp4",
+            "a_180_MONO.mp4",
+        ] {
+            assert!(!named(n), "{n}");
+        }
+        assert!(VideoFormat::FALLBACK.is_forward_stereo());
     }
 
     #[test]

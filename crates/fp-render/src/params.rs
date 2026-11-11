@@ -1,11 +1,11 @@
 //! Builds the projection shader's uniform block.
 
 use fp_core::format::{Projection, StereoLayout, VideoFormat};
-use fp_core::view::ViewSettings;
+use fp_core::view::{FOCUS_DISTANCES, Focus, LENS_SPACING, LENS_SPACINGS, ViewSettings};
 use fp_media::PixelLayout;
 use fp_media::frame::{ColorInfo, Matrix};
 use fp_media::info::Transfer;
-use glam::{EulerRot, Mat4, Quat, Vec4};
+use glam::{EulerRot, Mat4, Quat, Vec3, Vec4};
 
 /// Matches `struct Params` in shaders/scene.wgsl (std140-compatible: every
 /// member is 16-byte aligned).
@@ -37,6 +37,7 @@ pub(crate) struct SceneParams {
     pub hdr: Vec4,
     pub tp10: Vec4,
     pub tp10_uv: Vec4,
+    pub focus: [Vec4; 2],
 }
 
 /// Sets `p` up for a Q10C picture of `height` rows sampled where it lies
@@ -164,10 +165,62 @@ pub(crate) fn yuv_matrix(color: &ColorInfo, layout: PixelLayout) -> ([Vec4; 3], 
 /// moves off its centre (height, forward). Rays from the centre ignore it.
 const SPHERE_RADIUS: f32 = 3.0;
 
+/// The rotation from the world into the video's axes (x right, y up, -z
+/// the picture's front): the recentring anchor's, then the picture's yaw,
+/// pitch and roll undone. The shader's `anchor_inv` then `correction`.
+pub fn video_axes(video: &VideoParams) -> Quat {
+    let s = &video.settings;
+    let picture = Quat::from_euler(
+        EulerRot::YXZ,
+        s.yaw.to_radians(),
+        s.pitch.to_radians(),
+        s.roll.to_radians(),
+    );
+    picture.inverse() * video.anchor.inverse()
+}
+
+/// Each eye's offset from its own camera, in the video's axes, metres:
+/// `axes · (eye − middle) − camera`, `eyes` the eyes' world positions and
+/// the cameras `spacing_mm` apart on the x axis, the middle of the eyes
+/// halfway between them. The left eye always goes with the left camera: a
+/// file packed right eye first, or Swap eyes, only changes where in the
+/// frame each eye's picture is found.
+pub(crate) fn eye_offsets(axes: Quat, eyes: [Vec3; 2], spacing_mm: f32) -> [Vec3; 2] {
+    let spacing = if spacing_mm.is_finite() {
+        spacing_mm.clamp(*LENS_SPACINGS.start(), *LENS_SPACINGS.end())
+    } else {
+        LENS_SPACING
+    } / 1000.0;
+    let middle = (eyes[0] + eyes[1]) * 0.5;
+    let cameras = [-0.5, 0.5].map(|x| Vec3::X * x * spacing);
+    [0, 1].map(|i| axes * (eyes[i] - middle) - cameras[i])
+}
+
+/// The shader's `focus`: per eye, its offset from its camera and the
+/// distance stereo focus is exact at, metres; all zero when focus is off
+/// or the video isn't two forward-facing cameras'.
+fn focus(video: &VideoParams, eyes: [Vec3; 2]) -> [Vec4; 2] {
+    let s = &video.settings;
+    let distance = match s.focus {
+        Focus::Off => return [Vec4::ZERO; 2],
+        Focus::Manual => s.focus_distance,
+    };
+    if !video.format.is_forward_stereo() || !distance.is_finite() {
+        return [Vec4::ZERO; 2];
+    }
+    // Nearer than the nearest offered, the sphere would close in round the
+    // eye; a zero would divide.
+    let distance = distance.clamp(*FOCUS_DISTANCES.start(), *FOCUS_DISTANCES.end());
+    eye_offsets(video_axes(video), eyes, s.lens_spacing).map(|p| p.extend(distance))
+}
+
+/// The uniforms for drawing `video` (shown as `frame`) to eyes at world
+/// positions `eyes` with inverse view-projections `inv_view_proj`.
 pub(crate) fn build(
     video: &VideoParams,
     frame: Option<&FrameDesc>,
     inv_view_proj: [Mat4; 2],
+    eyes: [Vec3; 2],
 ) -> SceneParams {
     let s = &video.settings;
     let deg = |d: f32| d.to_radians();
@@ -284,6 +337,7 @@ pub(crate) fn build(
         hdr: hdr_levels(crate::hdr::DEFAULT_PEAK),
         tp10: Vec4::ZERO,
         tp10_uv: Vec4::ZERO,
+        focus: focus(video, eyes),
     }
 }
 
@@ -302,7 +356,7 @@ mod tests {
     use super::*;
 
     fn apply(rows: &[Vec4; 3], off: Vec4, yuv: [f32; 3]) -> [f32; 3] {
-        let v = glam::Vec3::new(yuv[0], yuv[1], yuv[2]) * off.w - off.truncate();
+        let v = Vec3::new(yuv[0], yuv[1], yuv[2]) * off.w - off.truncate();
         [
             rows[0].truncate().dot(v),
             rows[1].truncate().dot(v),
@@ -373,21 +427,25 @@ mod tests {
             &make_video(StereoLayout::SideBySide),
             Some(&frame),
             [Mat4::IDENTITY; 2],
+            [Vec3::ZERO; 2],
         );
         let sp_hsbs = build(
             &make_video(StereoLayout::HalfSideBySide),
             Some(&frame),
             [Mat4::IDENTITY; 2],
+            [Vec3::ZERO; 2],
         );
         let sp_ftb = build(
             &make_video(StereoLayout::TopBottom),
             Some(&frame),
             [Mat4::IDENTITY; 2],
+            [Vec3::ZERO; 2],
         );
         let sp_htb = build(
             &make_video(StereoLayout::HalfTopBottom),
             Some(&frame),
             [Mat4::IDENTITY; 2],
+            [Vec3::ZERO; 2],
         );
 
         // Full SBS expects 960x1080 per eye (8:9), so screen is narrow/tall:
@@ -426,7 +484,7 @@ mod tests {
                 pixel_aspect,
                 ..Default::default()
             };
-            let p = build(&video, Some(&frame), [Mat4::IDENTITY; 2]);
+            let p = build(&video, Some(&frame), [Mat4::IDENTITY; 2], [Vec3::ZERO; 2]);
             (p.screen.x, p.screen.y, p.display[0])
         };
         let near = |(w, h, t): (f32, f32, u32), want: (f32, f32, u32)| {
@@ -439,6 +497,155 @@ mod tests {
         assert!(near(screen(180, 1.0), (6.0, 3.375, 2)));
         // 4:3 pixels widen a 16:9 frame to 2.37:1.
         assert!(near(screen(0, 4.0 / 3.0), (6.0, 6.0 * 1080.0 / 2560.0, 0)));
+    }
+
+    /// The shader's `off_centre`.
+    fn off_centre(d: Vec3, p: Vec3, r: f32) -> Vec3 {
+        if p.dot(p) < 1e-8 {
+            return d;
+        }
+        let q = p * (0.9 * r / p.length()).min(1.0);
+        let b = q.dot(d);
+        let t = -b + (b * b - q.dot(q) + r * r).sqrt();
+        (q + t * d).normalize()
+    }
+
+    /// Repeatable numbers in `lo..hi` (xorshift).
+    struct Numbers(u64);
+
+    impl Numbers {
+        fn next(&mut self, lo: f32, hi: f32) -> f32 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            lo + (hi - lo) * (self.0 >> 40) as f32 / (1u64 << 24) as f32
+        }
+    }
+
+    fn focused(distance: f32, spacing: f32) -> VideoParams {
+        VideoParams {
+            format: VideoFormat::FALLBACK,
+            settings: ViewSettings {
+                focus: Focus::Manual,
+                focus_distance: distance,
+                lens_spacing: spacing,
+                ..ViewSettings::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// World positions of eyes `ipd` metres apart in a head at `head`
+    /// turned by `turn`.
+    fn eyes(head: Vec3, turn: Quat, ipd: f32) -> [Vec3; 2] {
+        [-0.5, 0.5].map(|x| head + turn * Vec3::X * (x * ipd))
+    }
+
+    #[test]
+    fn stereo_focus_shows_each_eye_a_point_at_the_distance_where_it_is() {
+        let mut n = Numbers(0x9e37_79b9_7f4a_7c15);
+        let mut worst = 0.0f32;
+        for _ in 0..4000 {
+            let deg = |n: &mut Numbers, r: f32| n.next(-r, r).to_radians();
+            let mut video = focused(n.next(0.3, 20.0), n.next(30.0, 120.0));
+            video.anchor = Quat::from_rotation_y(deg(&mut n, 180.0));
+            video.settings.yaw = n.next(-40.0, 40.0);
+            video.settings.pitch = n.next(-30.0, 30.0);
+            video.settings.roll = n.next(-20.0, 20.0);
+            let turn = Quat::from_euler(
+                EulerRot::YXZ,
+                deg(&mut n, 180.0),
+                deg(&mut n, 80.0),
+                deg(&mut n, 90.0),
+            );
+            let head = Vec3::new(n.next(-1.0, 1.0), n.next(0.3, 2.0), n.next(-1.0, 1.0));
+            let at = eyes(head, turn, n.next(0.045, 0.08));
+            let p = build(&video, None, [Mat4::IDENTITY; 2], at);
+            let axes = video_axes(&video);
+            let distance = video.settings.focus_distance;
+            let spacing = video.settings.lens_spacing / 1000.0;
+            for (i, eye) in at.into_iter().enumerate() {
+                // A point `distance` from this eye's camera, which saw it
+                // along `seen`, anywhere in front of it.
+                let seen =
+                    Quat::from_euler(EulerRot::YXZ, deg(&mut n, 85.0), deg(&mut n, 85.0), 0.0)
+                        * Vec3::NEG_Z;
+                let camera = Vec3::X * (i as f32 - 0.5) * spacing;
+                let point = camera + seen * distance;
+                // The eye looks at it from where it is, in the world.
+                let middle = (at[0] + at[1]) * 0.5;
+                let look = (axes.inverse() * point + middle - eye).normalize();
+                // What the shader does with that ray (no per-eye tweaks,
+                // height, forward or zoom).
+                let d = (p.anchor_inv * look.extend(0.0)).truncate();
+                let d = (p.correction * d.extend(0.0)).truncate().normalize();
+                let f = p.focus[i];
+                let got = off_centre(d, f.truncate(), f.w);
+                // The chord, as acos can't tell f32 directions this close.
+                worst = worst.max((got - seen).length());
+            }
+        }
+        assert!(worst < 2e-6, "off by {} degrees", worst.to_degrees());
+    }
+
+    #[test]
+    fn stereo_focus_changes_nothing_while_the_eyes_are_where_the_cameras_were() {
+        let mut video = focused(0.5, 64.0);
+        let still = |video: &VideoParams, turn: Quat| {
+            let p = build(
+                video,
+                None,
+                [Mat4::IDENTITY; 2],
+                eyes(Vec3::Y * 1.6, turn, 0.064),
+            );
+            p.focus
+                .iter()
+                .all(|f| f.truncate().length() < 1e-6 && f.w == 0.5)
+        };
+        assert!(still(&video, Quat::IDENTITY), "level, facing the front");
+        // Recentred facing 70° left, and the picture turned: facing its
+        // front is facing both.
+        video.anchor = Quat::from_rotation_y(70f32.to_radians());
+        video.settings.yaw = 25.0;
+        video.settings.pitch = -10.0;
+        video.settings.roll = 5.0;
+        assert!(
+            still(&video, video_axes(&video).inverse()),
+            "recentred and turned"
+        );
+        // Eyes wider than the lenses, or a head tilted, aren't.
+        assert!(!still(&focused(0.5, 60.0), Quat::IDENTITY));
+        assert!(!still(&focused(0.5, 64.0), Quat::from_rotation_z(0.3)));
+    }
+
+    #[test]
+    fn stereo_focus_is_off_where_it_doesnt_apply_and_guards_its_distance() {
+        let at = eyes(Vec3::Y * 1.6, Quat::from_rotation_z(0.4), 0.064);
+        let block = |video: &VideoParams| build(video, None, [Mat4::IDENTITY; 2], at).focus;
+        let on = focused(1.0, 63.0);
+        assert!(block(&on)[0].w == 1.0 && block(&on)[0].truncate().length() > 0.01);
+        let off = VideoParams {
+            settings: ViewSettings {
+                focus: Focus::Off,
+                ..on.settings
+            },
+            ..on
+        };
+        assert_eq!(block(&off), [Vec4::ZERO; 2]);
+        for format in [
+            VideoFormat::new(Projection::EQUIRECT_360, StereoLayout::TopBottom),
+            VideoFormat::new(Projection::Eac { h_fov: 180.0 }, StereoLayout::SideBySide),
+            VideoFormat::new(Projection::Flat, StereoLayout::SideBySide),
+            VideoFormat::new(Projection::EQUIRECT_180, StereoLayout::Mono),
+        ] {
+            assert_eq!(block(&VideoParams { format, ..on }), [Vec4::ZERO; 2]);
+        }
+        // A zero distance is the nearest offered; a broken one is off.
+        assert_eq!(block(&focused(0.0, 63.0))[1].w, *FOCUS_DISTANCES.start());
+        assert_eq!(block(&focused(f32::NAN, 63.0)), [Vec4::ZERO; 2]);
+        // A broken lens spacing is the usual one.
+        let nan = block(&focused(1.0, f32::NAN));
+        assert_eq!(nan, block(&focused(1.0, LENS_SPACING)));
     }
 
     #[test]
@@ -460,7 +667,7 @@ mod tests {
                     wide_gamut: false,
                 },
             };
-            let p = build(&video, Some(&frame), [Mat4::IDENTITY; 2]);
+            let p = build(&video, Some(&frame), [Mat4::IDENTITY; 2], [Vec3::ZERO; 2]);
             p.screen.x / p.screen.y
         };
         let near = |a: f32, want: f32| (a - want).abs() < 1e-3;
