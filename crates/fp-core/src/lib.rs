@@ -5,6 +5,8 @@
 //! - [`view`]: per-video picture corrections ([`ViewSettings`]).
 //! - [`depth`]: how far away things are in a 3D 180° video, from its two
 //!   pictures, for automatic stereo focus.
+//! - [`autofocus`]: turns those measurements into the distance stereo
+//!   focus draws at.
 //! - [`display`]: refresh rate, render resolution and foveated rendering.
 //! - [`source`]: the contract between media sources and the player
 //!   ([`ByteSource`], [`Entry`]).
@@ -15,6 +17,7 @@
 //! - [`sync`]: locking that survives a panicking thread.
 //! - [`volume`]: microSD cards and USB drives, known by their filesystem's ID.
 
+pub mod autofocus;
 pub mod depth;
 pub mod dirs;
 pub mod display;
