@@ -52,6 +52,35 @@ pub struct FrameInput {
     pub display_hz: Option<f32>,
     /// The system recentered (the Steam button held) since the last frame.
     pub recentred: bool,
+    /// How far apart the eyes drawn this frame are, metres: what stereo
+    /// focus corrects for. `None` until the headset gives eye views.
+    pub eye_spacing: Option<f32>,
+}
+
+/// Stereo focus for the preview's `status`: `focus=off`, or the mode,
+/// distance and lens spacing, and `(not here)` for a video it doesn't
+/// apply to.
+fn focus_status(p: &Playback) -> String {
+    let s = &p.settings;
+    let mode = match s.focus {
+        fp_core::view::Focus::Off => return "focus=off".into(),
+        fp_core::view::Focus::Manual => "manual",
+    };
+    format!(
+        "focus={mode} distance={:.2} spacing={:.0}{}",
+        s.focus_distance,
+        s.lens_spacing,
+        if p.format.is_forward_stereo() {
+            ""
+        } else {
+            " (not here)"
+        }
+    )
+}
+
+/// How far apart two eyes are, metres ([`FrameInput::eye_spacing`]).
+pub fn eye_spacing(eyes: &[fp_render::EyeView; 2]) -> f32 {
+    eyes[0].position().distance(eyes[1].position())
 }
 
 /// A panel or pointer ray for the compositor to draw as its own quad layer,
@@ -200,6 +229,8 @@ pub struct App {
     /// are being fetched.
     feed_queue: std::collections::VecDeque<(String, String)>,
     feed_busy: usize,
+    /// The last [`FrameInput::eye_spacing`] the headset gave.
+    eye_spacing: Option<f32>,
     quit: bool,
     restart: bool,
 }
@@ -326,6 +357,7 @@ impl App {
             mount_tried: Vec::new(),
             feed_queue: Default::default(),
             feed_busy: 0,
+            eye_spacing: None,
             quit: false,
             restart: false,
         };
@@ -371,7 +403,7 @@ impl App {
         match &self.playback {
             Some(p) => format!(
                 "{} playing={} state={:?} pos={:.1}/{:.1} vol={:.2} zoom={:.2} yaw={:.1} pitch={:.1} \
-                 queue={}/{} paused={} {ui}",
+                 queue={}/{} paused={} {} {ui}",
                 p.title,
                 p.transcoding.as_ref().map_or("file", |t| t.label.as_str()),
                 p.player.state(),
@@ -383,7 +415,8 @@ impl App {
                 p.settings.pitch,
                 self.queue.pos + 1,
                 self.queue.items.len(),
-                p.player.is_paused()
+                p.player.is_paused(),
+                focus_status(p),
             ),
             None => format!("no video, screen={:?} {ui}", self.ui.screen),
         }

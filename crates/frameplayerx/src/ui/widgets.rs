@@ -940,6 +940,53 @@ pub fn slider_control(
     suffix: &str,
     decimals: usize,
 ) -> bool {
+    slider_control_scaled(ui, value, range, default, suffix, decimals, Scale::Linear)
+}
+
+/// How far along a slider's rail a value sits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scale {
+    /// Equal travel adds equal amounts.
+    Linear,
+    /// Equal travel multiplies by equal factors, so a value double another
+    /// is as far along anywhere on the rail and small values get the finer
+    /// steps. For positive ranges only.
+    Proportional,
+}
+
+/// One step of a [`Scale::Proportional`] slider pointed at and stepped
+/// with the thumbstick: 5%. At 1 m it is 5 cm, which moves stereo focus's
+/// correction by under a tenth of a degree for an eye 3 cm off its camera,
+/// while the whole 0.3 to 20 m takes 86 steps.
+const PROPORTIONAL_STEP: f32 = 1.05;
+
+impl Scale {
+    /// `v` in the rail's own units, where travel is even.
+    fn rail(self, v: f32) -> f32 {
+        match self {
+            Scale::Linear => v,
+            Scale::Proportional => v.max(f32::MIN_POSITIVE).ln(),
+        }
+    }
+
+    fn value(self, x: f32) -> f32 {
+        match self {
+            Scale::Linear => x,
+            Scale::Proportional => x.exp(),
+        }
+    }
+}
+
+/// [`slider_control`] with its rail on `scale`.
+pub fn slider_control_scaled(
+    ui: &mut Ui,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    default: f32,
+    suffix: &str,
+    decimals: usize,
+    scale: Scale,
+) -> bool {
     let mut changed = false;
     let reset = (*value - default).abs() > 1e-4;
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::click());
@@ -973,7 +1020,7 @@ pub fn slider_control(
     // What the row leaves it, so at a large interface size it doesn't run
     // over the text beside it.
     let width = ui.available_width().clamp(120.0, 240.0);
-    let resp = slider(ui, value, range.clone(), width);
+    let resp = slider_scaled(ui, value, range.clone(), width, scale);
     changed |= resp.changed();
     if resp.hovered() {
         let ctx = ui.ctx().clone();
@@ -982,9 +1029,15 @@ pub fn slider_control(
             n(egui::Key::ArrowRight) - n(egui::Key::ArrowLeft)
         });
         if dir != 0.0 {
-            // A step of the shown precision, landing on it.
-            let step = 10f32.powi(-(decimals as i32));
-            *value = (((*value / step).round() + dir) * step).clamp(*range.start(), *range.end());
+            let stepped = match scale {
+                // A step of the shown precision, landing on it.
+                Scale::Linear => {
+                    let step = 10f32.powi(-(decimals as i32));
+                    ((*value / step).round() + dir) * step
+                }
+                Scale::Proportional => *value * PROPORTIONAL_STEP.powf(dir),
+            };
+            *value = stepped.clamp(*range.start(), *range.end());
             changed = true;
             ctx.request_repaint();
         }
@@ -1190,6 +1243,32 @@ const GRAB_REACH: f32 = 30.0;
 /// A slider: a slim rail filled in the accent up to a white knob. Pulled
 /// on, the knob moves as far as the pointer does.
 pub fn slider(
+    ui: &mut Ui,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    width: f32,
+) -> Response {
+    slider_scaled(ui, value, range, width, Scale::Linear)
+}
+
+/// A [`slider`] with its rail on `scale`.
+pub fn slider_scaled(
+    ui: &mut Ui,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    width: f32,
+    scale: Scale,
+) -> Response {
+    let mut on_rail = scale.rail(*value);
+    let range = scale.rail(*range.start())..=scale.rail(*range.end());
+    let resp = rail_slider(ui, &mut on_rail, range, width);
+    if resp.changed() {
+        *value = scale.value(on_rail);
+    }
+    resp
+}
+
+fn rail_slider(
     ui: &mut Ui,
     value: &mut f32,
     range: std::ops::RangeInclusive<f32>,
@@ -1625,6 +1704,18 @@ pub fn display_title(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_proportional_rail_doubles_a_value_in_the_same_travel_near_or_far() {
+        let s = Scale::Proportional;
+        let travel = |a: f32, b: f32| s.rail(b) - s.rail(a);
+        assert!((travel(0.3, 0.6) - travel(10.0, 20.0)).abs() < 1e-6);
+        assert!((s.value(s.rail(1.7)) - 1.7).abs() < 1e-6);
+        // Linear rails are the values themselves.
+        assert_eq!(Scale::Linear.rail(-2.5), -2.5);
+        // A zero can't take the logarithm to minus infinity.
+        assert!(s.rail(0.0).is_finite());
+    }
 
     #[test]
     fn a_box_too_wide_to_fit_goes_against_the_left() {

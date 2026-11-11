@@ -602,6 +602,41 @@ Where videos start is set in Settings: **Video position** for the screen,
 zoom, height and background, **Picture** for the picture and a 3D video's
 depth and eye alignment, and Sound and subtitles for subtitle depth.
 
+### Stereo focus
+
+A 3D 180° or fisheye video is two cameras' pictures, and each eye is
+shown its own camera's picture as if everything in it were far away.
+That is right while your head is level, faces the front of the picture
+and your eyes are as far apart as the camera's lenses. Tilt your head,
+lie on your side or turn far round, and the two pictures no longer line
+up for your eyes: near things split in two or strain to fuse. Eyes much
+wider or narrower than the lenses make depth look shallow or deep.
+
+**Stereo focus**, on the adjust panel's Stereo tab, redraws each eye's
+picture for where that eye really is. It is exact at one distance:
+whatever is **Focus distance** from the camera stays put and fuses
+however you hold your head, and what is much nearer or farther is still
+a little off as you tilt or turn. Set it to what you are looking at; a
+person in front of a 180° camera is usually 1 to 2 m away, and it starts
+at 1.5 m. Looking straight ahead with your head level, it changes
+nothing.
+
+**Camera lens spacing** is how far apart the lenses of the camera that
+filmed the video were. Most 180° cameras are 60 to 65 mm, and it starts
+at 63 mm. Your own eye spacing comes from the headset: the line under it
+shows what the headset measures. Both are kept with the video's other
+adjustments, and Settings › Picture sets where videos start.
+
+It is for 3D 180° and fisheye videos: a 360° video is stitched from more
+cameras, and flat 3D has nothing to redraw, so for those its rows are
+dimmed. Keyframes glide the focus distance as your eyes would turn in
+and out, and change the lens spacing halfway between two.
+
+A thumbstick direction can move the focus distance: in Settings ›
+Controller, set one to **Stereo focus distance**. Up is farther, down
+nearer, by the same share near or far, and a message shows the
+distance; moving it turns stereo focus on.
+
 ### Fisheye lenses
 
 A fisheye format shows **Fisheye lens** under the format list. Its presets
@@ -886,7 +921,8 @@ recenter: it comes up to where you look. Or turn on **Screen follows you**
 (the bed button on the control bar, or Settings › General): a flat video
 and the menus then follow your head and stay in front of you as you turn,
 lie back or roll onto your side. 180° and 360° videos don't follow, since
-you look around those.
+you look around those. For a 3D 180° or fisheye video, turn on
+[Stereo focus](#stereo-focus) so lying on your side doesn't split it in two.
 
 Every button and thumbstick direction above can be changed in Settings ›
 Controller: point at a button, pull the trigger and pick an action.

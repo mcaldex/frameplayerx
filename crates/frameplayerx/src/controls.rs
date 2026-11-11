@@ -46,6 +46,9 @@ pub enum Cmd {
     Zoom(f32),
     /// Viewer height change (metres this frame; up positive).
     Height(f32),
+    /// Stereo focus distance change: the natural log of the factor this
+    /// frame, farther positive.
+    Focus(f32),
     /// Volume change (this frame; 1.0 is full).
     Volume(f32),
     ToggleMute,
@@ -92,6 +95,11 @@ const YAW_SPEED: f32 = 45.0;
 const HEIGHT_SPEED: f32 = 0.4;
 /// Volume change a second at full stick.
 const VOLUME_SPEED: f32 = 0.6;
+/// How fast a thumbstick moves stereo focus, as the natural log of the
+/// factor a second at full stick: ln 2, doubling or halving the distance
+/// each second, as even near as far. The whole 0.3 to 20 m is six
+/// doublings, about six seconds; much faster and a small change overshoots.
+const FOCUS_SPEED: f32 = std::f32::consts::LN_2;
 pub(crate) const GRIP: f32 = 0.7;
 const TRIGGER: f32 = 0.7;
 const STICK: f32 = 0.75;
@@ -230,6 +238,7 @@ impl Controls {
                             AxisAction::Tilt => Cmd::Pitch(d * PITCH_SPEED),
                             AxisAction::Turn => Cmd::Yaw(-d * YAW_SPEED),
                             AxisAction::Height => Cmd::Height(d * HEIGHT_SPEED),
+                            AxisAction::Focus => Cmd::Focus(d * FOCUS_SPEED),
                             // Down zooms in, as in DeoVR.
                             _ => Cmd::Zoom(-d * 0.8),
                         });
@@ -517,6 +526,29 @@ mod tests {
         };
         let mut c = Controls::default();
         assert_eq!(c.update(&h, Quat::IDENTITY, over, &b), vec![Cmd::Page(-1)]);
+    }
+
+    #[test]
+    fn a_thumbstick_set_to_focus_moves_it_in_proportion() {
+        // Bound to nothing at first.
+        let b = Bindings::default();
+        for hand in [&b.left, &b.right] {
+            let axes = [hand.stick_x, hand.stick_y, hand.grip_x, hand.grip_y];
+            assert!(!axes.contains(&AxisAction::Focus), "{axes:?}");
+        }
+        let mut b = Bindings::default();
+        b.left.stick_y = AxisAction::Focus;
+        let mut h = hands();
+        h[LEFT].stick = Vec2::new(0.0, 1.0);
+        let up = Controls::default().update(&h, Quat::IDENTITY, ctx(true), &b);
+        // Full up for 0.1 s: ln 2 a second, so 2^0.1 farther.
+        let [Cmd::Focus(d)] = up[..] else {
+            panic!("{up:?}");
+        };
+        assert!((d - 0.1 * std::f32::consts::LN_2).abs() < 1e-6, "{d}");
+        h[LEFT].stick = Vec2::new(0.0, -0.8);
+        let down = Controls::default().update(&h, Quat::IDENTITY, ctx(true), &b);
+        assert!(matches!(down[..], [Cmd::Focus(d)] if d < 0.0), "{down:?}");
     }
 
     #[test]

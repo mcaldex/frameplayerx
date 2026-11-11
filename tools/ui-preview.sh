@@ -451,6 +451,11 @@ chroma
 mask
 frames 8
 panel adjust adjust-passthrough
+# The Stereo tab, with stereo focus on.
+view focus "manual"
+adjust 2
+frames 8
+panel adjust adjust-stereo
 # Software decoding falling behind.
 slow-decode
 frames 8

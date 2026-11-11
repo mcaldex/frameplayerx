@@ -39,6 +39,14 @@ pub struct EyeView {
     pub proj: Mat4,
 }
 
+impl EyeView {
+    /// Where the eye is in the world: where its view's inverse puts the
+    /// origin.
+    pub fn position(&self) -> Vec3 {
+        self.view.inverse().transform_point3(Vec3::ZERO)
+    }
+}
+
 /// Where an eye is rendered: an OpenXR swapchain image or an offscreen image.
 #[derive(Clone, Copy, Debug)]
 pub struct EyeTarget {
@@ -1487,8 +1495,7 @@ impl Renderer {
             (Some((_, desc)), _) | (None, Some((_, desc))) if s.has_video => Some(desc),
             _ => self.slot_video(slot_idx).map(|v| v.desc),
         };
-        // An eye is where its view's inverse puts the origin.
-        let at = eyes.map(|e| e.view.inverse().transform_point3(Vec3::ZERO));
+        let at = eyes.map(|e| e.position());
         let mut p = params::build(video, frame_desc.as_ref(), inv, at);
         p.hdr = params::hdr_levels(self.hdr_peak.peak_nits());
         let tp10 = match (self.slots[slot_idx].tp10_bound, self.tp10_eyes.as_mut()) {

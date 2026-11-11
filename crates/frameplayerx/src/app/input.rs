@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::controls::{Cmd, Context};
+use fp_core::view::{FOCUS_DISTANCES, Focus};
 
 impl App {
     /// DeoVR-style controller bindings (see controls.rs).
@@ -155,6 +156,22 @@ impl App {
                     p.settings_dirty = true;
                     let metres = format!("{:+.2}", p.settings.height);
                     self.ui.toast(tr!("toast-height", metres = metres));
+                }
+            }
+            Cmd::Focus(d) => {
+                if let Some(p) = &mut self.playback {
+                    if p.format.is_forward_stereo() {
+                        let s = &mut p.settings;
+                        // Moved while off, it turns on.
+                        s.focus = Focus::Manual;
+                        s.focus_distance = (s.focus_distance * d.exp())
+                            .clamp(*FOCUS_DISTANCES.start(), *FOCUS_DISTANCES.end());
+                        p.settings_dirty = true;
+                        let metres = format!("{:.2}", s.focus_distance);
+                        self.ui.toast(tr!("toast-focus", metres = metres));
+                    } else {
+                        self.ui.toast(tr!("adjust-focus-not-here"));
+                    }
                 }
             }
             Cmd::Next => self.step_queue(1),

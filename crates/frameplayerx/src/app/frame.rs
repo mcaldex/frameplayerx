@@ -145,6 +145,9 @@ impl App {
         if input.recentred {
             self.recenter();
         }
+        if input.eye_spacing.is_some() {
+            self.eye_spacing = input.eye_spacing;
+        }
         let anchor = self.anchor(&input);
         let eye = input.head.map(|h| h.0).unwrap_or(anchor.w_axis.truncate());
         self.update_visibility();
@@ -494,6 +497,7 @@ impl App {
         }
         let devices = self.services.haptic_statuses();
         let passthrough_available = input.passthrough_available;
+        let eye_spacing = self.eye_spacing;
         for idx in [MAIN, BAR, ADJUST, TRACKS, TOAST] {
             if !self.panels[idx].needs_paint() {
                 continue;
@@ -518,6 +522,7 @@ impl App {
                 actions: &mut actions,
                 passthrough_available,
                 devices: &devices,
+                eye_spacing,
             };
             let r = panels[idx].paint(renderer, input.time, |ctx| match idx {
                 MAIN => ui::library::browser(ctx, &mut view),

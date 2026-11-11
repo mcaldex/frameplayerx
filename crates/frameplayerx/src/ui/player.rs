@@ -7,7 +7,9 @@ use crate::playback::Quality;
 use crate::subtitles::Pick;
 use egui::{Align, Color32, Layout, RichText, Sense, Vec2};
 use fp_core::format::{Projection, StereoLayout, VideoFormat};
-use fp_core::view::ViewSettings;
+use fp_core::view::{
+    FOCUS_DISTANCE, FOCUS_DISTANCES, Focus, LENS_SPACING, LENS_SPACINGS, ViewSettings,
+};
 use fp_media::PlayerState;
 
 /// Width of the projection names beside the format list's rows.
@@ -1160,7 +1162,15 @@ pub fn adjust_panel(ctx: &egui::Context, v: &mut View) {
                             || (flat && (pb.settings.yaw, pb.settings.pitch) != (0.0, 0.0));
                         position_tab(ui, &mut pb.settings, flat, moved, v.actions);
                     }
-                    2 => stereo_tab(ui, &mut pb.settings, true),
+                    2 => stereo_tab(
+                        ui,
+                        &mut pb.settings,
+                        StereoContext {
+                            format: Some(pb.format),
+                            eye_spacing: v.eye_spacing,
+                            subtitles: true,
+                        },
+                    ),
                     3 => picture_tab(ui, &mut pb.settings),
                     4 => {
                         widgets::section_label(ui, tr!("settings-passthrough-videos"));
@@ -1556,8 +1566,20 @@ fn position_tab(
 
 /// Depth and eye alignment, with subtitle depth unless `subtitles` is off
 /// (Settings has it with the subtitles).
-pub(super) fn stereo_tab(ui: &mut egui::Ui, s: &mut ViewSettings, subtitles: bool) {
+/// What the Stereo tab shows beside a video's adjustments.
+pub(super) struct StereoContext {
+    /// The video's format; `None` in Settings, where they are where videos
+    /// start.
+    pub format: Option<VideoFormat>,
+    /// The viewer's eye spacing, metres, once the headset has said.
+    pub eye_spacing: Option<f32>,
+    /// Subtitle depth among them (Settings has it with the subtitles).
+    pub subtitles: bool,
+}
+
+pub(super) fn stereo_tab(ui: &mut egui::Ui, s: &mut ViewSettings, c: StereoContext) {
     let d = ViewSettings::default();
+    let subtitles = c.subtitles;
     widgets::rows(ui, |r| {
         r.slider(
             tr!("adjust-depth"),
@@ -1597,6 +1619,73 @@ pub(super) fn stereo_tab(ui: &mut egui::Ui, s: &mut ViewSettings, subtitles: boo
                 1,
             );
         }
+    });
+    focus_rows(ui, s, &c);
+}
+
+/// Stereo focus: its mode, then while it is on the distance and the
+/// camera's lens spacing. Dimmed, with why, for a video it can't redraw.
+fn focus_rows(ui: &mut egui::Ui, s: &mut ViewSettings, c: &StereoContext) {
+    let applies = c.format.is_none_or(|f| f.is_forward_stereo());
+    if !applies {
+        ui.label(RichText::new(tr!("adjust-focus-not-here")).color(theme::TEXT_2));
+    }
+    ui.add_enabled_ui(applies, |ui| {
+        widgets::rows(ui, |r| {
+            r.row(tr!("adjust-focus"), Some(tr!("adjust-focus-desc")), |ui| {
+                // Right to left: the first choice last.
+                for (mode, label) in [
+                    (Focus::Manual, tr!("adjust-focus-manual")),
+                    (Focus::Off, tr!("adjust-focus-off")),
+                ] {
+                    if widgets::chip(ui, label, s.focus == mode).clicked() {
+                        s.focus = mode;
+                    }
+                }
+            });
+            if s.focus == Focus::Off {
+                return;
+            }
+            r.row(
+                tr!("adjust-focus-distance"),
+                Some(tr!("adjust-focus-distance-desc")),
+                |ui| {
+                    widgets::slider_control_scaled(
+                        ui,
+                        &mut s.focus_distance,
+                        FOCUS_DISTANCES,
+                        FOCUS_DISTANCE,
+                        " m",
+                        2,
+                        widgets::Scale::Proportional,
+                    )
+                },
+            );
+            r.row_with(
+                tr!("adjust-lens-spacing"),
+                Some(tr!("adjust-lens-spacing-desc")),
+                |ui| {
+                    if let Some(m) = c.eye_spacing {
+                        let mm = format!("{:.1}", m * 1000.0);
+                        ui.label(
+                            RichText::new(tr!("adjust-your-eyes", mm = mm))
+                                .font(theme::font(Weight::Medium, 15.0))
+                                .color(theme::TEXT),
+                        );
+                    }
+                },
+                |ui| {
+                    widgets::slider_control(
+                        ui,
+                        &mut s.lens_spacing,
+                        LENS_SPACINGS,
+                        LENS_SPACING,
+                        " mm",
+                        0,
+                    )
+                },
+            );
+        });
     });
 }
 

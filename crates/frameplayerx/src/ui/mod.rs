@@ -1010,6 +1010,9 @@ pub struct View<'a> {
     pub actions: &'a mut Vec<Action>,
     pub passthrough_available: bool,
     pub devices: &'a [fp_haptics::DeviceStatus],
+    /// How far apart the viewer's eyes are, metres, once the headset has
+    /// said ([`crate::app::FrameInput::eye_spacing`]).
+    pub eye_spacing: Option<f32>,
 }
 
 #[cfg(test)]

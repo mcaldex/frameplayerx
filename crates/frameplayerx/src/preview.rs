@@ -89,6 +89,14 @@ impl Sim {
         self.gpu_ms.push(self.renderer.gpu_times());
         let hands = [Hand::default(), self.hand];
         let head = Some((self.head_pos(), self.head));
+        // The eyes first, as a headset gives them before the frame.
+        let proj = projection(Fov::symmetric(100.0), 0.05, 200.0);
+        let right = self.head * Vec3::X * (IPD / 2.0);
+        let ev = |p: Vec3| EyeView {
+            view: view(p, self.head),
+            proj,
+        };
+        let eyes = [ev(self.head_pos() - right), ev(self.head_pos() + right)];
         let out = self.app.frame(
             &mut self.renderer,
             FrameInput {
@@ -101,19 +109,13 @@ impl Sim {
                 frame_ms: None,
                 display_hz: None,
                 recentred: false,
+                eye_spacing: Some(crate::app::eye_spacing(&eyes)),
             },
         );
         if let Err(e) = self.renderer.set_video(out.frame.as_ref()) {
             log::warn!("set_video: {e}");
             let _ = self.renderer.set_video(None);
         }
-        let proj = projection(Fov::symmetric(100.0), 0.05, 200.0);
-        let right = self.head * Vec3::X * (IPD / 2.0);
-        let ev = |p: Vec3| EyeView {
-            view: view(p, self.head),
-            proj,
-        };
-        let eyes = [ev(self.head_pos() - right), ev(self.head_pos() + right)];
         self.renderer
             .set_gaze(self.gaze.map(|g| self.head * g * Vec3::NEG_Z));
         self.renderer

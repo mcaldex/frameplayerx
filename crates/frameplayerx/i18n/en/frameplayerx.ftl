@@ -418,6 +418,23 @@ adjust-vertical-align = Vertical align
 adjust-rotation-align = Rotation align
 adjust-swap-eyes = Swap eyes
 adjust-swap-eyes-desc = For left/right swapped files.
+# A row on the adjust panel's Stereo tab and in Settings › Picture: redraws a 3D video for where the viewer's eyes are.
+adjust-focus = Stereo focus
+adjust-focus-desc = Redraws the 3D for where your eyes are, so it holds together when you tilt or turn your head.
+# Short: a chip, stereo focus off.
+adjust-focus-off = Off
+# Short: a chip, stereo focus at a distance set by hand.
+adjust-focus-manual = Manual
+# Above the dimmed stereo focus rows, and as a message on moving its thumbstick, for a video it can't redraw.
+adjust-focus-not-here = Stereo focus is for 3D 180° and fisheye videos.
+# A slider row under Stereo focus.
+adjust-focus-distance = Focus distance
+adjust-focus-distance-desc = What is this far from the camera looks right however you turn your head.
+# A slider row under Stereo focus: the lens spacing of the camera that filmed the video.
+adjust-lens-spacing = Camera lens spacing
+adjust-lens-spacing-desc = Of the camera that filmed this video, not your eyes. Most are 60–65 mm.
+# Under Camera lens spacing: the viewer's own eye spacing as the headset measures it, like 63.4.
+adjust-your-eyes = Your eyes: { $mm } mm, from the headset
 adjust-format-3d-blu-ray = A 3D Blu-ray's two eyes are decoded together, so it plays in the format the disc gives.
 adjust-brightness = Brightness
 adjust-contrast = Contrast
@@ -948,10 +965,13 @@ action-seek = Seek
 action-tilt = Tilt the picture
 action-turn = Turn the picture
 action-height = Raise or lower yourself
+action-focus = Stereo focus distance
 # Very short: a label beside the controller picture.
 action-short-tilt = Tilt
 # Very short: a label beside the controller picture.
 action-short-turn = Turn
+# Very short: a label beside the controller picture, for stereo focus's distance.
+action-short-focus = Focus
 # A controller button: use Steam's word for the D-pad.
 button-dpad-down = D-pad down
 button-dpad-right = D-pad right
@@ -1015,6 +1035,8 @@ library-unreadable = Could not read the file: { $error }
 library-missing = The file is missing (drive unplugged?)
 toast-volume = Volume { $percent }%
 toast-height = Height { $metres } m
+# A message over the video: stereo focus's distance, like 1.25.
+toast-focus = Focus { $metres } m
 # Which video in the list is playing.
 toast-queue-position = { $at } of { $of }
 toast-subtitles = Subtitles: { $title }

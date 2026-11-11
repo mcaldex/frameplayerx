@@ -524,6 +524,7 @@ fn run_xr(args: &Args) -> Result<(), Error> {
                     .filter(|&ns| ns > 0)
                     .map(|ns| 1e9 / ns as f32),
                 recentred,
+                eye_spacing: frame.eyes.as_ref().map(app::eye_spacing),
             },
         );
         frames += 1;

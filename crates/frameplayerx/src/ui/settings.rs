@@ -559,7 +559,15 @@ fn picture(ui: &mut egui::Ui, v: &mut View) {
     heading(ui, tr!("settings-all-videos"));
     super::player::picture_tab(ui, d);
     heading(ui, tr!("settings-3d-videos"));
-    super::player::stereo_tab(ui, d, false);
+    super::player::stereo_tab(
+        ui,
+        d,
+        super::player::StereoContext {
+            format: None,
+            eye_spacing: v.eye_spacing,
+            subtitles: false,
+        },
+    );
 }
 
 fn sound(ui: &mut egui::Ui, v: &mut View) {
