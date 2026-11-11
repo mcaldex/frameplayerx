@@ -1,7 +1,7 @@
 //! HDR on the SDR screen: the BT.2390 tone curve, gamut compression from
 //! BT.2020 into BT.709, and each scene's peak measured from its frames.
 //!
-//! The scene shader runs the same maths (shaders/hdr.wgsl and scene.wgsl);
+//! The scene shader runs the same maths (shaders/hdr.wgsl and picture.wgsl);
 //! these copies are what the tests check it against.
 
 /// The screen's white in nits: SDR reference white (BT.2408). HDR is mapped
