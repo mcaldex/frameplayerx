@@ -13,3 +13,9 @@ workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+
+[features]
+# The depth measurement's CPU reference sampler and synthetic ray-traced
+# 3D videos, for other crates' tests: turned on only by their
+# dev-dependencies, never in a shipped build.
+test-support = []
