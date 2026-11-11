@@ -183,6 +183,20 @@ copied to host memory and read once the slot's fence has signalled, two
 frames on, without waiting. `fp_core::depth` matches the grids; its CPU
 reference sampler is what the pass is tested against.
 
+The open video's `AutoFocus` (`frameplayerx/src/autofocus.rs`, in its
+`Playback`) runs it from `App::video()`: each frame it ticks
+`fp_core::autofocus::Controller` with the time and the playback
+position, takes in a finished match, hands grids the renderer has
+finished to its worker thread (started when first needed, ended with
+the video) and, when both are free, plans the next measurement along
+where the head faces (`params::look_in_video`) and asks the renderer for
+it. The matcher, with what it learned of the rig, goes to the worker
+with each job and comes back with the result. The render thread only
+tries the worker's channel. The distance reached goes into that frame's
+`VideoParams::auto_focus` and nowhere else, so it is never saved, and a
+line every 10 s in the log counts the measurements and their match
+times.
+
 **Sources and browsing.** Every source implements one `Source` trait
 (`list`, `open`, `details`). Each kind gets its own browser in `ui/`:
 `local.rs`, `folders.rs`, `catalog.rs` and `feeds.rs`, built from the

@@ -45,3 +45,4 @@ serde_json.workspace = true
 [dev-dependencies]
 # Checks the translations against the English messages.
 fluent-syntax = "0.12"
+fp-core = { workspace = true, features = ["test-support"] }

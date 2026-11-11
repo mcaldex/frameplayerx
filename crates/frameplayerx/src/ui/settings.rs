@@ -566,6 +566,7 @@ fn picture(ui: &mut egui::Ui, v: &mut View) {
             format: None,
             eye_spacing: v.eye_spacing,
             subtitles: false,
+            auto: None,
         },
     );
 }

@@ -90,6 +90,9 @@ pub struct VideoParams {
     /// Width of a video pixel relative to its height: anamorphic video is
     /// shown this much wider than it is stored.
     pub pixel_aspect: f32,
+    /// Where automatic stereo focus draws this frame, metres; the video's
+    /// own focus distance until it says. Never written to its adjustments.
+    pub auto_focus: Option<f32>,
 }
 
 impl Default for VideoParams {
@@ -102,6 +105,7 @@ impl Default for VideoParams {
             anchor: Quat::IDENTITY,
             rotation: 0,
             pixel_aspect: 1.0,
+            auto_focus: None,
         }
     }
 }
@@ -252,6 +256,7 @@ fn focus(video: &VideoParams, eyes: [Vec3; 2]) -> [Vec4; 2] {
     let distance = match s.focus {
         Focus::Off => return [Vec4::ZERO; 2],
         Focus::Manual => s.focus_distance,
+        Focus::Auto => video.auto_focus.unwrap_or(s.focus_distance),
     };
     if !video.format.is_forward_stereo() || !distance.is_finite() {
         return [Vec4::ZERO; 2];

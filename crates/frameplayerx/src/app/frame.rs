@@ -2,6 +2,9 @@
 //! draws.
 
 use super::*;
+use crate::autofocus::AutoFocus;
+use fp_core::autofocus::Follow;
+use fp_core::view::Focus;
 
 impl App {
     /// Forward becomes where the head faces, and the browse panel comes
@@ -603,6 +606,7 @@ impl App {
         } else {
             self.subs.visible = false;
         }
+        self.auto_focus(renderer, input, &mut video, frame.is_some());
         // Once the video plays, so the second read doesn't hold up its start.
         if frame.is_some()
             && let Some(p) = &mut self.playback
@@ -612,6 +616,47 @@ impl App {
             p.backdrop.start(self.services.opener.clone(), duration);
         }
         (frame, video, passthrough)
+    }
+
+    /// Automatic stereo focus: while it is on for the open video, and the
+    /// video is one it applies to, it measures and sets where this frame
+    /// is drawn; otherwise it stops, to start again from the video's own
+    /// distance.
+    fn auto_focus(
+        &mut self,
+        renderer: &mut Renderer,
+        input: &FrameInput,
+        video: &mut VideoParams,
+        shown: bool,
+    ) {
+        let Some(p) = &mut self.playback else {
+            return;
+        };
+        let s = video.settings;
+        if s.focus != Focus::Auto || !video.format.is_forward_stereo() {
+            if let Some(mut a) = p.autofocus.take() {
+                a.stop(renderer);
+            }
+            return;
+        }
+        let a = p
+            .autofocus
+            .get_or_insert_with(|| AutoFocus::new(s.focus_distance));
+        // Where the head faces, in the world.
+        let look = input
+            .head
+            .map_or(video.anchor * Vec3::NEG_Z, |(_, rot)| rot * Vec3::NEG_Z);
+        let follow = Follow {
+            speed: s.focus_speed,
+            nearest: s.focus_nearest,
+            farthest: s.focus_farthest,
+        };
+        let position = p.player.position();
+        video.auto_focus =
+            Some(a.frame(renderer, input.time, position, video, look, shown, &follow));
+        if a.take_status_change() {
+            self.panels[ADJUST].request_repaint();
+        }
     }
 
     /// What the compositor draws: panels back to front, then pointers,

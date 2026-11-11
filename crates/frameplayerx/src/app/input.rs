@@ -161,8 +161,16 @@ impl App {
             Cmd::Focus(d) => {
                 if let Some(p) = &mut self.playback {
                     if p.format.is_forward_stereo() {
+                        let auto = p
+                            .autofocus
+                            .as_ref()
+                            .map(crate::autofocus::AutoFocus::distance);
                         let s = &mut p.settings;
-                        // Moved while off, it turns on.
+                        // Moved while automatic, it holds where that was;
+                        // moved while off, it turns on.
+                        if let (Focus::Auto, Some(at)) = (s.focus, auto) {
+                            s.focus_distance = at;
+                        }
                         s.focus = Focus::Manual;
                         s.focus_distance = (s.focus_distance * d.exp())
                             .clamp(*FOCUS_DISTANCES.start(), *FOCUS_DISTANCES.end());

@@ -10,6 +10,7 @@
 #[macro_use]
 mod i18n;
 mod app;
+mod autofocus;
 mod bindings;
 mod controls;
 mod crash;
@@ -610,6 +611,14 @@ fn run_xr(args: &Args) -> Result<(), Error> {
                 frame_ms.len()
             );
             if let Some(line) = gpu_ms.take_line() {
+                log::info!("{line}");
+            }
+            if let Some(line) = app
+                .playback
+                .as_mut()
+                .and_then(|p| p.autofocus.as_mut())
+                .and_then(autofocus::AutoFocus::take_log_line)
+            {
                 log::info!("{line}");
             }
             if !gaze_deg.is_empty() {
