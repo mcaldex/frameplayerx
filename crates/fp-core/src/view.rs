@@ -6,6 +6,45 @@ use serde::{Deserialize, Serialize};
 /// The colour around a flat screen to start with, a near-black grey.
 pub const BACKGROUND: [f32; 3] = [0.086, 0.086, 0.11];
 
+/// The focus distances offered, metres: an interface range we chose. At
+/// 0.3 m a point is 12.4° of disparity apart in the two pictures of a
+/// 65 mm camera, about as near as anything is filmed; at 20 m it is 0.19°,
+/// about four pixels of an 8K picture, hard to tell from infinitely far.
+pub const FOCUS_DISTANCES: std::ops::RangeInclusive<f32> = 0.3..=20.0;
+
+/// The focus distance a video starts with, metres. Advice for filming
+/// 180° video puts people 1 to 2 m from the camera, where they look
+/// present and are comfortable to look at; 1.5 m sits between that and
+/// the background behind them, which is what most of the picture is, so
+/// neither is far off when the head turns before a distance is set.
+/// Nearer, the background breaks up sooner as the head tilts; farther, the
+/// people do.
+pub const FOCUS_DISTANCE: f32 = 1.5;
+
+/// The lens spacings offered, millimetres: an interface range we chose,
+/// well around the 60 to 65 mm of most 180° 3D cameras.
+pub const LENS_SPACINGS: std::ops::RangeInclusive<f32> = 30.0..=120.0;
+
+/// The lens spacing a video starts with, millimetres: the middle of most
+/// 180° 3D cameras' 60 to 65 mm, and the average adult's eye spacing, so
+/// for most videos and viewers, looking straight ahead, turning stereo
+/// focus on changes nothing.
+pub const LENS_SPACING: f32 = 63.0;
+
+/// Stereo focus: whether a 3D 180° or fisheye video is redrawn for where
+/// the viewer's eyes are ([`VideoFormat::is_forward_stereo`]). Without it
+/// each eye is shown its camera's picture as if infinitely far away, which
+/// is right only while the eyes are where the cameras were: head level,
+/// facing the picture's front, eyes as far apart as the lenses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Focus {
+    #[default]
+    Off,
+    /// Exact for things [`ViewSettings::focus_distance`] from the camera.
+    Manual,
+}
+
 /// Everything the viewer can adjust about how a video is shown. Defaults are
 /// neutral. Persisted per video by the library and applied by the renderer.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -70,6 +109,15 @@ pub struct ViewSettings {
     /// the choice existed: those keep their own if they had the key on.
     #[serde(default)]
     pub key_own: Option<bool>,
+    /// Stereo focus: each eye's picture is treated as painted on a sphere
+    /// round its camera, `focus_distance` metres in radius, and drawn as
+    /// that eye sees it from where it is. Things that far from the camera
+    /// are where real ones would be, whatever the head does.
+    pub focus: Focus,
+    pub focus_distance: f32,
+    /// How far apart the two lenses of the camera that filmed the video
+    /// were, millimetres: a property of the video, not of the viewer.
+    pub lens_spacing: f32,
 }
 
 impl Default for ViewSettings {
@@ -104,6 +152,9 @@ impl Default for ViewSettings {
             key_smoothness: 0.08,
             key_spill: 0.1,
             key_own: Some(false),
+            focus: Focus::Off,
+            focus_distance: FOCUS_DISTANCE,
+            lens_spacing: LENS_SPACING,
         }
     }
 }
@@ -156,6 +207,14 @@ impl ViewSettings {
             key_smoothness: l(self.key_smoothness, other.key_smoothness),
             key_spill: l(self.key_spill, other.key_spill),
             key_own: if t < 0.5 { self.key_own } else { other.key_own },
+            focus: if t < 0.5 { self.focus } else { other.focus },
+            focus_distance: lerp_distance(self.focus_distance, other.focus_distance, t),
+            // A spacing between two cameras' means nothing.
+            lens_spacing: if t < 0.5 {
+                self.lens_spacing
+            } else {
+                other.lens_spacing
+            },
         }
     }
 
@@ -193,6 +252,16 @@ impl ViewSettings {
         }
         self
     }
+}
+
+/// `a` to `b` metres at `t` (0..1), in even steps of how far the eyes
+/// turn in to look at it (1/distance), not of metres: from 0.5 m to 20 m,
+/// halfway is 0.98 m. Distances under [`FOCUS_DISTANCES`]' nearest count as
+/// it, so a zero can't divide.
+pub fn lerp_distance(a: f32, b: f32, t: f32) -> f32 {
+    let near = *FOCUS_DISTANCES.start();
+    let (ia, ib) = (1.0 / a.max(near), 1.0 / b.max(near));
+    1.0 / (ia + (ib - ia) * t.clamp(0.0, 1.0))
 }
 
 /// A named set of adjustments any video can take on: everything saved for a
@@ -338,6 +407,67 @@ mod tests {
         k.insert(10.0, ViewSettings { zoom: 3.0, ..base });
         assert_eq!(k.frames.len(), 2);
         assert_eq!(k.at(10.0, &base).zoom, 3.0);
+    }
+
+    #[test]
+    fn stereo_focus_keyframes_glide_in_how_far_the_eyes_turn() {
+        let near = ViewSettings {
+            focus: Focus::Manual,
+            focus_distance: 0.5,
+            lens_spacing: 60.0,
+            ..ViewSettings::default()
+        };
+        let far = ViewSettings {
+            focus: Focus::Off,
+            focus_distance: 20.0,
+            lens_spacing: 65.0,
+            ..ViewSettings::default()
+        };
+        let mid = near.lerp(&far, 0.5);
+        // Halfway in 1/distance: 1 / ((2 + 0.05) / 2).
+        assert!((mid.focus_distance - 1.0 / 1.025).abs() < 1e-5);
+        assert!((near.lerp(&far, 0.25).focus_distance - 1.0 / 1.5125).abs() < 1e-5);
+        assert_eq!(near.lerp(&far, 0.0).focus_distance, 0.5);
+        assert!((near.lerp(&far, 1.0).focus_distance - 20.0).abs() < 1e-3);
+        // The mode and the lens spacing switch halfway, never in between.
+        for t in [0.0, 0.1, 0.49] {
+            let s = near.lerp(&far, t);
+            assert_eq!((s.focus, s.lens_spacing), (Focus::Manual, 60.0), "{t}");
+        }
+        for t in [0.5, 0.9, 1.0] {
+            let s = near.lerp(&far, t);
+            assert_eq!((s.focus, s.lens_spacing), (Focus::Off, 65.0), "{t}");
+        }
+        // A zero or broken distance can't divide by zero.
+        let zero = ViewSettings {
+            focus_distance: 0.0,
+            ..near
+        };
+        let d = zero.lerp(&far, 0.0).focus_distance;
+        assert_eq!(d, *FOCUS_DISTANCES.start());
+        let nan = ViewSettings {
+            focus_distance: f32::NAN,
+            ..near
+        };
+        assert!(nan.lerp(&far, 0.5).focus_distance.is_finite());
+    }
+
+    #[test]
+    fn stereo_focus_loads_off_from_old_settings_and_round_trips() {
+        let old: ViewSettings = serde_json::from_str(r#"{"zoom":1.2,"swap_eyes":true}"#).unwrap();
+        assert_eq!(
+            (old.focus, old.focus_distance, old.lens_spacing),
+            (Focus::Off, FOCUS_DISTANCE, LENS_SPACING)
+        );
+        let on = ViewSettings {
+            focus: Focus::Manual,
+            focus_distance: 0.8,
+            lens_spacing: 60.0,
+            ..ViewSettings::default()
+        };
+        let json = serde_json::to_string(&on).unwrap();
+        assert!(json.contains(r#""focus":"manual""#), "{json}");
+        assert_eq!(serde_json::from_str::<ViewSettings>(&json).unwrap(), on);
     }
 
     #[test]

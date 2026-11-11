@@ -1487,7 +1487,9 @@ impl Renderer {
             (Some((_, desc)), _) | (None, Some((_, desc))) if s.has_video => Some(desc),
             _ => self.slot_video(slot_idx).map(|v| v.desc),
         };
-        let mut p = params::build(video, frame_desc.as_ref(), inv);
+        // An eye is where its view's inverse puts the origin.
+        let at = eyes.map(|e| e.view.inverse().transform_point3(Vec3::ZERO));
+        let mut p = params::build(video, frame_desc.as_ref(), inv, at);
         p.hdr = params::hdr_levels(self.hdr_peak.peak_nits());
         let tp10 = match (self.slots[slot_idx].tp10_bound, self.tp10_eyes.as_mut()) {
             (Some((buffer, desc)), Some(t)) => self.imports.tp10_picture(buffer).map(|pic| {

@@ -58,6 +58,9 @@ struct Params {
     // chroma: x first-row step, y rows, z the plane's rows, w count
     tp10: vec4<f32>,
     tp10_uv: vec4<f32>,
+    // Stereo focus, per eye: xyz the eye's offset from its own camera in
+    // the video's axes, metres; w the distance it is exact at, metres (0 off)
+    focus: array<vec4<f32>, 2>,
 };
 
 struct PushConstants {
@@ -333,6 +336,13 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         d = normalize((params.correction * vec4<f32>(d, 0.0)).xyz);
         d = off_centre(d, (params.correction * vec4<f32>(params.viewer.xyz, 0.0)).xyz,
                        params.viewer.w);
+        // Stereo focus: each eye's picture as if painted on a sphere round
+        // its own camera, seen from where the eye is. After the height and
+        // forward, which move the whole scene, not by the focus distance.
+        let focus = params.focus[eye];
+        if (focus.w > 0.0) {
+            d = off_centre(d, focus.xyz, focus.w);
+        }
         d = zoom_dir(d, params.proj.z);
         if (kind == 1u) {
             uv = equirect_uv(d, params.proj.x, params.proj.y);
