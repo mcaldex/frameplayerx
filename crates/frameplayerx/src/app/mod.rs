@@ -263,6 +263,8 @@ pub struct App {
     check_dot: Option<Vec3>,
     /// The time of the frame under way ([`FrameInput::time`]).
     now: f64,
+    /// Where stereo focus draws the video this frame, metres, if it does.
+    focus_drawn: Option<f32>,
     /// The gaze dot (Settings › General › Eye tracking).
     dot: Panel,
     quit: bool,
@@ -398,6 +400,7 @@ impl App {
             check: None,
             check_dot: None,
             now: 0.0,
+            focus_drawn: None,
             dot: panel([ui::gaze::DOT_PX; 2], 0.1, 1.0),
             quit: false,
             restart: false,

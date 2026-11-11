@@ -56,6 +56,9 @@ pub const MAX_STEP: f32 = 0.1;
 /// itself: an average over about the last three, steady against the
 /// matcher's noise while following a subject moving slowly.
 const REFINE: f32 = 0.3;
+/// The same aimed by the eyes, which pursue a moving thing: over about the
+/// last one and a half, following it twice as closely.
+const REFINE_EYES: f32 = 0.6;
 
 /// How old a side's measurement may be and still bear out (or speak
 /// against) a change, seconds: a few cycles of measurements.
@@ -97,6 +100,8 @@ pub struct Follow {
     /// limit: it follows there, as far as that end.
     pub nearest: f32,
     pub farthest: f32,
+    /// The eyes aim it (not the head): small changes are followed faster.
+    pub eyes: bool,
 }
 
 impl Default for Follow {
@@ -105,6 +110,7 @@ impl Default for Follow {
             speed: 1.0,
             nearest: *FOCUS_DISTANCES.start(),
             farthest: *FOCUS_DISTANCES.end(),
+            eyes: false,
         }
     }
 }
@@ -349,7 +355,8 @@ impl Controller {
             }
             // Agreeing with the focus: follow it closely.
             Some(a) if (n - a).abs() <= AGREE => {
-                self.accepted = Some(a + (n - a) * REFINE);
+                let refine = if follow.eyes { REFINE_EYES } else { REFINE };
+                self.accepted = Some(a + (n - a) * refine);
                 self.activity = Activity::Following;
             }
             // Something else at the aim: changed only if the aim agrees

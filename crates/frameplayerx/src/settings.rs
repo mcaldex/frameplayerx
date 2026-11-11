@@ -121,6 +121,9 @@ pub struct Settings {
     /// The last gaze check's correction for this viewer's eyes, and how far
     /// off the gaze was before and after it.
     pub gaze_check: Option<crate::gaze_check::Fit>,
+    /// What automatic stereo focus aims with where the headset tracks the
+    /// eyes.
+    pub focus_aim: FocusAim,
     /// What the controller buttons and thumbsticks do.
     pub controls: crate::bindings::Bindings,
     /// Where the library and adjust panels were moved to: yaw and pitch in
@@ -152,6 +155,17 @@ pub struct PanelOffsets {
 pub const FISHEYE_PRESETS: [f32; 4] = [180.0, 190.0, 200.0, 220.0];
 /// As many fisheye presets as fit on one line.
 pub const MAX_FISHEYE_PRESETS: usize = 8;
+/// What automatic stereo focus aims with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FocusAim {
+    /// Where the eyes look, where the headset tracks them.
+    #[default]
+    Eyes,
+    /// The middle of the view.
+    Head,
+}
+
 /// The angle Fisheye starts at to begin with, a plain fisheye lens's.
 pub const FISHEYE_START: f32 = 180.0;
 
@@ -271,6 +285,7 @@ impl Default for Settings {
             perf_overlay: false,
             gaze_dot: false,
             gaze_check: None,
+            focus_aim: FocusAim::Eyes,
             controls: crate::bindings::Bindings::default(),
             panel_offsets: PanelOffsets::default(),
             browse_sort: fp_sources::EntrySort::default(),
@@ -441,6 +456,7 @@ mod tests {
     fn eye_tracking_settings_load_off_from_old_files_and_round_trip() {
         let old: Settings = serde_json::from_str(r#"{"volume":0.5}"#).unwrap();
         assert!(!old.gaze_dot && old.gaze_check.is_none());
+        assert_eq!(old.focus_aim, FocusAim::Eyes);
         let fit = crate::gaze_check::Fit {
             correction: crate::gaze::Correction {
                 offset: [0.03, -0.01],
@@ -452,11 +468,13 @@ mod tests {
         let on = Settings {
             gaze_dot: true,
             gaze_check: Some(fit),
+            focus_aim: FocusAim::Head,
             ..Settings::default()
         };
         let back: Settings = serde_json::from_str(&serde_json::to_string(&on).unwrap()).unwrap();
         assert!(back.gaze_dot);
         assert_eq!(back.gaze_check, Some(fit));
+        assert_eq!(back.focus_aim, FocusAim::Head);
     }
 
     #[test]

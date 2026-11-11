@@ -189,8 +189,11 @@ The open video's `AutoFocus` (`frameplayerx/src/autofocus.rs`, in its
 position, takes in a finished match, hands grids the renderer has
 finished to its worker thread (started when first needed, ended with
 the video) and, when both are free, plans the next measurement along
-where the head faces (`params::look_in_video`) and asks the renderer for
-it. The matcher, with what it learned of the rig, goes to the worker
+the aim and asks the renderer for it. The aim is where the eyes look,
+from `gaze::GazeFilter` (the raw gaze smoothed in head axes, held
+through blinks, the head's forward when lost, corrected by the gaze
+check), unless the viewer chose the head or there is no eye tracking;
+`params::look_in_video` turns it into the video's axes. The matcher, with what it learned of the rig, goes to the worker
 with each job and comes back with the result. The render thread only
 tries the worker's channel. The distance reached goes into that frame's
 `VideoParams::auto_focus` and nowhere else, so it is never saved, and a

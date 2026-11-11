@@ -556,7 +556,11 @@ fn video_position(ui: &mut egui::Ui, v: &mut View) {
 /// How videos look until they are adjusted: the picture, and a 3D video's
 /// depth and eye alignment.
 fn picture(ui: &mut egui::Ui, v: &mut View) {
-    let d = &mut v.settings.default_view;
+    let tracks_eyes = v
+        .gaze
+        .is_some_and(|g| g != crate::gaze::GazeStatus::NoEyeTracking);
+    let s = &mut *v.settings;
+    let d = &mut s.default_view;
     note(ui, tr!("settings-picture-desc"));
     heading(ui, tr!("settings-all-videos"));
     super::player::picture_tab(ui, d);
@@ -569,6 +573,7 @@ fn picture(ui: &mut egui::Ui, v: &mut View) {
             eye_spacing: v.eye_spacing,
             subtitles: false,
             auto: None,
+            aim_with: tracks_eyes.then_some(&mut s.focus_aim),
         },
     );
 }
