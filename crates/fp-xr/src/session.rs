@@ -99,7 +99,11 @@ impl XrSession {
     /// Creates the session on `gpu` (which must have been created with
     /// `ctx.creator()`), with eye pictures `eye_resolution` pixels across.
     pub fn new(ctx: Arc<XrContext>, gpu: Arc<Gpu>, eye_resolution: u32) -> Result<XrSession> {
-        let mut actions = Actions::new(&ctx.instance, ctx.enabled.ext_eye_gaze_interaction)?;
+        let mut actions = Actions::new(
+            &ctx.instance,
+            ctx.enabled.ext_eye_gaze_interaction,
+            ctx.eye_tracking,
+        )?;
         let info = xr::vulkan::SessionCreateInfo {
             instance: gpu.instance.handle().as_raw() as _,
             physical_device: gpu.pdev.as_raw() as _,

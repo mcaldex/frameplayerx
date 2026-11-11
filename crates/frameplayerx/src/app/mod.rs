@@ -55,6 +55,10 @@ pub struct FrameInput {
     /// How far apart the eyes drawn this frame are, metres: what stereo
     /// focus corrects for. `None` until the headset gives eye views.
     pub eye_spacing: Option<f32>,
+    /// Whether the headset can track the eyes, and where they look this
+    /// frame if the tracker delivered (as foveated rendering gets it).
+    pub eye_tracking: bool,
+    pub gaze: Option<crate::gaze::Reading>,
 }
 
 /// Stereo focus for the preview's `status`: `focus=off`, or the mode,
@@ -250,6 +254,9 @@ pub struct App {
     feed_busy: usize,
     /// The last [`FrameInput::eye_spacing`] the headset gave.
     eye_spacing: Option<f32>,
+    /// The gaze made steady enough to aim with, and its aim this frame.
+    gaze: crate::gaze::GazeFilter,
+    pub aim: Option<crate::gaze::Aim>,
     quit: bool,
     restart: bool,
 }
@@ -377,6 +384,8 @@ impl App {
             feed_queue: Default::default(),
             feed_busy: 0,
             eye_spacing: None,
+            gaze: Default::default(),
+            aim: None,
             quit: false,
             restart: false,
         };
@@ -419,7 +428,7 @@ impl App {
             "ui_visible={} browser={} adjust={} tracks={}",
             self.ui_visible, self.show_browser, self.ui.adjust_open, self.ui.tracks_open
         );
-        match &self.playback {
+        let line = match &self.playback {
             Some(p) => format!(
                 "{} playing={} state={:?} pos={:.1}/{:.1} vol={:.2} zoom={:.2} yaw={:.1} pitch={:.1} \
                  queue={}/{} paused={} {} {ui}",
@@ -438,6 +447,10 @@ impl App {
                 focus_status(p),
             ),
             None => format!("no video, screen={:?} {ui}", self.ui.screen),
+        };
+        match self.aim {
+            Some(a) => format!("{line} gaze={:?}", a.status),
+            None => line,
         }
     }
 

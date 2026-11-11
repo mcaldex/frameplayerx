@@ -44,6 +44,24 @@ pub struct InputState {
     /// Where the eyes look: origin and orientation (-Z forward) in the play
     /// space, while eye tracking is on.
     pub gaze: Option<(Vec3, Quat)>,
+    /// Whether the headset can track the eyes: the runtime offers eye gaze
+    /// and the system says it supports it, or a gaze has come. With it,
+    /// `gaze` being `None` means the tracker isn't delivering (not allowed
+    /// for apps, switched off, the eyes not found, a blink).
+    pub eye_tracking: bool,
+    /// When the eyes were sampled for `gaze`, where the runtime says
+    /// (`XrEyeGazeSampleTimeEXT`).
+    pub gaze_sample: Option<GazeSample>,
+}
+
+/// When a gaze was sampled.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GazeSample {
+    /// Seconds on the runtime's clock: the same for a sample handed back
+    /// twice.
+    pub time: f64,
+    /// How long before the frame's predicted display time, seconds.
+    pub age: f32,
 }
 
 /// An interaction profile the runtime accepted bindings for.
@@ -76,6 +94,8 @@ pub(crate) struct Actions {
     gaze_space: Option<xr::Space>,
     /// Whether eye tracking was on, for logging when that changes.
     gaze_on: std::cell::Cell<Option<bool>>,
+    /// The system says it tracks the eyes, or a gaze has come.
+    tracks_eyes: std::cell::Cell<bool>,
     pub bound: Vec<BoundProfile>,
     /// `FRAMEPLAYERX_DEBUG_INPUT=1`: log each hand's input when it changes,
     /// and errors reading action states (normally ignored).
@@ -177,8 +197,9 @@ const GAZE_PROFILE: &str = "/interaction_profiles/ext/eye_gaze_interaction";
 const GAZE_POSE: &str = "/user/eyes_ext/input/gaze_ext/pose";
 
 impl Actions {
-    /// `eye_gaze`: the instance has `XR_EXT_eye_gaze_interaction`.
-    pub fn new(instance: &xr::Instance, eye_gaze: bool) -> Result<Actions> {
+    /// `eye_gaze`: the instance has `XR_EXT_eye_gaze_interaction`;
+    /// `tracks_eyes`: the system says it supports it.
+    pub fn new(instance: &xr::Instance, eye_gaze: bool, tracks_eyes: bool) -> Result<Actions> {
         let hands = [
             instance.string_to_path("/user/hand/left").ctx("path")?,
             instance.string_to_path("/user/hand/right").ctx("path")?,
@@ -233,6 +254,7 @@ impl Actions {
             gaze: None,
             gaze_space: None,
             gaze_on: std::cell::Cell::new(None),
+            tracks_eyes: std::cell::Cell::new(tracks_eyes),
             bound: Vec::new(),
             debug: std::env::var_os("FRAMEPLAYERX_DEBUG_INPUT").is_some_and(|v| v != "0"),
             last_logged: Default::default(),
@@ -412,28 +434,67 @@ impl Actions {
                 }
             }
         }
-        out.gaze = self.read_gaze(session, base, time);
+        if let Some((gaze, sample)) = self.read_gaze(session, base, time) {
+            out.gaze = Some(gaze);
+            out.gaze_sample = sample;
+            self.tracks_eyes.set(true);
+        }
+        out.eye_tracking = self.gaze_space.is_some() && self.tracks_eyes.get();
         out
     }
 
-    /// The gaze pose at `time`, while eye tracking is on.
+    /// The gaze pose at `time`, and when it was sampled, while eye tracking
+    /// is on.
     fn read_gaze<G>(
         &self,
         session: &xr::Session<G>,
         base: &xr::Space,
         time: xr::Time,
-    ) -> Option<(Vec3, Quat)> {
+    ) -> Option<((Vec3, Quat), Option<GazeSample>)> {
         let (gaze, space) = (self.gaze.as_ref()?, self.gaze_space.as_ref()?);
         let on = gaze.is_active(session, xr::Path::NULL).unwrap_or(false);
         if self.gaze_on.replace(Some(on)) != Some(on) {
             log::info!("eye tracking {}", if on { "on" } else { "off" });
         }
-        let loc = space.locate(base, time).ok().filter(|_| on)?;
+        if !on {
+            return None;
+        }
+        let mut sampled = xr::sys::EyeGazeSampleTimeEXT {
+            ty: xr::sys::EyeGazeSampleTimeEXT::TYPE,
+            next: std::ptr::null_mut(),
+            time: xr::Time::from_nanos(0),
+        };
+        let mut loc = xr::sys::SpaceLocation::out(&mut sampled as *mut _ as *mut _);
+        // SAFETY: both spaces belong to `session`; the output chain is a
+        // SpaceLocation with the gaze extension's sample time, which a
+        // gaze space takes, both alive for the call.
+        let r = unsafe {
+            (space.instance().fp().locate_space)(
+                space.as_raw(),
+                base.as_raw(),
+                time,
+                loc.as_mut_ptr(),
+            )
+        };
+        if r.into_raw() < 0 {
+            return None;
+        }
+        // SAFETY: the call succeeded, so it wrote the location.
+        let loc = unsafe { loc.assume_init() };
         // Runtimes may only estimate where the gaze starts; its direction
         // is what counts.
-        loc.location_flags
+        if !loc
+            .location_flags
             .contains(xr::SpaceLocationFlags::ORIENTATION_VALID)
-            .then(|| crate::pose(loc.pose))
+        {
+            return None;
+        }
+        let at = sampled.time.as_nanos();
+        let sample = (at > 0).then(|| GazeSample {
+            time: at as f64 / 1e9,
+            age: (time.as_nanos() - at) as f32 / 1e9,
+        });
+        Some((crate::pose(loc.pose), sample))
     }
 
     /// Short vibration for UI feedback.
