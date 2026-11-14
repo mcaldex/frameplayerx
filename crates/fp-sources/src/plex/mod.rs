@@ -11,6 +11,7 @@ use crate::config::{PlexConfig, SourceConfig, SourceKind};
 use crate::error::{Error, Result};
 use crate::http::{HttpClient, HttpOptions, HttpReply};
 use crate::json::{get, text};
+use crate::media_identity::MediaIdentity;
 use crate::urlutil::{encode_form_value, redact, same_origin};
 use crate::{Sidecars, Source, WatchEvent, WatchSession};
 use fp_core::source::{ByteSource, Entry};
@@ -596,6 +597,9 @@ impl Source for PlexSource {
     }
     fn details(&self, entry: &Entry) -> Result<Entry> {
         self.entry_details(entry)
+    }
+    fn media_identity(&self, video: &Entry) -> Result<Option<MediaIdentity>> {
+        self.matching_identity(video)
     }
     fn sidecars(&self, video: &Entry) -> Result<Sidecars> {
         Ok(Sidecars::from_entry(&self.entry_details(video)?))

@@ -557,6 +557,16 @@ tracks
 frames 8
 panel tracks plex-tracks
 panel bar plex-player-bar
+subtitle-preview results
+panel tracks opensubtitles-results
+subtitle-preview empty
+panel tracks opensubtitles-empty
+subtitle-preview unavailable
+panel tracks opensubtitles-unavailable
+subtitle-preview allowance
+panel tracks opensubtitles-allowance
+subtitle-preview account
+panel tracks opensubtitles-account
 EOF
 
 cargo build -p frameplayerx

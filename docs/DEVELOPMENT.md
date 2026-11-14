@@ -294,6 +294,18 @@ embedded tracks itself; files are loaded whole. Text cues are set by
 cosmic-text (`ui/subtitle_text.rs`) with the system's fonts, loaded on a
 thread at startup, so every script is shaped; egui sets them until then.
 
+**OpenSubtitles.** The client lives in `fp-sources/src/opensubtitles`.
+The app searches only when the search panel is opened or submitted, using
+source-provided media identity and a bounded original-file hash where
+available, and otherwise the file name, as Jellyfin's OpenSubtitles plugin
+does. Every result page is fetched; results for another kind of video,
+episode or IMDb ID are dropped, and the rest are ordered by file match,
+downloads, rating and trusted uploader, also as the plugin does. Managed subtitle attachments are stored in the library and
+resolved beneath `$XDG_DATA_HOME/frameplayerx/subtitles/`. The account
+file is `$XDG_CONFIG_HOME/frameplayerx/opensubtitles-account.json` and has
+owner-only permissions on Linux. Only the API client sends the account token
+and consumer key. A separate HTTP client fetches the file links.
+
 **The database.** SQLite, with the schema version in `PRAGMA user_version`
 and forward-only migrations in `fp-library/src/schema.rs`. The scanner
 marks files missing rather than deleting them, so ratings, resume points
@@ -481,6 +493,21 @@ any SteamOS image. `tools/package.sh` checks that the binary is ARM64,
 needs nothing newer than glibc 2.28 and finds its libraries through
 `$ORIGIN/lib`.
 
+### OpenSubtitles key for local builds
+
+Save the OpenSubtitles consumer key as plain text in `opensubtitles.key` at
+the root of your checkout. Git ignores `*.key`. Both `tools/build-frame.sh`
+and `tools/package.sh` pick it up automatically. A nonempty
+`FP_OPENSUBTITLES_API_KEY` environment variable takes precedence.
+
+For a desktop debug run from the same checkout, load the file before
+calling Cargo.
+
+```bash
+export FP_OPENSUBTITLES_API_KEY="$(<opensubtitles.key)"
+cargo run -p frameplayerx
+```
+
 ### Environment variables
 
 Steam can't pass environment variables to an app, so the launcher reads
@@ -548,7 +575,12 @@ headset and copies the text and JSON reports into `probe-reports/`.
    `crates/fp-updater/src/lib.rs` (`RELEASE_PUBLIC_KEY`), and store the
    whole `.key` file as the `FP_RELEASE_KEY` repository secret. Keep the key
    offline otherwise.
-2. Stable: push (or merge) to `main`. Beta: run the `ci` workflow on the
+2. Once: register a FramePlayerX consumer key on OpenSubtitles with
+   anonymous downloads allowed, and store it as the
+   `FP_OPENSUBTITLES_API_KEY` repository secret (or a variable of that
+   name, which the secret overrides). Packaging embeds it in the app;
+   without it, **Find subtitles** says OpenSubtitles is unavailable.
+3. Stable: push (or merge) to `main`. Beta: run the `ci` workflow on the
    `beta` branch from the Actions tab (Run workflow). CI calculates the
    version, stamps it into `crates/frameplayerx/Cargo.toml`, builds,
    packages, signs `manifest.json` and publishes the GitHub release with

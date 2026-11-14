@@ -11,6 +11,13 @@
 # Usage: tools/build-frame.sh [cargo args...]   e.g. tools/build-frame.sh -p frame-probe
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+# CI can supply the key in the environment. Local builds can keep it in the ignored key file.
+if [ -z "${FP_OPENSUBTITLES_API_KEY:-}" ] && [ -f opensubtitles.key ]; then
+  FP_OPENSUBTITLES_API_KEY=$(<opensubtitles.key)
+  export FP_OPENSUBTITLES_API_KEY
+fi
+
 target=aarch64-unknown-linux-gnu
 cargo zigbuild --release --target "$target.2.28" "$@"
 echo "Built into target/$target/release/"

@@ -9,7 +9,7 @@ use fp_core::source::FileSource;
 use fp_core::sync::{read, write};
 use fp_core::volume;
 use fp_haptics::HapticsEngine;
-use fp_library::Library;
+use fp_library::{Library, SUBTITLE_SCHEME, SubtitleStore};
 use fp_remote::{RemoteEvent, RemoteHub};
 use fp_sources::{Source, SourceConfig};
 use ring::rand::SecureRandom;
@@ -67,6 +67,7 @@ impl std::fmt::Display for SourceError {
 pub struct Opener {
     sources: RwLock<HashMap<String, Arc<dyn Source>>>,
     http: fp_sources::http::HttpClient,
+    subtitles: SubtitleStore,
 }
 
 impl Opener {
@@ -74,6 +75,15 @@ impl Opener {
         Opener {
             sources: RwLock::new(HashMap::new()),
             http: fp_sources::http::HttpClient::new(Default::default(), None),
+            subtitles: SubtitleStore::default(),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_subtitle_store(subtitles: SubtitleStore) -> Self {
+        Self {
+            subtitles,
+            ..Self::new()
         }
     }
 
@@ -112,6 +122,13 @@ impl Opener {
         source_id: Option<&str>,
         location: &str,
     ) -> Result<Arc<dyn ByteSource>, String> {
+        if location.starts_with(SUBTITLE_SCHEME) {
+            return self
+                .subtitles
+                .open(location)
+                .map(|file| Arc::new(file) as Arc<dyn ByteSource>)
+                .map_err(|e| e.to_string());
+        }
         if fp_sources::is_source_location(location) {
             let owner = fp_sources::location_owner(location).ok_or(tr!("open-no-source"))?;
             if source_id.is_some_and(|s| s != owner) {
@@ -246,7 +263,7 @@ impl Opener {
         location: &str,
         limit: u64,
     ) -> Result<Vec<u8>, String> {
-        if fp_sources::is_source_location(location) {
+        if location.starts_with(SUBTITLE_SCHEME) || fp_sources::is_source_location(location) {
             return self
                 .open_in(source_id, location)
                 .and_then(|f| read_whole(&*f, limit));
@@ -280,7 +297,7 @@ impl Opener {
 
     /// Small downloads (thumbnails, scripts) from any http(s) URL.
     pub fn fetch(&self, url: &str, limit: u64) -> Result<Vec<u8>, String> {
-        if fp_sources::is_source_location(url) {
+        if url.starts_with(SUBTITLE_SCHEME) || fp_sources::is_source_location(url) {
             return self.open(url).and_then(|f| read_whole(&*f, limit));
         }
         if url.starts_with(volume::SCHEME) {

@@ -164,36 +164,8 @@ impl App {
             }
             Action::SelectSourceAudio(id) => self.play_source_track(Some(id), None),
             Action::SelectSourceSubtitles(id) => self.play_source_track(None, Some(id)),
-            Action::SelectSubtitles(pick) => {
-                if let crate::subtitles::Pick::File(i) = pick {
-                    self.select_subtitle_file(Some(i));
-                } else {
-                    self.select_subtitle_file(None);
-                    if let Some(p) = self.player() {
-                        p.select_subtitle(pick.stream());
-                    }
-                }
-                if let Some(p) = &mut self.playback {
-                    p.picked.subtitles = crate::subtitles::saved(pick, &p.subtitle_files);
-                    if !p.source_tracks.is_empty() {
-                        let track = p.source_tracks.iter().find(|t| {
-                            t.subtitle
-                                && match pick {
-                                    crate::subtitles::Pick::Stream(i) => t.index == Some(i),
-                                    crate::subtitles::Pick::File(i) => p
-                                        .subtitle_files
-                                        .get(i)
-                                        .is_some_and(|s| Some(&s.location) == t.location.as_ref()),
-                                    crate::subtitles::Pick::Off => false,
-                                }
-                        });
-                        p.request.source_subtitle = track.map(|t| t.id.clone()).or_else(|| {
-                            matches!(pick, crate::subtitles::Pick::Off).then(|| "0".into())
-                        });
-                    }
-                    p.save_tracks(&self.services.library);
-                }
-            }
+            Action::SelectSubtitles(pick) => self.select_subtitles(pick),
+            Action::SubtitleSearch(action) => self.subtitle_search_action(action),
             Action::SelectQuality(q) => self.play_quality(q),
             Action::ResetPlacement => self.reset_placement(),
             Action::SetFavorite(id, f) => {
@@ -496,6 +468,8 @@ impl App {
     /// Closes the video, and drops one still opening.
     pub(super) fn close_playback(&mut self) {
         self.cancel_folder_play_all();
+        self.close_subtitle_search();
+        self.reopen_tracks = false;
         if let Some(p) = self.playback.take() {
             p.close(&self.services.library);
         }
@@ -579,24 +553,6 @@ impl App {
         self.ui.invalidate();
     }
 
-    fn select_subtitle_file(&mut self, i: Option<usize>) {
-        let Some(p) = &mut self.playback else { return };
-        p.player.clear_external_subtitles();
-        let picked = i.and_then(|i| p.subtitle_files.get(i).map(|f| (i, f.clone())));
-        p.active_subtitle_file = picked.as_ref().map(|(i, _)| *i);
-        let Some((index, file)) = picked else {
-            return;
-        };
-        // Read on a job: the file may be on a server.
-        let opener = self.services.opener.clone();
-        let seq = self.open_seq;
-        self.jobs.spawn("subtitles", move || Job::Subtitles {
-            seq,
-            index,
-            result: playback::read_subtitle_file(&opener, &file),
-        });
-    }
-
     fn clear_history(&mut self) {
         match self.services.library.clear_history() {
             Ok(()) => self.ui.toast(tr!("toast-history-cleared")),
@@ -633,7 +589,7 @@ impl App {
 
 /// The library's video for `req`, given a row from its entry when it has
 /// none yet, as opening it does.
-fn media_of(lib: &Library, req: &OpenRequest) -> Option<fp_library::MediaId> {
+pub(super) fn media_of(lib: &Library, req: &OpenRequest) -> Option<fp_library::MediaId> {
     let source_id = req.bound_source_id().ok()?;
     let location = fp_core::volume::stable(&req.location).into_owned();
     if let Ok(Some(r)) = lib.get_by_location(&location) {

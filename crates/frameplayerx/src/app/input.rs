@@ -258,7 +258,11 @@ impl App {
         }
         let playing = self.playback.is_some();
         if playing && self.ui.tracks_open && self.ui_visible && !self.show_browser {
-            self.ui.tracks_open = false;
+            if self.ui.subtitle_search.is_some() {
+                self.back_from_subtitle_search();
+            } else {
+                self.ui.tracks_open = false;
+            }
         } else if playing && self.ui.adjust_open && self.ui_visible && !self.show_browser {
             self.ui.adjust_open = false;
         } else if (!playing || self.show_browser) && self.ui.details.is_some() {

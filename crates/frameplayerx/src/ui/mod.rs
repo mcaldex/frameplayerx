@@ -22,6 +22,7 @@ pub mod premium;
 pub mod queue;
 pub mod settings;
 pub mod sources;
+pub mod subtitle_search;
 pub mod subtitle_text;
 pub mod theme;
 pub mod thumbs;
@@ -290,6 +291,7 @@ pub enum Action {
     SelectSourceSubtitles(Option<String>),
     /// Shows these subtitles, and keeps them as this video's pick.
     SelectSubtitles(crate::subtitles::Pick),
+    SubtitleSearch(subtitle_search::Action),
     /// Plays the file as it is, or transcoded by the server, from where it
     /// is.
     SelectQuality(crate::playback::Quality),
@@ -879,6 +881,8 @@ pub struct UiState {
     pub adjust_tab: usize,
     /// The audio and subtitles picker shows above the control bar.
     pub tracks_open: bool,
+    pub subtitle_search: Option<subtitle_search::Search>,
+    pub subtitle_account: subtitle_search::Account,
     /// The last run crashed: asks whether to send a report.
     pub crash: Option<crash::CrashPrompt>,
     /// The file whose Delete file was pressed once, and when: a second
@@ -964,6 +968,8 @@ impl Default for UiState {
             adjust_open: false,
             adjust_tab: 0,
             tracks_open: false,
+            subtitle_search: None,
+            subtitle_account: Default::default(),
             crash: None,
             delete_file_armed: None,
             deleting: None,

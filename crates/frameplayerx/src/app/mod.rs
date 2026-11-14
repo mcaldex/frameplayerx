@@ -7,6 +7,7 @@ mod input;
 mod plex;
 mod remote;
 mod sources;
+mod subtitle_search;
 mod tasks;
 
 use frame::{escape, key};
@@ -188,6 +189,8 @@ pub struct App {
     pointer: Pointer,
     pub playback: Option<Playback>,
     open_seq: u64,
+    reopen_tracks: bool,
+    subtitle_search: subtitle_search::Service,
     /// When the video being opened was asked for.
     open_started: Instant,
     jobs: Jobs<Job>,
@@ -308,6 +311,7 @@ impl App {
             .style_mut(|s| s.visuals.panel_fill = egui::Color32::TRANSPARENT);
         let sub_fonts = Jobs::new();
         sub_fonts.spawn("fp-fonts", ui::subtitle_text::SubtitleText::load);
+        let subtitle_search = subtitle_search::Service::new();
         let mut app = App {
             saved: settings.clone(),
             unsaved_since: None,
@@ -330,6 +334,8 @@ impl App {
             pointer: Pointer::default(),
             playback: None,
             open_seq: 0,
+            reopen_tracks: false,
+            subtitle_search,
             open_started: Instant::now(),
             jobs: Jobs::new(),
             folder_play_all: None,
@@ -365,6 +371,8 @@ impl App {
         };
         app.offsets = app.settings.panel_offsets;
         app.apply_ui_scale();
+        app.refresh_subtitle_account();
+        app.maintain_subtitle_downloads();
         app.check_last_run();
         app.scan_libraries(|_| true, false, false);
         app.connect_devices();
@@ -652,6 +660,7 @@ impl App {
 
     pub fn shutdown(mut self) {
         self.cancel_folder_play_all();
+        self.close_subtitle_search();
         // Cut short the thumbnail being made, so stopping the worker below
         // does not wait for it.
         self.services.set_worker_busy(true);

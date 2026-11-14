@@ -698,13 +698,41 @@ it for the audio tracks and subtitles side by side, subtitles in your
 language first, each with what tells it apart: forced, SDH, its title or
 file name, and its format. Pick one and it plays at once; a long list
 scrolls. Press the pill again, or point off the lists and press, to close
-it. A video with one audio track, no subtitles and no
-[server transcoding](#server-transcoding) has no pill.
+it. With no tracks to list, the pill says **Subtitles**, and its panel
+still has **Find subtitles**.
 
 What you pick there is kept with the video: it opens with the same audio
 track or subtitles next time, while they are still there. Only what you
 picked is kept, so a video whose subtitles you never changed follows
 **Subtitles** above, even after you change it.
+
+#### Find subtitles on OpenSubtitles
+
+1. Open the audio and subtitles panel and choose **Find subtitles**. The
+   first search looks for the video by its server's IDs, or else its file
+   name, in your subtitle language. Subtitles made for the same file come
+   first, then the most downloaded.
+2. Edit the title or language and press **Search** to try again. **Refine
+   search** has year and episode fields and filters for forced subtitles,
+   SDH and machine translations. When a search by what the video is finds
+   nothing, **Search by title** tries its title alone.
+3. Pick a result, then press **Download & use**, or **Use** for one you
+   downloaded before. **File match** means OpenSubtitles recognizes the
+   video file itself. If a result has several files, pick the part you
+   want.
+
+Downloads stay on your headset with the video and can be reused offline.
+While a downloaded file is selected, use **Earlier** or **Later** in the
+subtitles panel to shift its timing by 100 milliseconds per press. **Reset**
+returns to the original timing. **Remove download** deletes that file from
+the headset. Clearing watch history keeps downloaded subtitles.
+
+Downloads work without an account. To use your account's download
+allowance, press **Sign in** at the top of **Find subtitles**, or go to
+Settings › Sound and subtitles › **OpenSubtitles**. Sign-in is kept on
+this device until you sign out, and subtitles you downloaded stay after
+that. FramePlayerX contacts OpenSubtitles only when you use **Find
+subtitles** or sign in.
 
 **⚙ › Chapters** lists the video's chapters and your bookmarks (**Bookmark**
 on the control bar, or grip + A on the right controller, adds one where you
@@ -857,6 +885,8 @@ default audio track and none of the file's own subtitles; subtitle files
 still show. While Plex transcodes, the audio and subtitle lists select
 the original server tracks and restart from the current position, keeping
 the pause state. Selected Plex subtitles are burned into the picture.
+Downloaded subtitles also work while Plex transcodes. Selecting one turns
+off any Plex subtitle and plays the downloaded file locally.
 Plex uses progressive H.264/AAC video; multipart originals require a
 server transcode. Its server must permit transcoding. HLS-only delivery
 is not supported.
