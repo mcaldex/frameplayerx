@@ -127,6 +127,7 @@ impl Sim {
                     direction: self.head * g * Vec3::NEG_Z,
                     time: Some(self.start.elapsed().as_secs_f64()),
                     age: Some(0.0),
+                    tracked: true,
                 }),
             },
         );

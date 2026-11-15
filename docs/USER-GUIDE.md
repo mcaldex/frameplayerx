@@ -928,9 +928,10 @@ tracking** says whether the tracker is sending where you look. If it
 isn't, check that eye tracking is on, and allowed for apps, in the
 headset's settings. **Gaze dot** shows a small dot where your eyes look,
 inside a thin ring about as wide as the tracker's error, so you can see
-how close it gets. The dot hides while you blink or the tracker loses
-your eyes. With stereo focus on it sits at the distance in focus, so
-your eyes meet on it where the picture is right; otherwise 2 m away.
+how close it gets. Through a blink it stays where your eyes were; it
+hides when the tracker loses your eyes for longer. With stereo focus on
+it sits at the distance in focus, so your eyes meet on it where the
+picture is right; otherwise 2 m away.
 
 An eye tracker is often a few degrees off for a given person, which the
 dot makes plain. **Gaze check** corrects it: press **Start**, and the

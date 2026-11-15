@@ -99,6 +99,10 @@ pub struct Reading {
     pub time: Option<f64>,
     /// How long before the frame is shown they were sampled, seconds.
     pub age: Option<f32>,
+    /// The runtime says the eyes were tracked for it, rather than where
+    /// they look only estimated (as it may be while the lids close or
+    /// open).
+    pub tracked: bool,
 }
 
 /// What aims, in words.
@@ -226,6 +230,10 @@ pub struct GazeFilter {
     last_at: Option<f64>,
     /// The last sample's own time, to skip one handed back twice.
     last_time: Option<f64>,
+    /// The runtime has said a sample was tracked: from then on the ones it
+    /// only estimates are skipped. A runtime that never says so has all of
+    /// them taken.
+    tells_tracked: bool,
     aim: Vec2,
     phase: Phase,
     /// The app time of the last update.
@@ -239,6 +247,7 @@ impl Default for GazeFilter {
             smoothed: None,
             last_at: None,
             last_time: None,
+            tells_tracked: false,
             aim: Vec2::ZERO,
             phase: Phase::Head { back: None },
             now: None,
@@ -331,8 +340,13 @@ impl GazeFilter {
         }
     }
 
-    /// Takes in one reading, if it is new, fresh and plausible.
+    /// Takes in one reading, if it is new, fresh, plausible and tracked
+    /// (where the runtime tells).
     fn take(&mut self, now: f64, head: Quat, r: Reading, correction: &Correction) {
+        self.tells_tracked |= r.tracked;
+        if self.tells_tracked && !r.tracked {
+            return;
+        }
         if r.age.is_some_and(|a| a > STALE) {
             return;
         }
@@ -407,6 +421,7 @@ mod tests {
             direction: direction(Vec2::new(yaw, pitch).map(f32::to_radians)),
             time: Some(t),
             age: Some(0.03),
+            tracked: true,
         }
     }
 
@@ -523,6 +538,44 @@ mod tests {
     }
 
     #[test]
+    fn estimated_samples_are_held_through_once_the_runtime_tells_tracked_ones() {
+        let hz = 90.0;
+        // Samples the runtime only estimates, 15° down as lids closing
+        // pull them, for 0.1 s: held through as a blink, nothing moves.
+        let mut f = settled(hz, 8.0, 4.0);
+        let n = (0.1 * hz) as usize;
+        for i in 1..=n {
+            let t = 1.0 + i as f64 / hz;
+            let r = Reading {
+                tracked: false,
+                ..reading(8.0, -11.0, t)
+            };
+            let a = f.update(t, Quat::IDENTITY, true, Some(r), &Correction::default());
+            assert!(
+                (deg(yaw_pitch(a.direction)) - Vec2::new(8.0, 4.0)).length() < 0.01,
+                "{i}"
+            );
+            if i as f64 / hz > CURRENT {
+                assert_eq!(a.status, GazeStatus::Blink);
+            }
+        }
+        // A runtime that never says a sample was tracked has all taken.
+        let mut f = GazeFilter::default();
+        let mut a = None;
+        for i in 1..=90 {
+            let t = i as f64 / hz;
+            let r = Reading {
+                tracked: false,
+                ..reading(8.0, 4.0, t)
+            };
+            a = Some(f.update(t, Quat::IDENTITY, true, Some(r), &Correction::default()));
+        }
+        let a = a.unwrap();
+        assert_eq!(a.status, GazeStatus::Eyes);
+        assert!((deg(yaw_pitch(a.direction)) - Vec2::new(8.0, 4.0)).length() < 0.01);
+    }
+
+    #[test]
     fn a_long_loss_glides_to_the_head_and_the_eyes_take_over_again() {
         for hz in [72.0, 90.0, 120.0] {
             let mut f = settled(hz, 15.0, 0.0);
@@ -624,6 +677,7 @@ mod tests {
                 direction: head * direction(Vec2::new(0.1, 0.05)),
                 time: Some(t),
                 age: None,
+                tracked: true,
             };
             a = f.update(t, head, true, Some(r), &Correction::default());
         }

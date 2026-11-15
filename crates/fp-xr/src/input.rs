@@ -52,6 +52,9 @@ pub struct InputState {
     /// When the eyes were sampled for `gaze`, where the runtime says
     /// (`XrEyeGazeSampleTimeEXT`).
     pub gaze_sample: Option<GazeSample>,
+    /// Whether the runtime says `gaze` is tracked: measured this time,
+    /// rather than only estimated (as it may be at a blink's edges).
+    pub gaze_tracked: bool,
 }
 
 /// When a gaze was sampled.
@@ -434,23 +437,24 @@ impl Actions {
                 }
             }
         }
-        if let Some((gaze, sample)) = self.read_gaze(session, base, time) {
+        if let Some((gaze, sample, tracked)) = self.read_gaze(session, base, time) {
             out.gaze = Some(gaze);
             out.gaze_sample = sample;
+            out.gaze_tracked = tracked;
             self.tracks_eyes.set(true);
         }
         out.eye_tracking = self.gaze_space.is_some() && self.tracks_eyes.get();
         out
     }
 
-    /// The gaze pose at `time`, and when it was sampled, while eye tracking
-    /// is on.
+    /// The gaze pose at `time`, when it was sampled, and whether it is
+    /// tracked rather than estimated, while eye tracking is on.
     fn read_gaze<G>(
         &self,
         session: &xr::Session<G>,
         base: &xr::Space,
         time: xr::Time,
-    ) -> Option<((Vec3, Quat), Option<GazeSample>)> {
+    ) -> Option<((Vec3, Quat), Option<GazeSample>, bool)> {
         let (gaze, space) = (self.gaze.as_ref()?, self.gaze_space.as_ref()?);
         let on = gaze.is_active(session, xr::Path::NULL).unwrap_or(false);
         if self.gaze_on.replace(Some(on)) != Some(on) {
@@ -494,7 +498,10 @@ impl Actions {
             time: at as f64 / 1e9,
             age: (time.as_nanos() - at) as f32 / 1e9,
         });
-        Some((crate::pose(loc.pose), sample))
+        let tracked = loc
+            .location_flags
+            .contains(xr::SpaceLocationFlags::ORIENTATION_TRACKED);
+        Some((crate::pose(loc.pose), sample, tracked))
     }
 
     /// Short vibration for UI feedback.

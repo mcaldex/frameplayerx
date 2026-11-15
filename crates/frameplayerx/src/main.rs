@@ -480,6 +480,8 @@ fn run_xr(args: &Args) -> Result<(), Error> {
     // gave one, and how long before the frame is shown it was sampled.
     let mut gaze_deg: Vec<f32> = Vec::new();
     let mut gaze_age_ms: Vec<f32> = Vec::new();
+    // Of those, how many the runtime said it only estimated.
+    let mut gaze_estimated = 0usize;
     let layers = session.supports_quad_layers();
     log::info!(
         "UI as compositor quad layers: {}",
@@ -509,6 +511,7 @@ fn run_xr(args: &Args) -> Result<(), Error> {
         if let (Some((_, gaze)), Some((_, head))) = (input.gaze, frame.head) {
             let ahead = head * glam::Vec3::NEG_Z;
             gaze_deg.push((gaze * glam::Vec3::NEG_Z).angle_between(ahead).to_degrees());
+            gaze_estimated += !input.gaze_tracked as usize;
             if let Some(s) = input.gaze_sample {
                 gaze_age_ms.push(s.age * 1000.0);
             }
@@ -537,6 +540,7 @@ fn run_xr(args: &Args) -> Result<(), Error> {
                     direction: q * glam::Vec3::NEG_Z,
                     time: input.gaze_sample.map(|s| s.time),
                     age: input.gaze_sample.map(|s| s.age),
+                    tracked: input.gaze_tracked,
                 }),
             },
         );
@@ -637,13 +641,15 @@ fn run_xr(args: &Args) -> Result<(), Error> {
                 gaze_deg.sort_by(f32::total_cmp);
                 let at = |q: f32| gaze_deg[((gaze_deg.len() - 1) as f32 * q) as usize];
                 log::info!(
-                    "eye gaze in {}% of frames, from where the head faces: median {:.0}°, 95% {:.0}°, max {:.0}°",
+                    "eye gaze in {}% of frames ({}% of those estimated, not tracked), from where the head faces: median {:.0}°, 95% {:.0}°, max {:.0}°",
                     100 * gaze_deg.len() / frame_ms.len(),
+                    100 * gaze_estimated / gaze_deg.len(),
                     at(0.5),
                     at(0.95),
                     at(1.0)
                 );
                 gaze_deg.clear();
+                gaze_estimated = 0;
                 // How stale samples come, to set the gaze filter's limit by.
                 if !gaze_age_ms.is_empty() {
                     gaze_age_ms.sort_by(f32::total_cmp);

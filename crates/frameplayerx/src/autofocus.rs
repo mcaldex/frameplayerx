@@ -804,6 +804,7 @@ mod tests {
                     direction: crate::gaze::direction(glam::Vec2::new(y.to_radians(), 0.0)),
                     time: Some(now),
                     age: Some(0.0),
+                    tracked: true,
                 });
                 let aim = filter.update(now, head, true, reading, &Correction::default());
                 let aiming = Aiming::new(by_eyes, Some(&aim), head);

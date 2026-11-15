@@ -172,8 +172,13 @@ impl App {
         if self.aim_status != was {
             self.panels[MAIN].request_repaint();
         }
+        // The gaze dot stays where the eyes were through a blink, as the
+        // aim does, rather than going out and back at each one.
         self.dot.visible = self.check_dot.is_some()
-            || (self.settings.gaze_dot && self.aim.is_some_and(|a| a.current && a.gaze.is_some()));
+            || (self.settings.gaze_dot
+                && self.aim.is_some_and(|a| {
+                    (a.current || a.status == crate::gaze::GazeStatus::Blink) && a.gaze.is_some()
+                }));
         let anchor = self.anchor(&input);
         let eye = input.head.map(|h| h.0).unwrap_or(anchor.w_axis.truncate());
         self.update_visibility();

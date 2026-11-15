@@ -368,6 +368,7 @@ mod tests {
                 direction: head * direction(looking + rad(bias) + rad([noise(), noise()])),
                 time: Some(now),
                 age: Some(0.03),
+                tracked: true,
             });
             if let Step::Done(r) = c.update(now, head, true, reading) {
                 return r;
