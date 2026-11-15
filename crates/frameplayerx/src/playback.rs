@@ -2219,6 +2219,15 @@ mod tests {
         let wrapper = "V4L2 REQBUFS: Cannot allocate memory (os error 12)";
         let n = slow_decode_notice(&stream("hevc", 8), true, Some(wrapper), &nobody).detail;
         assert!(n.contains("busy"), "{n}");
+        // Granted fewer buffers than the video's reference pictures need:
+        // the driver ran out of memory partway, as busy as when it has
+        // none. (A 10-bit stream gets the same where the renderer shows
+        // 10-bit, a setting this test leaves alone.)
+        let short = "unsupported: V4L2 REQBUFS capture granted 5 of the 13 buffers asked for, \
+                     fewer than the 6 the decoder keeps: the driver is out of memory";
+        let n = slow_decode_notice(&stream("hevc", 8), true, Some(short), &nobody);
+        assert_eq!(n.label, "Decoder busy");
+        assert!(n.detail.contains("busy"), "{}", n.detail);
         // Named when they are known, by the names people know.
         let held = fp_media::SessionHolders {
             programs: vec!["steam".into(), "steamwebhelper".into(), "mpv".into()],
