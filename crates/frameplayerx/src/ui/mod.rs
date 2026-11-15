@@ -891,6 +891,9 @@ pub struct UiState {
     pub delete_checks: std::collections::HashMap<(Option<String>, String), Option<bool>>,
     pub open_error: Option<String>,
     pub opening: Option<String>,
+    /// A jump over a damaged stretch of video has held the picture long
+    /// enough to notice.
+    pub skipping_damaged: bool,
     pub toast: Option<(String, std::time::Instant)>,
     /// Hide the seek-preview while scrubbing has not moved.
     pub scrub: Option<f64>,
@@ -967,6 +970,7 @@ impl Default for UiState {
             delete_checks: Default::default(),
             open_error: None,
             opening: None,
+            skipping_damaged: false,
             toast: None,
             scrub: None,
             unmute_volume: None,

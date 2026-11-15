@@ -322,7 +322,8 @@ fn title_row(
             {
                 state.tracks_open = !state.tracks_open;
             }
-            match (pb.player.error(), &pb.notice) {
+            let notice = pb.notice.clone().or_else(|| pb.damage_notice());
+            match (pb.player.error(), notice) {
                 (Some(e), _) => {
                     warning_pill(ui, tr!("player-error-pill"), theme::ERROR).tip(&e);
                 }
@@ -354,7 +355,20 @@ fn title_row(
 
 /// The latest toast, on its own panel over the video.
 pub fn toast_panel(ctx: &egui::Context, v: &mut View) {
-    if let Some((text, _)) = &v.state.toast {
+    show_toast(ctx, v.state);
+}
+
+fn show_toast(ctx: &egui::Context, state: &super::UiState) {
+    if state.skipping_damaged {
+        widgets::status_pill(ctx, egui::Align2::CENTER_CENTER, Vec2::ZERO, |ui| {
+            ui.add(egui::Spinner::new().size(20.0));
+            ui.label(
+                RichText::new(tr!("player-skipping-damaged"))
+                    .font(theme::font(Weight::Medium, 18.0))
+                    .color(theme::TEXT),
+            );
+        });
+    } else if let Some((text, _)) = &state.toast {
         widgets::status_pill(ctx, egui::Align2::CENTER_CENTER, Vec2::ZERO, |ui| {
             widgets::toast_line(ui, text);
         });
@@ -2474,4 +2488,65 @@ fn stereo_pictures(
             textures.push(tex);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn collect_texts(shape: &egui::epaint::Shape, out: &mut Vec<String>) {
+        match shape {
+            egui::epaint::Shape::Text(t) => out.push(t.galley.text().to_string()),
+            egui::epaint::Shape::Vec(v) => {
+                for s in v {
+                    collect_texts(s, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn rendered_toast_texts(state: &super::super::UiState) -> Vec<String> {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 720.0),
+            )),
+            ..Default::default()
+        };
+        // Anchored `Area`s need a first sizing pass before emitting text shapes.
+        let _ = ctx.run(input(), |ctx| show_toast(ctx, state));
+        let out = ctx.run(input(), |ctx| show_toast(ctx, state));
+        let mut texts = Vec::new();
+        for cs in &out.shapes {
+            collect_texts(&cs.shape, &mut texts);
+        }
+        texts
+    }
+
+    #[test]
+    fn the_skipping_damaged_message_shows_only_while_jumping() {
+        let mut state = super::super::UiState::default();
+        assert!(rendered_toast_texts(&state).is_empty());
+
+        state.skipping_damaged = true;
+        state.toast("Old toast");
+        let while_jumping = rendered_toast_texts(&state);
+        assert!(
+            while_jumping
+                .iter()
+                .any(|t| t == tr!("player-skipping-damaged")),
+            "expected live skipping message, got {while_jumping:?}"
+        );
+
+        // Done, it says nothing more: the control bar's notice counts it.
+        state.skipping_damaged = false;
+        let after = rendered_toast_texts(&state);
+        assert!(
+            !after.iter().any(|t| t == tr!("player-skipping-damaged")),
+            "got {after:?}"
+        );
+    }
 }

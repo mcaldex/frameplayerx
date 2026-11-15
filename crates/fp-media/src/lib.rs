@@ -99,6 +99,19 @@ impl Error {
             Error::Disc(_) | Error::Audio(_) | Error::Io(_) | Error::Interrupted => false,
         }
     }
+
+    /// Whether this is the Annex B bitstream filter refusing invalid packet
+    /// bytes (such as zeros where an unfinished download hasn't arrived yet).
+    pub(crate) fn is_annexb_refused(&self) -> bool {
+        matches!(
+            self,
+            Error::Ffmpeg {
+                context: "bitstream filter" | "bsf send",
+                code,
+                ..
+            } if *code == ff::AVERROR_INVALIDDATA_
+        )
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

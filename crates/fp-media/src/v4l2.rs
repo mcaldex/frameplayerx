@@ -369,6 +369,243 @@ impl Codec {
     }
 }
 
+/// Bitstream filter converting H.264/HEVC MP4/MKV length-prefixed packets to
+/// Annex B (or passing Annex B through unchanged).
+pub(crate) struct AnnexbFilter {
+    ctx: *mut fp_ffmpeg_sys::AVBSFContext,
+    /// The parameter sets `hevc_mp4toannexb` inserts before IRAP pictures when
+    /// it converts an `hvcC` record, else empty.
+    hvcc_parameter_sets: Vec<u8>,
+    /// Bytes in each NAL unit's length field, for length-prefixed (MP4/MKV)
+    /// packets; `None` for Annex B, which passes through.
+    length_size: Option<usize>,
+}
+
+// SAFETY: one thread drives a filter at a time; `ctx` is an owned FFmpeg context.
+unsafe impl Send for AnnexbFilter {}
+
+impl Drop for AnnexbFilter {
+    fn drop(&mut self) {
+        // SAFETY: we own `ctx`, and `av_bsf_free` is null-safe.
+        unsafe { fp_ffmpeg_sys::av_bsf_free(&mut self.ctx) };
+    }
+}
+
+impl AnnexbFilter {
+    /// Opens the Annex B filter for `par`, or returns `Ok(None)` when `par` is
+    /// not H.264 or HEVC.
+    pub(crate) fn open(
+        par: *const fp_ffmpeg_sys::AVCodecParameters,
+        time_base: fp_ffmpeg_sys::AVRational,
+    ) -> crate::Result<Option<Self>> {
+        if par.is_null() {
+            return Ok(None);
+        }
+        // SAFETY: `par` is non-null for the duration of the call.
+        let Some(codec) = Codec::from_ffmpeg(unsafe { (*par).codec_id }) else {
+            return Ok(None);
+        };
+        let mut filter = Self {
+            ctx: std::ptr::null_mut(),
+            hvcc_parameter_sets: Vec::new(),
+            length_size: None,
+        };
+        // SAFETY: standard FFmpeg BSF setup; `Drop` frees `filter.ctx` on error.
+        unsafe {
+            let f = fp_ffmpeg_sys::av_bsf_get_by_name(codec.annexb_filter().as_ptr());
+            if f.is_null() {
+                return Err(crate::Error::Unsupported(
+                    "Annex B bitstream filter missing".into(),
+                ));
+            }
+            crate::check(fp_ffmpeg_sys::av_bsf_alloc(f, &mut filter.ctx), "bsf alloc")?;
+            let Some(bsf) = filter.ctx.as_mut() else {
+                return Err(crate::Error::Unsupported(
+                    "Annex B bitstream filter not allocated".into(),
+                ));
+            };
+            crate::check(
+                fp_ffmpeg_sys::avcodec_parameters_copy(bsf.par_in, par),
+                "bsf parameters",
+            )?;
+            bsf.time_base_in = time_base;
+            crate::check(fp_ffmpeg_sys::av_bsf_init(filter.ctx), "bsf init")?;
+
+            let p = &*par;
+            if !p.extradata.is_null() && p.extradata_size > 0 {
+                let ext = std::slice::from_raw_parts(p.extradata, p.extradata_size as usize);
+                filter.length_size = nal_length_size(codec, ext);
+            }
+
+            if codec == Codec::Hevc
+                && !p.extradata.is_null()
+                && p.extradata_size >= 3
+                && let Some(out) = bsf.par_out.as_ref()
+                && !out.extradata.is_null()
+            {
+                let ext = std::slice::from_raw_parts(p.extradata, p.extradata_size as usize);
+                // Annex B extradata (MPEG-TS) passes through unchanged; an
+                // hvcC comes out as the parameter sets the filter inserts.
+                if !ext.starts_with(&[0, 0, 1]) && !ext.starts_with(&[0, 0, 0, 1]) {
+                    filter.hvcc_parameter_sets = std::slice::from_raw_parts(
+                        out.extradata,
+                        out.extradata_size.max(0) as usize,
+                    )
+                    .to_vec();
+                }
+            }
+        }
+        Ok(Some(filter))
+    }
+
+    pub(crate) fn hvcc_parameter_sets(&self) -> &[u8] {
+        &self.hvcc_parameter_sets
+    }
+
+    pub(crate) fn flush(&mut self) {
+        if !self.ctx.is_null() {
+            // SAFETY: `self.ctx` is valid while `self` lives.
+            unsafe { fp_ffmpeg_sys::av_bsf_flush(self.ctx) };
+        }
+    }
+
+    /// Sends `pkt` (or null for EOF) into the filter, flushing the filter if
+    /// it refuses invalid packet data so subsequent packets remain clean. A
+    /// packet that starts with an empty NAL unit is refused the same way:
+    /// `h264_mp4toannexb` passes a run of zeros on as nothing at all.
+    pub(crate) fn send(&mut self, pkt: *const fp_ffmpeg_sys::AVPacket) -> crate::Result<()> {
+        if pkt.is_null() {
+            // SAFETY: null packet signals EOF to our valid BSF context.
+            unsafe { fp_ffmpeg_sys::av_bsf_send_packet(self.ctx, std::ptr::null_mut()) };
+            return Ok(());
+        }
+        // SAFETY: `pkt` is a valid packet for the duration of the call.
+        let data = unsafe { packet_data(pkt) };
+        if self.length_size.is_some_and(|n| starts_empty(data, n)) {
+            return Err(crate::Error::Ffmpeg {
+                context: "bsf send",
+                code: fp_ffmpeg_sys::AVERROR_INVALIDDATA_,
+                message: "packet starts with an empty NAL unit".into(),
+            });
+        }
+        let copy = crate::decode::Packet::new();
+        // SAFETY: references the caller's packet; `av_bsf_send_packet` takes
+        // over our reference when it succeeds.
+        let r = unsafe {
+            crate::check(
+                fp_ffmpeg_sys::av_packet_ref(copy.as_ptr(), pkt),
+                "packet ref",
+            )?;
+            fp_ffmpeg_sys::av_bsf_send_packet(self.ctx, copy.as_ptr())
+        };
+        if r == fp_ffmpeg_sys::AVERROR_INVALIDDATA_ {
+            self.flush();
+        }
+        crate::check(r, "bsf send")?;
+        Ok(())
+    }
+
+    /// Drains all filtered packets ready so far, flushing the filter on
+    /// `AVERROR_INVALIDDATA`.
+    pub(crate) fn drain(
+        &mut self,
+        mut on_packet: impl FnMut(crate::decode::Packet) -> crate::Result<()>,
+    ) -> crate::Result<()> {
+        loop {
+            let out = crate::decode::Packet::new();
+            // SAFETY: `self.ctx` is valid and `out` is a fresh packet.
+            let r = unsafe { fp_ffmpeg_sys::av_bsf_receive_packet(self.ctx, out.as_ptr()) };
+            if r == fp_ffmpeg_sys::AVERROR_EAGAIN || r == fp_ffmpeg_sys::AVERROR_EOF_ {
+                return Ok(());
+            }
+            if r == fp_ffmpeg_sys::AVERROR_INVALIDDATA_ {
+                self.flush();
+            }
+            crate::check(r, "bitstream filter")?;
+            on_packet(out)?;
+        }
+    }
+
+    /// Tests whether standalone candidate keyframe `pkt` passes the Annex B
+    /// filter and produces coded bitstream bytes, with no run of zeros inside
+    /// a NAL unit, as when a hole starts or ends inside the packet.
+    pub(crate) fn accepts_keyframe(&mut self, pkt: *const fp_ffmpeg_sys::AVPacket) -> bool {
+        if pkt.is_null() {
+            return false;
+        }
+        // SAFETY: `pkt` is a valid packet for the duration of the call.
+        let data = unsafe { packet_data(pkt) };
+        if self.length_size.is_some_and(|n| holds_zero_run(data, n)) {
+            return false;
+        }
+        self.flush();
+        if self.send(pkt).is_err() {
+            self.flush();
+            return false;
+        }
+        let mut out_bytes = 0usize;
+        let ok = self
+            .drain(|out| {
+                // SAFETY: valid packet yielded by `av_bsf_receive_packet`.
+                let sz = unsafe { (*out.as_ptr()).size };
+                out_bytes = out_bytes.saturating_add(sz.max(0) as usize);
+                Ok(())
+            })
+            .is_ok();
+        self.flush();
+        ok && out_bytes > 0
+    }
+}
+
+/// The NAL unit length field's size an `avcC` or `hvcC` record gives, or
+/// `None` for Annex B extradata.
+fn nal_length_size(codec: Codec, extradata: &[u8]) -> Option<usize> {
+    if extradata.starts_with(&[0, 0, 1]) || extradata.starts_with(&[0, 0, 0, 1]) {
+        return None;
+    }
+    let at = match codec {
+        Codec::H264 => 4,
+        Codec::Hevc => 21,
+    };
+    extradata.get(at).map(|b| (b & 3) as usize + 1)
+}
+
+/// # Safety
+/// `pkt` must be a valid packet, and the slice must not outlive its data.
+unsafe fn packet_data<'a>(pkt: *const fp_ffmpeg_sys::AVPacket) -> &'a [u8] {
+    // SAFETY: the caller's packet holds `size` bytes at `data`.
+    unsafe {
+        let p = &*pkt;
+        if p.data.is_null() || p.size <= 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(p.data, p.size as usize)
+        }
+    }
+}
+
+/// Whether a length-prefixed packet's first NAL unit is empty, as one read
+/// from a stretch of zeros is.
+fn starts_empty(data: &[u8], length_size: usize) -> bool {
+    !data.is_empty() && data.iter().take(length_size).all(|&b| b == 0)
+}
+
+/// Whether any NAL unit of a length-prefixed packet holds three zero bytes
+/// in a row, which H.264 7.4.1 and H.265 7.4.2 rule out.
+fn holds_zero_run(data: &[u8], length_size: usize) -> bool {
+    let mut rest = data;
+    while rest.len() >= length_size {
+        let (len, tail) = rest.split_at(length_size);
+        let n = len.iter().fold(0usize, |n, &b| (n << 8) | b as usize);
+        let nal = &tail[..n.min(tail.len())];
+        if nal.windows(3).any(|w| w == [0, 0, 0]) {
+            return true;
+        }
+        rest = &tail[nal.len()..];
+    }
+    false
+}
+
 pub(crate) const fn fourcc(c: &[u8; 4]) -> u32 {
     (c[0] as u32) | ((c[1] as u32) << 8) | ((c[2] as u32) << 16) | ((c[3] as u32) << 24)
 }
@@ -1187,10 +1424,7 @@ mod linux {
         pixelformat: u32,
         /// The primer trick is active (declared OUTPUT size was lowered).
         primed: bool,
-        bsf: *mut ff::AVBSFContext,
-        /// The parameter sets the filter inserts before IRAP pictures when it
-        /// converts an hvcC (Annex B), else empty.
-        hvcc_parameter_sets: Vec<u8>,
+        bsf: AnnexbFilter,
         /// IRAP pictures with parameter sets unlike the hvcC's were seen
         /// (logged).
         in_band_parameter_sets: bool,
@@ -1256,10 +1490,9 @@ mod linux {
                 let mut t = t as i32;
                 let _ = ioctl(&self.fd, VIDIOC_STREAMOFF, &mut t);
             }
-            // SAFETY: frees our own filter and pool (the pool lives on until
-            // frames still holding its buffers are freed).
+            // SAFETY: frees our own pool (the pool lives on until frames still
+            // holding its buffers are freed); `bsf` frees itself on Drop.
             unsafe {
-                ff::av_bsf_free(&mut self.bsf);
                 ff::av_buffer_pool_uninit(&mut self.pool);
             }
         }
@@ -1456,6 +1689,8 @@ mod linux {
                 unsafe { std::slice::from_raw_parts(p.extradata, p.extradata_size as usize) }
             };
             let dpb = crate::nal::extradata_dpb(codec == Codec::Hevc, extradata);
+            let bsf = AnnexbFilter::open(par, time_base)?
+                .ok_or_else(|| Error::Unsupported("Annex B bitstream filter unavailable".into()))?;
             let (device, fd) = find_device(codec)?;
             let mut dec = V4l2Decoder {
                 out_bufs: Vec::new(),
@@ -1466,8 +1701,7 @@ mod linux {
                 stream_size,
                 pixelformat,
                 primed: false,
-                bsf: std::ptr::null_mut(),
-                hvcc_parameter_sets: Vec::new(),
+                bsf,
                 in_band_parameter_sets: false,
                 dpb,
                 broken_in_a_row: 0,
@@ -1491,7 +1725,6 @@ mod linux {
                 returns: Arc::default(),
             };
             crate::decode::HW_SESSIONS.fetch_add(1, Ordering::Relaxed); // until Drop
-            dec.init_bsf(par, time_base)?;
             for t in [EVENT_SOURCE_CHANGE, EVENT_EOS] {
                 let mut s = EventSubscription {
                     type_: t,
@@ -1521,62 +1754,6 @@ mod linux {
                 }
             );
             Ok(dec)
-        }
-
-        fn init_bsf(
-            &mut self,
-            par: *const ff::AVCodecParameters,
-            time_base: ff::AVRational,
-        ) -> Result<()> {
-            // SAFETY: standard bitstream filter setup on our own context; the
-            // allocated filter is null or valid.
-            unsafe {
-                let f = ff::av_bsf_get_by_name(self.codec.annexb_filter().as_ptr());
-                if f.is_null() {
-                    return Err(Error::Unsupported(
-                        "Annex B bitstream filter missing".into(),
-                    ));
-                }
-                crate::check(ff::av_bsf_alloc(f, &mut self.bsf), "bsf alloc")?;
-                let Some(bsf) = self.bsf.as_mut() else {
-                    return Err(Error::Unsupported(
-                        "Annex B bitstream filter not allocated".into(),
-                    ));
-                };
-                crate::check(
-                    ff::avcodec_parameters_copy(bsf.par_in, par),
-                    "bsf parameters",
-                )?;
-                bsf.time_base_in = time_base;
-                crate::check(ff::av_bsf_init(self.bsf), "bsf init")?;
-            }
-            if self.codec != Codec::Hevc {
-                return Ok(());
-            }
-            // SAFETY: par, the filter and its par_out are null or valid; each
-            // extradata holds extradata_size bytes.
-            unsafe {
-                let (Some(p), Some(out)) = (
-                    par.as_ref(),
-                    self.bsf.as_ref().and_then(|b| b.par_out.as_ref()),
-                ) else {
-                    return Ok(());
-                };
-                if p.extradata.is_null() || p.extradata_size < 3 || out.extradata.is_null() {
-                    return Ok(());
-                }
-                let ext = std::slice::from_raw_parts(p.extradata, p.extradata_size as usize);
-                // Annex B extradata (MPEG-TS) passes through unchanged; an
-                // hvcC comes out as the parameter sets the filter inserts.
-                if !ext.starts_with(&[0, 0, 1]) && !ext.starts_with(&[0, 0, 0, 1]) {
-                    self.hvcc_parameter_sets = std::slice::from_raw_parts(
-                        out.extradata,
-                        out.extradata_size.max(0) as usize,
-                    )
-                    .to_vec();
-                }
-            }
-            Ok(())
         }
 
         /// The decoder flagged too many pictures in a row as broken: it
@@ -1762,14 +1939,17 @@ mod linux {
 
         /// Moves everything the bitstream filter has ready into `pending`.
         fn drain_bsf(&mut self) -> Result<()> {
-            loop {
-                let out = Packet::new();
-                // SAFETY: our filter; out is a fresh packet.
-                let r = unsafe { ff::av_bsf_receive_packet(self.bsf, out.as_ptr()) };
-                if r == ff::AVERROR_EAGAIN || r == ff::AVERROR_EOF_ {
-                    return Ok(());
-                }
-                crate::check(r, "bitstream filter")?;
+            let Self {
+                bsf,
+                in_band_parameter_sets,
+                arm_floor,
+                pts_floor,
+                ts,
+                pending,
+                ..
+            } = self;
+            let sets = bsf.hvcc_parameter_sets().to_vec();
+            let r = bsf.drain(|out| {
                 // SAFETY: a valid packet from the filter.
                 let (pts, dts, duration, size) = unsafe {
                     let p = &*out.as_ptr();
@@ -1777,14 +1957,13 @@ mod linux {
                 };
                 if size <= 0 {
                     // V4L2 would read an empty OUTPUT buffer as a full one.
-                    continue;
+                    return Ok(());
                 }
-                if !self.hvcc_parameter_sets.is_empty() {
-                    let sets = &self.hvcc_parameter_sets;
+                if !sets.is_empty() {
                     // SAFETY: the filter's packet holds size bytes at data.
                     let moved = unsafe {
                         let p = &*out.as_ptr();
-                        hvcc_copy_after_own(std::slice::from_raw_parts(p.data, size as usize), sets)
+                        hvcc_copy_after_own(std::slice::from_raw_parts(p.data, size as usize), &sets)
                     };
                     if let Some(range) = moved {
                         // SAFETY: a writable packet holds size bytes at data.
@@ -1797,8 +1976,8 @@ mod linux {
                             std::slice::from_raw_parts_mut(p.data, size as usize)[range]
                                 .rotate_right(sets.len());
                         }
-                        if !self.in_band_parameter_sets {
-                            self.in_band_parameter_sets = true;
+                        if !*in_band_parameter_sets {
+                            *in_band_parameter_sets = true;
                             log::info!(
                                 "V4L2: IRAP pictures carry parameter sets unlike the hvcC's; theirs go last"
                             );
@@ -1831,13 +2010,19 @@ mod linux {
                     self.dpb = Some(dpb);
                 }
                 let pts = if pts == ff::AV_NOPTS_VALUE { dts } else { pts };
-                if self.arm_floor {
-                    self.arm_floor = false;
-                    self.pts_floor = (pts != ff::AV_NOPTS_VALUE).then_some(pts);
+                if *arm_floor {
+                    *arm_floor = false;
+                    *pts_floor = (pts != ff::AV_NOPTS_VALUE).then_some(pts);
                 }
-                let id = self.ts.insert(pts, duration);
-                self.pending.push_back((out, id));
+                let id = ts.insert(pts, duration);
+                pending.push_back((out, id));
+                Ok(())
+            });
+            if let Err(e) = r {
+                pending.clear();
+                return Err(e);
             }
+            Ok(())
         }
 
         /// Sends a packet, or end of stream when `pkt` is null. Returns false
@@ -1850,8 +2035,7 @@ mod linux {
             }
             if pkt.is_null() {
                 if !self.eos_input {
-                    // SAFETY: a null packet signals EOF to the filter.
-                    unsafe { ff::av_bsf_send_packet(self.bsf, std::ptr::null_mut()) };
+                    let _ = self.bsf.send(std::ptr::null());
                     self.drain_bsf()?;
                     self.eos_input = true;
                 }
@@ -1861,13 +2045,7 @@ mod linux {
             if self.eos_input {
                 return Ok(true); // after EOS until a flush
             }
-            let copy = Packet::new();
-            // SAFETY: references the caller's packet; the filter takes over
-            // our reference.
-            unsafe {
-                crate::check(ff::av_packet_ref(copy.as_ptr(), pkt), "packet ref")?;
-                crate::check(ff::av_bsf_send_packet(self.bsf, copy.as_ptr()), "bsf send")?;
-            }
+            self.bsf.send(pkt)?;
             self.drain_bsf()?;
             self.pump_output()?;
             Ok(true)
@@ -2556,8 +2734,7 @@ mod linux {
         /// already queued still decodes, and its frames are dropped.
         pub(crate) fn flush(&mut self) {
             self.pending.clear();
-            // SAFETY: our filter.
-            unsafe { ff::av_bsf_flush(self.bsf) };
+            self.bsf.flush();
             self.ts.invalidate();
             self.pts_floor = None;
             self.arm_floor = true;
@@ -3352,5 +3529,163 @@ mod tests {
             sent(&[own_vps, own_sps, own_pps, vps, sps, pps, idr], &[]),
             None
         );
+    }
+
+    #[test]
+    fn nal_length_size_comes_from_avcc_and_hvcc_only() {
+        let mut avcc = vec![1, 0x64, 0, 0x28, 0xff, 0xe1];
+        assert_eq!(nal_length_size(Codec::H264, &avcc), Some(4));
+        avcc[4] = 0xfd;
+        assert_eq!(nal_length_size(Codec::H264, &avcc), Some(2));
+        let mut hvcc = vec![1; 23];
+        hvcc[21] = 0x0f;
+        assert_eq!(nal_length_size(Codec::Hevc, &hvcc), Some(4));
+        assert_eq!(nal_length_size(Codec::Hevc, &[0, 0, 0, 1, 0x40, 1]), None);
+        assert_eq!(nal_length_size(Codec::H264, &[0, 0, 1, 0x67]), None);
+    }
+
+    #[test]
+    fn empty_first_nal_and_zero_runs_are_damage() {
+        assert!(starts_empty(&[0; 64], 4));
+        assert!(starts_empty(&[0, 0], 4));
+        assert!(!starts_empty(&[], 4));
+        assert!(!starts_empty(&[0, 0, 0, 5, 0x65, 1, 2, 3, 4], 4));
+
+        let good = [0, 0, 0, 5, 0x65, 0, 0, 3, 0, 0, 0, 2, 0x41, 9];
+        assert!(!holds_zero_run(&good, 4));
+        let torn = [0, 0, 0, 6, 0x65, 0x88, 0, 0, 0, 0];
+        assert!(holds_zero_run(&torn, 4));
+        let second = [0, 0, 0, 2, 0x41, 1, 0, 0, 0, 4, 0x41, 0, 0, 0];
+        assert!(holds_zero_run(&second, 4));
+        // A length running past the packet still has its bytes looked at.
+        assert!(holds_zero_run(&[0, 0, 0x10, 0, 0x65, 0, 0, 0], 4));
+        assert!(!holds_zero_run(&[0, 3, 0x65, 1, 2], 2));
+    }
+
+    #[test]
+    fn annexb_filter_refuses_zeroed_packets_and_recovers_after_flush() {
+        use fp_ffmpeg_sys as ff;
+        for (file, must_error_odd, expect_annexb_header) in [
+            ("h264_aac_180_LR.mp4", true, true),
+            ("hevc10_tb.mkv", true, false),
+        ] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/data")
+                .join(file);
+            let mut input = crate::input::Input::open(
+                std::sync::Arc::new(fp_core::source::FileSource::open(&path).unwrap()),
+                file,
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .unwrap();
+            let vi = input.best_stream(ff::AVMEDIA_TYPE_VIDEO).unwrap();
+            // SAFETY: valid stream index from open input.
+            let (par, tb) = unsafe {
+                (
+                    (*input.streams()[vi]).codecpar,
+                    (*input.streams()[vi]).time_base,
+                )
+            };
+            let Some(mut bsf) = AnnexbFilter::open(par, tb).unwrap() else {
+                continue;
+            };
+
+            let mut pkt = crate::decode::Packet::new();
+            let read_kf = |input: &mut crate::input::Input, pkt: &mut crate::decode::Packet| {
+                pkt.unref();
+                while input.read(pkt.as_ptr()).unwrap() {
+                    // SAFETY: valid packet read from `input`.
+                    let is_kf = unsafe {
+                        (*pkt.as_ptr()).stream_index == vi as i32
+                            && ((*pkt.as_ptr()).flags & ff::AV_PKT_FLAG_KEY as i32) != 0
+                    };
+                    if is_kf {
+                        return true;
+                    }
+                    pkt.unref();
+                }
+                false
+            };
+
+            assert!(read_kf(&mut input, &mut pkt), "{file}: first keyframe");
+            assert!(
+                bsf.accepts_keyframe(pkt.as_ptr()),
+                "{file}: accepts first kf"
+            );
+            if expect_annexb_header {
+                bsf.flush();
+                bsf.send(pkt.as_ptr()).unwrap();
+                let mut emitted = Vec::new();
+                bsf.drain(|out| {
+                    // SAFETY: valid packet drained from filter.
+                    unsafe {
+                        let p = &*out.as_ptr();
+                        emitted
+                            .extend_from_slice(std::slice::from_raw_parts(p.data, p.size as usize));
+                    }
+                    Ok(())
+                })
+                .unwrap();
+                assert!(emitted.starts_with(&[0, 0, 0, 1]), "{file}: Annex B prefix");
+            }
+
+            let zero_pkt = |len: i32| {
+                let z = crate::decode::Packet::new();
+                // SAFETY: allocates and zeroes `len` payload bytes.
+                unsafe {
+                    assert_eq!(ff::av_new_packet(z.as_ptr(), len), 0);
+                    std::ptr::write_bytes((*z.as_ptr()).data, 0, len as usize);
+                    (*z.as_ptr()).flags = ff::AV_PKT_FLAG_KEY as i32;
+                }
+                z
+            };
+
+            let odd = zero_pkt(65);
+            if must_error_odd {
+                let err = bsf
+                    .send(odd.as_ptr())
+                    .and_then(|()| bsf.drain(|_| Ok(())))
+                    .unwrap_err();
+                assert!(err.is_annexb_refused(), "{file}: {err:?}");
+                bsf.flush();
+            }
+            assert!(
+                !bsf.accepts_keyframe(odd.as_ptr()),
+                "{file}: reject 65B zero"
+            );
+            let even = zero_pkt(64);
+            let err = bsf.send(even.as_ptr()).unwrap_err();
+            assert!(err.is_annexb_refused(), "{file}: {err:?}");
+            assert!(
+                !bsf.accepts_keyframe(even.as_ptr()),
+                "{file}: reject 64B zero"
+            );
+
+            // A keyframe whose second half lies in a hole: its lengths still
+            // add up, so only the zeros inside its NAL units give it away.
+            let torn = crate::decode::Packet::new();
+            // SAFETY: `torn` references `pkt`'s data, then gets its own
+            // writable copy before half of it is zeroed.
+            unsafe {
+                assert_eq!(ff::av_packet_ref(torn.as_ptr(), pkt.as_ptr()), 0);
+                assert_eq!(ff::av_packet_make_writable(torn.as_ptr()), 0);
+                let p = &*torn.as_ptr();
+                let half = p.size as usize / 2;
+                std::ptr::write_bytes(p.data.add(half), 0, p.size as usize - half);
+            }
+            assert!(
+                !bsf.accepts_keyframe(torn.as_ptr()),
+                "{file}: reject keyframe with zeroed tail"
+            );
+
+            if !read_kf(&mut input, &mut pkt) {
+                input.seek(0.0).unwrap();
+                assert!(read_kf(&mut input, &mut pkt), "{file}: rewound keyframe");
+            }
+            assert!(
+                bsf.accepts_keyframe(pkt.as_ptr()),
+                "{file}: recovers on subsequent good keyframe"
+            );
+        }
     }
 }

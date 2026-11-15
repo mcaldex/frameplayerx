@@ -491,6 +491,7 @@ impl Input {
     }
 
     fn seek_after_file(&mut self, seconds: f64) -> Result<()> {
+        self.peeked.clear();
         let ts = ((seconds.max(0.0) + self.origin) * ff::AV_TIME_BASE as f64) as i64;
         let (stream, ts) = self.seek_stream(ts);
         // SAFETY: fmt is open.
@@ -500,6 +501,86 @@ impl Input {
                 "seek",
             )?;
         }
+        Ok(())
+    }
+
+    /// Raw stream-timebase timestamps of all indexed keyframes in `stream_index`
+    /// strictly after `after_dts` (or `after_pos` when `after_dts` is unknown).
+    pub(crate) fn video_keyframes_after(
+        &self,
+        stream_index: usize,
+        after_dts: i64,
+        after_pos: i64,
+    ) -> Vec<i64> {
+        const AVINDEX_KEYFRAME: i32 = 0x0001;
+        if self.title.is_some() {
+            return Vec::new();
+        }
+        let Some(&st) = self.streams().get(stream_index) else {
+            return Vec::new();
+        };
+        // SAFETY: `st` is a valid stream of the open format context.
+        unsafe {
+            let n = ff::avformat_index_get_entries_count(st);
+            let mut out = Vec::new();
+            for i in 0..n {
+                let e = ff::avformat_index_get_entry(st, i);
+                if e.is_null() {
+                    continue;
+                }
+                let e = &*e;
+                if e.flags() & AVINDEX_KEYFRAME == 0 {
+                    continue;
+                }
+                if after_pos >= 0 && e.pos == after_pos {
+                    continue;
+                }
+                if after_dts != ff::AV_NOPTS_VALUE && e.timestamp <= after_dts {
+                    continue;
+                }
+                if e.timestamp != ff::AV_NOPTS_VALUE {
+                    out.push(e.timestamp);
+                }
+            }
+            out
+        }
+    }
+
+    /// Seeks `stream_index` directly to an indexed keyframe at `timestamp`
+    /// (in the stream's own time base, avoiding microsecond rounding drift).
+    pub(crate) fn seek_video_timestamp(
+        &mut self,
+        stream_index: usize,
+        timestamp: i64,
+    ) -> Result<()> {
+        self.peeked.clear();
+        if let Some(p) = &mut self.pair {
+            p.view.seek();
+        }
+        // SAFETY: `self.fmt` is open and `stream_index` is valid.
+        let r = unsafe {
+            let r = ff::avformat_seek_file(
+                self.fmt,
+                stream_index as c_int,
+                timestamp,
+                timestamp,
+                i64::MAX,
+                0,
+            );
+            if r < 0 {
+                ff::avformat_seek_file(
+                    self.fmt,
+                    stream_index as c_int,
+                    i64::MIN,
+                    timestamp,
+                    i64::MAX,
+                    ff::AVSEEK_FLAG_BACKWARD as c_int,
+                )
+            } else {
+                r
+            }
+        };
+        check(r, "seek")?;
         Ok(())
     }
 
@@ -659,5 +740,49 @@ impl Drop for Input {
         // SAFETY: closes the context opened in open(); the custom pb is freed
         // afterwards by IoContext's Drop.
         unsafe { ff::avformat_close_input(&mut self.fmt) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fp_core::source::FileSource;
+
+    #[test]
+    fn video_keyframes_after_and_seek_video_timestamp_land_on_second_keyframe() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/h264_aac_180_LR.mp4");
+        let mut input = Input::open(
+            Arc::new(FileSource::open(&path).unwrap()),
+            "h264_aac_180_LR.mp4",
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        let vi = input.best_stream(ff::AVMEDIA_TYPE_VIDEO).unwrap();
+        let all = input.video_keyframes_after(vi, i64::MIN, -1);
+        assert!(all.len() >= 2, "expected >= 2 keyframes, got {all:?}");
+        assert!(all.windows(2).all(|w| w[0] < w[1]));
+
+        // Seeking directly to the second keyframe lands on it rather than
+        // sliding back to keyframe 0 (even with B-frame PTS > DTS).
+        input.seek_video_timestamp(vi, all[1]).unwrap();
+        let mut pkt = Packet::new();
+        while input.read(pkt.as_ptr()).unwrap() {
+            if pkt.stream_index() == vi {
+                // SAFETY: valid packet read from `input`.
+                let (dts, pos, flags) = unsafe {
+                    let p = &*pkt.as_ptr();
+                    (p.dts, p.pos, p.flags)
+                };
+                assert_ne!(flags & ff::AV_PKT_FLAG_KEY as i32, 0);
+                assert_eq!(dts, all[1], "pos={pos}");
+                break;
+            }
+            pkt.unref();
+        }
+
+        // Excluding the first keyframe starts from the second.
+        let tail = input.video_keyframes_after(vi, all[0], i64::MAX);
+        assert_eq!(tail.first().copied(), Some(all[1]));
     }
 }

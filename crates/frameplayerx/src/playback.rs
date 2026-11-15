@@ -124,6 +124,12 @@ pub struct Playback {
     pub notice: Option<Notice>,
     /// Last decoding check: when, and the player's stall and frame counts.
     decode_check: (Instant, u64, u64, u64),
+    /// Damaged stretches jumped over so far, and the seconds of video they
+    /// held in all, for the notice.
+    damaged_jumps: u64,
+    damaged_skipped: f64,
+    /// When the jump over a damaged stretch now under way began.
+    skipping_since: Option<Instant>,
     /// Tells the server the video came from how watching it goes.
     watch: Option<Watch>,
     /// What the server can transcode the video to, tallest first.
@@ -712,6 +718,9 @@ pub fn open(
             last_save: Instant::now(),
             notice,
             decode_check: (Instant::now(), 0, 0, 0),
+            damaged_jumps: 0,
+            damaged_skipped: 0.0,
+            skipping_since: None,
             watch,
             targets,
             transcoding,
@@ -1070,6 +1079,30 @@ impl Playback {
             playing: matches!(p.state(), PlayerState::Playing),
             sampled_at_ms: now_ms(),
         }
+    }
+
+    /// Returns `(held, jumped)`: whether a jump over a damaged stretch has
+    /// held the picture for [`SKIPPING_SHOWN_AFTER`] or more, so the viewer
+    /// is told, and whether a jump finished since the last poll, which
+    /// [`Self::damage_notice`] then counts.
+    pub fn poll_damage_skip(&mut self) -> (bool, bool) {
+        let st = self.player.stats();
+        let (skipping, done) = damage_skip_step(
+            &mut self.damaged_jumps,
+            st.skipping_damaged,
+            st.damaged_jumps,
+        );
+        if done {
+            self.damaged_skipped += st.damaged_skipped;
+        }
+        let held = held_long(&mut self.skipping_since, skipping, Instant::now());
+        (held, done)
+    }
+
+    /// The control bar's notice once a damaged stretch was jumped over: one
+    /// pill however many there are, rather than a message for each.
+    pub fn damage_notice(&self) -> Option<Notice> {
+        damage_notice(self.damaged_jumps, self.damaged_skipped)
     }
 
     /// View settings at the current position (keyframes applied).
@@ -1584,6 +1617,44 @@ pub(crate) fn slow_decode_notice(
             tr!("decoder-notice-held", stream = desc, holders = names),
         )
     }
+}
+
+/// How long a jump over a damaged stretch holds the picture before
+/// "Skipping damaged video…" shows: one through what was read ahead is over
+/// in milliseconds, too soon to notice.
+const SKIPPING_SHOWN_AFTER: Duration = Duration::from_secs(1);
+
+/// Whether a jump, `skipping` now and since `since` (kept up to date here),
+/// has held the picture for [`SKIPPING_SHOWN_AFTER`] by `now`.
+fn held_long(since: &mut Option<Instant>, skipping: bool, now: Instant) -> bool {
+    if !skipping {
+        *since = None;
+        return false;
+    }
+    now.duration_since(*since.get_or_insert(now)) >= SKIPPING_SHOWN_AFTER
+}
+
+/// The notice for `jumps` damaged stretches skipped, `skipped` seconds of
+/// video in all (rounded up, so a short one doesn't read as none).
+fn damage_notice(jumps: u64, skipped: f64) -> Option<Notice> {
+    (jumps > 0).then(|| {
+        Notice::new(
+            tr!("notice-pill-damaged"),
+            tr!(
+                "notice-damaged",
+                count = jumps,
+                time = crate::ui::fmt_time(skipped.ceil())
+            ),
+        )
+    })
+}
+
+fn damage_skip_step(seen_jumps: &mut u64, skipping: bool, total_jumps: u64) -> (bool, bool) {
+    let completed = !skipping && total_jumps > *seen_jumps;
+    if completed {
+        *seen_jumps = total_jumps;
+    }
+    (skipping, completed)
 }
 
 #[cfg(test)]
@@ -2387,5 +2458,57 @@ mod tests {
         };
         use_saved_source_tracks(&mut asked, &PickedTracks::default(), &tracks);
         assert_eq!(asked.source_audio.as_deref(), Some("201"));
+    }
+
+    #[test]
+    fn damaged_stretches_make_one_notice_that_counts_them() {
+        assert_eq!(damage_notice(0, 0.0), None);
+        let one = damage_notice(1, 0.43).unwrap();
+        assert_eq!(one.label, tr!("notice-pill-damaged"));
+        assert!(one.detail.contains("0:01"), "{}", one.detail);
+        let three = damage_notice(3, 72.2).unwrap();
+        assert!(
+            three.detail.contains('3') && three.detail.contains("1:13"),
+            "{}",
+            three.detail
+        );
+    }
+
+    #[test]
+    fn only_a_jump_held_long_enough_to_notice_says_so() {
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        let mut since = None;
+        assert!(!held_long(&mut since, false, at(0)));
+        // A jump from what was read ahead, over before anyone notices.
+        assert!(!held_long(&mut since, true, at(0)));
+        assert!(!held_long(&mut since, true, at(120)));
+        assert!(!held_long(&mut since, false, at(130)));
+        // One that holds the picture: shown once it has for a second.
+        assert!(!held_long(&mut since, true, at(1000)));
+        assert!(!held_long(&mut since, true, at(1900)));
+        assert!(held_long(&mut since, true, at(2000)));
+        assert!(held_long(&mut since, true, at(4000)));
+        // Done, and the next jump starts its own second.
+        assert!(!held_long(&mut since, false, at(4100)));
+        assert!(!held_long(&mut since, true, at(5000)));
+        assert!(held_long(&mut since, true, at(6000)));
+    }
+
+    #[test]
+    fn damage_skip_step_reports_in_flight_and_completion() {
+        let mut seen = 0;
+        assert_eq!(damage_skip_step(&mut seen, false, 0), (false, false));
+        // Jump starts: skipping is live, not yet completed.
+        assert_eq!(damage_skip_step(&mut seen, true, 1), (true, false));
+        assert_eq!(seen, 0);
+        // Jump completes: signals completion once, then returns to steady state.
+        assert_eq!(damage_skip_step(&mut seen, false, 1), (false, true));
+        assert_eq!(seen, 1);
+        assert_eq!(damage_skip_step(&mut seen, false, 1), (false, false));
+        // Another jump occurs later.
+        assert_eq!(damage_skip_step(&mut seen, true, 2), (true, false));
+        assert_eq!(damage_skip_step(&mut seen, false, 2), (false, true));
+        assert_eq!(seen, 2);
     }
 }
