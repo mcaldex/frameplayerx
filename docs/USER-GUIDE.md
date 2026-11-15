@@ -647,8 +647,10 @@ in or out. On a headset that tracks your eyes it aims where they look;
 middle of your view (that choice is kept for all videos, and Settings ›
 Picture has it too). Without eye tracking it always aims with your head. It starts from the focus distance set by hand,
 and choosing **Manual** keeps the distance where automatic had it. It
-changes the distance only when what is round the middle of your view
-agrees, so it stays steady at the edge of a face against a far wall. A
+changes the distance once a few measurements in a row agree on a new
+one and the old one is no longer seen where you look: a stray
+measurement doesn't move it, a small thing you look at is followed, and
+it stays steady while you look at the edge of a face against a far wall. A
 skip, a cut or another video starts it afresh, and what it measures is
 never saved with the video. A line under it says what it is doing:
 

@@ -11,21 +11,14 @@
 use crate::depth::Outcome;
 use crate::view::FOCUS_DISTANCES;
 
-/// Where around the aim a measurement is taken.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Side {
-    Centre,
-    /// [`SIDE`] to the left of the aim, in the video's axes.
-    Left,
-    Right,
-}
-
-/// How far either side of the aim the side measurements are, radians: 2°.
-/// The head's window is 4.8° across with its weight within about 1.2° of
-/// the middle, so a side window overlaps the aim's but weighs what lies
-/// past its edge: at a subject's edge one side sees the subject and the
-/// other what is behind it.
-pub const SIDE: f32 = 2.0 * std::f32::consts::PI / 180.0;
+/// How many of the latest measurements a change of distance is decided
+/// on: 3, the newest and the two before it, a tenth of a second at the
+/// rate the player measures. Every measurement is at the aim: windows
+/// beside it would ask a subject to be wider than the aim's window and
+/// them together (over 8° for 2° to either side, more than a face at
+/// 2 m) before it is followed, and its edge already shows in the aim's
+/// own measurements, which then disagree among themselves.
+const RECENT: usize = 3;
 
 /// Two measurements agree within this, 1/metres: 0.04, three resolution
 /// steps at 65 mm, under a sixth of a degree of convergence for 63 mm eyes
@@ -60,10 +53,6 @@ const REFINE: f32 = 0.3;
 /// last one and a half, following it twice as closely.
 const REFINE_EYES: f32 = 0.6;
 
-/// How old a side's measurement may be and still bear out (or speak
-/// against) a change, seconds: a few cycles of measurements.
-const FRESH: f64 = 0.5;
-
 /// A jump forward of the playback position more than this many times the
 /// time passed, plus [`SEEK_SLACK`] seconds, is a seek: fast-forward up to
 /// 4x isn't, nor is a frame arriving late.
@@ -87,7 +76,6 @@ const CUT_MEAN: f32 = 0.15;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tag {
     generation: u64,
-    pub side: Side,
 }
 
 /// The settings it follows by (per video, see `ViewSettings`).
@@ -151,15 +139,6 @@ pub struct Reading {
     pub confidence: f32,
 }
 
-/// One measurement as it came back.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Got {
-    side: Side,
-    time: f64,
-    /// Nearness, when it gave one confidently enough.
-    nearness: Option<f32>,
-}
-
 /// The focus controller of one open video.
 #[derive(Clone, Debug)]
 pub struct Controller {
@@ -167,10 +146,12 @@ pub struct Controller {
     /// Nearness shown, and what it glides to (`None`: nothing to go on).
     shown: f32,
     accepted: Option<f32>,
-    /// Recent measurements, newest last.
-    recent: Vec<Got>,
-    /// The order measurements are asked for in.
-    cycle: usize,
+    /// The latest [`RECENT`] measurements' nearness, when they gave one
+    /// confidently enough; newest last.
+    recent: Vec<Option<f32>>,
+    /// How many times what it glides to was set anew (locked, or changed
+    /// to another distance), for the log.
+    changes: u64,
     activity: Activity,
     last: Option<Reading>,
     /// The playback position and time at the last tick.
@@ -178,10 +159,6 @@ pub struct Controller {
     /// The coarse picture of the last measurement, for noticing cuts.
     picture: Option<Vec<f32>>,
 }
-
-/// What the measurements ask for, in order once locked: the aim, a side,
-/// the aim, the other side.
-const CYCLE: [Side; 4] = [Side::Centre, Side::Left, Side::Centre, Side::Right];
 
 fn nearness_of(distance: f32) -> f32 {
     1.0 / distance.clamp(*FOCUS_DISTANCES.start(), *FOCUS_DISTANCES.end())
@@ -195,7 +172,7 @@ impl Controller {
             shown: nearness_of(distance),
             accepted: None,
             recent: Vec::new(),
-            cycle: 0,
+            changes: 0,
             activity: Activity::Measuring,
             last: None,
             clock: None,
@@ -222,6 +199,12 @@ impl Controller {
         self.last
     }
 
+    /// How many times what it glides to has been set anew: locked, or
+    /// changed to another distance (not the small refinements in between).
+    pub fn changes(&self) -> u64 {
+        self.changes
+    }
+
     /// Starts over from nothing to go on, showing `distance` metres: a
     /// seek, a cut, another video, another lens spacing, or turning on.
     /// Results of what was asked for before are ignored.
@@ -230,7 +213,6 @@ impl Controller {
         self.shown = nearness_of(distance);
         self.accepted = None;
         self.recent.clear();
-        self.cycle = 0;
         self.activity = Activity::Measuring;
         self.picture = None;
     }
@@ -254,26 +236,17 @@ impl Controller {
     }
 
     /// What to measure next, tagged; ask when the last has come back (or
-    /// was given up).
+    /// was given up). It is always the aim.
     pub fn ask(&mut self) -> Tag {
-        // Nothing to go on: the aim, for the first two to agree.
-        let side = if self.locked() {
-            let s = CYCLE[self.cycle % CYCLE.len()];
-            self.cycle += 1;
-            s
-        } else {
-            Side::Centre
-        };
         Tag {
             generation: self.generation,
-            side,
         }
     }
 
-    /// Takes the result of measurement `tag`, finished at `now`, with the
-    /// coarse picture it sampled (for noticing a cut); ignored if asked for
-    /// before a start-over.
-    pub fn take(&mut self, tag: Tag, outcome: Outcome, picture: &[f32], now: f64, follow: &Follow) {
+    /// Takes the result of measurement `tag`, with the coarse picture it
+    /// sampled (for noticing a cut); ignored if asked for before a
+    /// start-over.
+    pub fn take(&mut self, tag: Tag, outcome: Outcome, picture: &[f32], follow: &Follow) {
         if tag.generation != self.generation {
             return;
         }
@@ -293,12 +266,10 @@ impl Controller {
                 nearness,
                 confidence,
             } if confidence >= MIN_CONFIDENCE => {
-                if tag.side == Side::Centre {
-                    self.last = Some(Reading {
-                        distance: 1.0 / nearness.max(nearness_of(*FOCUS_DISTANCES.end())),
-                        confidence,
-                    });
-                }
+                self.last = Some(Reading {
+                    distance: 1.0 / nearness.max(nearness_of(*FOCUS_DISTANCES.end())),
+                    confidence,
+                });
                 Some(if nearness > near_limit && open_near {
                     near_limit
                 } else if nearness < far_limit && open_far {
@@ -309,17 +280,9 @@ impl Controller {
             }
             _ => None,
         };
-        self.recent.push(Got {
-            side: tag.side,
-            time: now,
-            nearness,
-        });
-        // A few cycles' worth.
-        if self.recent.len() > 12 {
+        self.recent.push(nearness);
+        if self.recent.len() > RECENT {
             self.recent.remove(0);
-        }
-        if tag.side != Side::Centre {
-            return;
         }
         let Some(n) = nearness else {
             if let Some(hold) = hold_for(outcome) {
@@ -335,19 +298,20 @@ impl Controller {
             self.activity = Activity::Holding(Hold::TooFar);
             return;
         }
-        let centres: Vec<f32> = self
-            .recent
+        // The latest that gave a depth, newest last.
+        let seen: Vec<f32> = self.recent.iter().flatten().copied().collect();
+        let agreeing: Vec<f32> = seen
             .iter()
-            .rev()
-            .filter(|g| g.side == Side::Centre)
-            .take(3)
-            .filter_map(|g| g.nearness)
+            .copied()
+            .filter(|p| (p - n).abs() <= AGREE)
             .collect();
+        let mean = agreeing.iter().sum::<f32>() / agreeing.len() as f32;
         match self.accepted {
             // The first two to agree are taken at once.
             None => {
-                if centres.get(1).is_some_and(|p| (p - n).abs() <= AGREE) {
-                    self.accepted = Some((n + centres[1]) / 2.0);
+                if agreeing.len() >= 2 {
+                    self.accepted = Some(mean);
+                    self.changes += 1;
                     self.activity = Activity::Following;
                 } else {
                     self.activity = Activity::Measuring;
@@ -359,26 +323,16 @@ impl Controller {
                 self.accepted = Some(a + (n - a) * refine);
                 self.activity = Activity::Following;
             }
-            // Something else at the aim: changed only if the aim agrees
-            // twice, a side bears it out and no fresh side says otherwise.
-            Some(_) => {
-                let twice = centres.iter().filter(|p| (*p - n).abs() <= AGREE).count() >= 2;
-                let sides = [Side::Left, Side::Right].map(|s| {
-                    self.recent
-                        .iter()
-                        .rev()
-                        .find(|g| g.side == s && now - g.time <= FRESH)
-                        .and_then(|g| g.nearness)
-                        .map(|p| (p - n).abs() <= AGREE)
-                });
-                let borne_out = sides.contains(&Some(true)) && !sides.contains(&Some(false));
-                if twice && borne_out {
-                    let agreeing: Vec<f32> = centres
-                        .iter()
-                        .copied()
-                        .filter(|p| (p - n).abs() <= AGREE)
-                        .collect();
-                    self.accepted = Some(agreeing.iter().sum::<f32>() / agreeing.len() as f32);
+            // Something else at the aim: changed once two of the latest
+            // agree on it and none of them still sees the distance it is
+            // at. One wrong measurement never moves it, and where the aim
+            // rests on an edge, its measurements going back and forth
+            // between the two distances keep it where it is.
+            Some(a) => {
+                let still_there = seen.iter().any(|p| (p - a).abs() <= AGREE);
+                if agreeing.len() >= 2 && !still_there {
+                    self.accepted = Some(mean);
+                    self.changes += 1;
                 }
                 self.activity = Activity::Following;
             }
@@ -470,7 +424,7 @@ mod tests {
             }
         }
 
-        fn run(&mut self, seconds: f64, scene: impl Fn(Side) -> Outcome) {
+        fn run(&mut self, seconds: f64, mut scene: impl FnMut() -> Outcome) {
             for _ in 0..(seconds * HZ).round() as u64 {
                 self.now += 1.0 / HZ;
                 if self.playing {
@@ -481,8 +435,7 @@ mod tests {
                 if let Some((tag, at)) = self.pending
                     && self.frame >= at
                 {
-                    self.c
-                        .take(tag, scene(tag.side), &self.picture, self.now, &self.follow);
+                    self.c.take(tag, scene(), &self.picture, &self.follow);
                     self.pending = None;
                 }
                 if self.pending.is_none() && self.frame.is_multiple_of(3) {
@@ -496,8 +449,8 @@ mod tests {
         }
     }
 
-    fn everywhere(distance: f32) -> impl Fn(Side) -> Outcome {
-        move |_| depth(distance)
+    fn everywhere(distance: f32) -> impl Fn() -> Outcome {
+        move || depth(distance)
     }
 
     #[test]
@@ -532,7 +485,7 @@ mod tests {
             let f = Follow::default();
             c.tick(0.0, 0.0, &f);
             for t in [c.ask(), c.ask()] {
-                c.take(t, depth(1.0), &shot(1), 0.0, &f);
+                c.take(t, depth(1.0), &shot(1), &f);
             }
             for i in 1..=(0.25 * hz).round() as u32 {
                 let now = i as f64 / hz;
@@ -547,7 +500,7 @@ mod tests {
         let f = Follow::default();
         c.tick(0.0, 0.0, &f);
         for t in [c.ask(), c.ask()] {
-            c.take(t, depth(1.0), &shot(1), 0.0, &f);
+            c.take(t, depth(1.0), &shot(1), &f);
         }
         c.tick(1.0, 0.0, &f);
         let want = 0.5 + 0.5 * (1.0 - (-MAX_STEP / GLIDE).exp());
@@ -559,24 +512,26 @@ mod tests {
         let mut s = Sim::new(1.0);
         s.run(1.0, everywhere(1.0));
         let before = s.nearness();
-        for wrong in [Side::Centre, Side::Left, Side::Right] {
-            // The first answer from that side reads 3 m, then all 1 m.
-            let left = std::cell::Cell::new(true);
-            let scene = |side: Side| {
-                if side == wrong && left.replace(false) {
+        let changes = s.c.changes();
+        // One answer reads 3 m, the rest 1 m; then one in every three.
+        for every in [u32::MAX, 3] {
+            let mut s2 = s_clone(&s);
+            let mut i = 0;
+            s2.run(1.0, || {
+                i += 1;
+                if i % every == 1 {
                     depth(3.0)
                 } else {
                     depth(1.0)
                 }
-            };
-            let mut s2 = s_clone(&s);
-            s2.run(1.0, scene);
-            assert!(!left.get(), "{wrong:?} was measured");
+            });
+            assert!(i > 1, "measured");
             assert!(
                 (s2.nearness() - before).abs() < 0.002,
-                "{wrong:?}: {}",
+                "{}",
                 s2.c.distance()
             );
+            assert_eq!(s2.c.changes(), changes);
         }
     }
 
@@ -594,34 +549,37 @@ mod tests {
     }
 
     #[test]
-    fn a_subject_entering_from_one_side_switches_it_only_when_borne_out() {
+    fn a_subject_at_the_aim_is_followed_once_the_old_distance_is_gone() {
         let mut s = Sim::new(3.0);
         s.run(1.5, everywhere(3.0));
         let far = s.nearness();
-        // The subject's edge at the aim: the left and the aim see it,
-        // the right still sees the wall behind.
-        let edge = |side: Side| match side {
-            Side::Right => depth(3.0),
-            _ => depth(1.0),
-        };
-        s.run(1.0, edge);
-        assert!((s.nearness() - far).abs() < 0.002, "{}", s.c.distance());
-        // The aim flickering between the two at the edge doesn't either.
+        let changes = s.c.changes();
+        // The aim resting on a subject's edge, its measurements going back
+        // and forth between the subject and the wall behind: it holds.
         let mut flip = false;
-        let flicker = |side: Side| match side {
-            Side::Left => depth(1.0),
-            Side::Right => depth(3.0),
-            Side::Centre => {
-                flip = !flip;
-                if flip { depth(1.0) } else { depth(3.0) }
-            }
-        };
-        let flicker = std::cell::RefCell::new(flicker);
-        s.run(1.0, |side| (flicker.borrow_mut())(side));
+        s.run(1.0, || {
+            flip = !flip;
+            if flip { depth(1.0) } else { depth(3.0) }
+        });
         assert!((s.nearness() - far).abs() < 0.002, "{}", s.c.distance());
-        // Across the aim and both sides: it follows.
+        // Mostly the subject, the wall in one of every three: still there.
+        let mut i = 0;
+        s.run(1.0, || {
+            i += 1;
+            if i % 3 == 0 { depth(3.0) } else { depth(1.0) }
+        });
+        assert!((s.nearness() - far).abs() < 0.002, "{}", s.c.distance());
+        assert_eq!(s.c.changes(), changes);
+        // The subject alone at the aim, however narrow (nothing beside the
+        // aim is asked): changed by the third measurement after the wall's
+        // last, a tenth of a second at a measurement every third frame,
+        // then gliding there.
+        s.run(9.0 / HZ, everywhere(1.0));
+        assert_eq!(s.c.changes(), changes + 1);
+        assert!(s.nearness() > far + 0.01, "{}", s.c.distance());
         s.run(1.5, everywhere(1.0));
         assert!((s.nearness() - 1.0).abs() < 0.01, "{}", s.c.distance());
+        assert_eq!(s.c.changes(), changes + 1, "then only refined");
     }
 
     #[test]
@@ -643,13 +601,13 @@ mod tests {
         s.run(2.0, everywhere(10.0));
         assert!((s.c.distance() - 10.0).abs() < 0.5, "{}", s.c.distance());
         // At the farthest offered, farther still is followed to there.
-        s.run(2.0, |_| Outcome::Depth {
+        s.run(2.0, || Outcome::Depth {
             nearness: 0.0,
             confidence: 0.9,
         });
         assert!((s.c.distance() - 20.0).abs() < 1.0, "{}", s.c.distance());
         // A measurement that gives no depth holds, saying why.
-        s.run(0.2, |_| Outcome::Ambiguous);
+        s.run(0.2, || Outcome::Ambiguous);
         assert_eq!(s.c.activity(), Activity::Holding(Hold::Repeating));
     }
 
@@ -689,8 +647,8 @@ mod tests {
         let old = c.ask();
         c.start_over(2.0);
         let new = c.ask();
-        c.take(old, depth(1.0), &shot(1), 0.0, &f);
-        c.take(new, depth(1.0), &shot(1), 0.0, &f);
+        c.take(old, depth(1.0), &shot(1), &f);
+        c.take(new, depth(1.0), &shot(1), &f);
         assert!(!c.locked(), "only one answer counted");
         assert_eq!(c.last_reading().map(|r| r.distance), Some(1.0));
     }

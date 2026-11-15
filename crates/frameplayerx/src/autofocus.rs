@@ -8,7 +8,7 @@
 //! nothing waits.
 
 use crate::gaze::{Aim, GazeStatus};
-use fp_core::autofocus::{Activity, Controller, Follow, Hold, MIN_CONFIDENCE, SIDE, Side, Tag};
+use fp_core::autofocus::{Activity, Controller, Follow, Hold, MIN_CONFIDENCE, Tag};
 use fp_core::depth::{Angles, Grids, Matcher, Measurement, Outcome, Plan, Request, Window};
 use fp_core::format::VideoFormat;
 use fp_render::params::look_in_video;
@@ -185,6 +185,8 @@ struct Tally {
     measured: u32,
     with_depth: u32,
     match_ms: Vec<f32>,
+    /// The controller's count of changes at the last line.
+    changes: u64,
 }
 
 /// Automatic focus's state for one open video.
@@ -212,15 +214,9 @@ pub struct AutoFocus {
     lockstep: bool,
 }
 
-/// The aim for side `side` of `look`, in the video's axes.
-fn aim(video: &VideoParams, look: Vec3, side: Side) -> Angles {
-    let a = Angles::of(look_in_video(video, look).to_array());
-    let alpha = match side {
-        Side::Centre => a.alpha,
-        Side::Left => a.alpha + SIDE,
-        Side::Right => a.alpha - SIDE,
-    };
-    Angles { alpha, ..a }
+/// The aim `look` (world) in the video's axes.
+fn aim(video: &VideoParams, look: Vec3) -> Angles {
+    Angles::of(look_in_video(video, look).to_array())
 }
 
 impl AutoFocus {
@@ -310,21 +306,21 @@ impl AutoFocus {
         }
         self.rig = Some(rig);
         self.controller.tick(now, position, follow);
-        self.take_match(now, follow);
+        self.take_match(follow);
         if let Some((id, grids)) = renderer.take_depth() {
             self.hand_over(id, grids);
         }
         // Held through a blink, the aim starts nothing (one under way still
         // counts).
         if shown && !self.broken && aiming.usable {
-            self.ask(renderer, video, aiming, now, follow);
+            self.ask(renderer, video, aiming, follow);
         }
         self.update_status(now, renderer.measures_depth(), aiming.note);
         self.controller.distance()
     }
 
     /// Takes in a finished match, if there is one.
-    fn take_match(&mut self, now: f64, follow: &Follow) {
+    fn take_match(&mut self, follow: &Follow) {
         let Some(w) = &self.worker else {
             return;
         };
@@ -352,7 +348,7 @@ impl AutoFocus {
                     self.tally.with_depth += 1;
                 }
                 self.controller
-                    .take(d.tag, d.measurement.outcome, &d.coarse, now, follow);
+                    .take(d.tag, d.measurement.outcome, &d.coarse, follow);
                 self.picture = d.coarse;
             }
             Err(TryRecvError::Empty) => {}
@@ -417,7 +413,6 @@ impl AutoFocus {
         renderer: &mut Renderer,
         video: &VideoParams,
         aiming: &Aiming,
-        now: f64,
         follow: &Follow,
     ) {
         let Some(matcher) = &self.matcher else {
@@ -428,7 +423,7 @@ impl AutoFocus {
         }
         let tag = self.controller.ask();
         let request = Request {
-            aim: aim(video, aiming.look, tag.side),
+            aim: aim(video, aiming.look),
             baseline: video.settings.lens_spacing / 1000.0,
             nearest: follow.nearest / SEARCH_NEARER,
             window: if aiming.eyes {
@@ -447,7 +442,7 @@ impl AutoFocus {
             // Nothing to sample there: the answer is known now.
             Err(outcome) => {
                 let picture = std::mem::take(&mut self.picture);
-                self.controller.take(tag, outcome, &picture, now, follow);
+                self.controller.take(tag, outcome, &picture, follow);
                 self.picture = picture;
             }
         }
@@ -477,19 +472,29 @@ impl AutoFocus {
     }
 
     /// The figures since the last call, for the 10-second log line, if it
-    /// measured: made, with a depth, typical and longest match, the
-    /// distance now. Nothing in it says what the video is.
+    /// measured: made, with a depth, how often the distance it glides to
+    /// was set anew (many while looking at one thing is it going back and
+    /// forth), typical and longest match, the distance now. Nothing in it
+    /// says what the video is.
     pub fn take_log_line(&mut self) -> Option<String> {
-        let t = std::mem::take(&mut self.tally);
+        let changes = self.controller.changes();
+        let t = std::mem::replace(
+            &mut self.tally,
+            Tally {
+                changes,
+                ..Tally::default()
+            },
+        );
         if t.measured == 0 {
             return None;
         }
         let mut ms = t.match_ms;
         ms.sort_by(f32::total_cmp);
         Some(format!(
-            "automatic focus: {} measured, {} with a depth; match ms median {:.2}, max {:.2}; at {:.2} m",
+            "automatic focus: {} measured, {} with a depth, {} changes of distance; match ms median {:.2}, max {:.2}; at {:.2} m",
             t.measured,
             t.with_depth,
+            changes - t.changes,
             ms[ms.len() / 2],
             ms[ms.len() - 1],
             self.controller.distance()
@@ -764,6 +769,126 @@ mod tests {
             })
             .collect();
         Arc::new(fp_media::VideoFrame::from_rgba(w, h, &rgba).unwrap())
+    }
+
+    /// A 180° side-by-side frame of a textured disc 3 m away 10° to the
+    /// left, 4.6° across (a face 2 m away), in front of a textured wall
+    /// 8 m away.
+    fn small_subject() -> Arc<fp_media::VideoFrame> {
+        use fp_core::depth::scenes::Shape;
+        let (w, h) = (2048, 1024);
+        let g = PictureGeometry::new(
+            &VideoFormat::FALLBACK,
+            &ViewSettings::default(),
+            w,
+            h,
+            1.0,
+            0,
+        );
+        let left = 10f32.to_radians();
+        let scene = Scene::new(vec![
+            Surface::new(
+                Shape::Disc {
+                    centre: [-3.0 * left.sin(), 0.0, -3.0 * left.cos()],
+                    normal: [left.sin(), 0.0, left.cos()],
+                    radius: 3.0 * 2.3f32.to_radians().tan(),
+                },
+                Texture::Noise {
+                    feature: 0.018,
+                    contrast: 1.0,
+                    seed: 8,
+                },
+            ),
+            Surface::wall(
+                8.0,
+                Texture::Noise {
+                    feature: 0.048,
+                    contrast: 1.0,
+                    seed: 9,
+                },
+            ),
+        ]);
+        let (luma, _) =
+            Picture::new([&scene, &scene], Rig::new(0.065), g, w as usize, h as usize).render();
+        let rgba: Vec<u8> = luma
+            .iter()
+            .flat_map(|l| {
+                let v = (l * 255.0).round() as u8;
+                [v, v, v, 255]
+            })
+            .collect();
+        Arc::new(fp_media::VideoFrame::from_rgba(w, h, &rgba).unwrap())
+    }
+
+    #[test]
+    fn a_small_subject_the_eyes_turn_to_is_followed_from_the_wall_behind() {
+        use crate::gaze::{Correction, GazeFilter, Reading};
+        let gpu = match Gpu::headless() {
+            Ok(g) => Arc::new(g),
+            Err(e) => {
+                eprintln!("skipping: no Vulkan device ({e})");
+                return;
+            }
+        };
+        let mut renderer = Renderer::new(gpu, ash::vk::Format::R8G8B8A8_SRGB).unwrap();
+        let eyes = OffscreenEyes::new(&renderer, 48, 48).unwrap();
+        let settings = ViewSettings {
+            focus: Focus::Auto,
+            focus_distance: 1.5,
+            lens_spacing: 65.0,
+            ..ViewSettings::default()
+        };
+        let video = VideoParams {
+            format: VideoFormat::FALLBACK,
+            settings,
+            ..Default::default()
+        };
+        let frame = small_subject();
+        let mut focus = AutoFocus::new(settings.focus_distance);
+        focus.lockstep = true;
+        let mut filter = GazeFilter::default();
+        let mut now = 0.0f64;
+        let head = Quat::IDENTITY;
+        let mut run = |focus: &mut AutoFocus, seconds: f64, yaw: f32| {
+            for _ in 0..(seconds * 90.0).round() as u32 {
+                now += 1.0 / 90.0;
+                let reading = Reading {
+                    direction: crate::gaze::direction(glam::Vec2::new(yaw.to_radians(), 0.0)),
+                    time: Some(now),
+                    age: Some(0.0),
+                    tracked: true,
+                };
+                let aim = filter.update(now, head, true, Some(reading), &Correction::default());
+                let aiming = Aiming::new(true, Some(&aim), head);
+                let follow = Follow {
+                    eyes: aiming.eyes,
+                    ..Follow::default()
+                };
+                renderer.begin_frame().unwrap();
+                renderer.set_video(Some(&frame)).unwrap();
+                let d = focus.frame(&mut renderer, now, now, &video, &aiming, true, &follow);
+                let shown = VideoParams {
+                    auto_focus: Some(d),
+                    ..video
+                };
+                renderer
+                    .draw(&eyes.targets(), &Player::eyes(), &shown, &[])
+                    .unwrap();
+                renderer.end_frame().unwrap();
+            }
+            focus.distance()
+        };
+        let near = |d: f32, want: f32| (d / want - 1.0).abs() < 0.03;
+        // The eyes on the wall 15° right: 8 / cos 15° = 8.28 m.
+        let d = run(&mut focus, 2.5, 15.0);
+        eprintln!("wall: {d:.3} m");
+        assert!(near(d, 8.0 / 15f32.to_radians().cos()), "wall: {d} m");
+        // Then on the subject: followed there, though 2° to either side of
+        // the gaze is mostly the wall.
+        let d = run(&mut focus, 2.5, -10.0);
+        eprintln!("subject: {d:.3} m");
+        assert!(near(d, 3.0), "subject: {d} m");
+        eprintln!("{}", focus.take_log_line().unwrap());
     }
 
     #[test]

@@ -197,8 +197,10 @@ check), unless the viewer chose the head or there is no eye tracking;
 with each job and comes back with the result. The render thread only
 tries the worker's channel. The distance reached goes into that frame's
 `VideoParams::auto_focus` and nowhere else, so it is never saved, and a
-line every 10 s in the log counts the measurements and their match
-times.
+line every 10 s in the log counts the measurements, how often the
+distance changed and the match times. Every measurement is at the aim;
+the controller changes the distance once two of the latest three agree
+on another one and none of them still sees the old one.
 
 **Sources and browsing.** Every source implements one `Source` trait
 (`list`, `open`, `details`). Each kind gets its own browser in `ui/`:
