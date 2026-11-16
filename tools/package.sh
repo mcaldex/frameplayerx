@@ -48,6 +48,8 @@ done
 cp packaging/frameplayerx.sh packaging/README.txt LICENSE NOTICE "$stage/"
 cp packaging/licenses/* "$stage/licenses/"
 cp assets/steam/*.png "$stage/assets/steam/"
+# Frame Control makes the library icon from an icon.png at the top of a title.
+cp assets/steam/icon.png "$stage/icon.png"
 echo "$version" > "$stage/VERSION"
 # The Rust crates compiled into the binary, then the licence, copyright and
 # notice files each crate ships, which their licences ask to go with the
