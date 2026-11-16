@@ -36,31 +36,35 @@ when Desktop Mode asks whether to trust it. A terminal window opens and:
 
 If Steam can't be updated while it's running, the installer asks to close
 it; the app then appears when you return to Gaming Mode, which it offers to
-do. Run the same file again to reinstall. From a terminal, the installer
-also takes `--beta` (the newest release, betas included); see
-[tools/frame-desktop-install](../tools/frame-desktop-install/README.md).
+do. Run the same file again to reinstall. To install the newest release,
+betas included, download `frameplayerx-desktop-install.py` from the
+[release page](https://github.com/remotesojourner/frameplayerx/releases/latest)
+and run it in Konsole:
+
+```
+python3 ~/Downloads/frameplayerx-desktop-install.py --beta
+```
 
 The other two ways need **Developer Mode** on, and the headset paired once
-with your PC by `frameplayerx-install pair` (below), Frame Control,
-FrameDrop or Valve's SteamOS Devkit Client.
+with your PC by `frameplayerx-install pair` (below), Frame Control or
+Valve's SteamOS Devkit Client.
 
-**With FrameDrop or Frame Control, from a PC.** With the app running on
-your PC and the headset paired, press the button in your PC's browser:
+**With Frame Control, from a PC.** With Frame Control running on your PC
+and the headset paired, press the button in your PC's browser:
 
-<a href="https://framedropvr.com/install?manifest=https%3A%2F%2Fgithub.com%2Fremotesojourner%2Fframeplayerx%2Freleases%2Flatest%2Fdownload%2Fframedrop.json"><img src="../assets/framedrop-button.svg" alt="Install with FrameDrop" width="240" /></a>
-<a href="https://remotesojourner.github.io/frameplayerx/frame-control.html"><img src="../assets/frame-control-button.svg" alt="Install with Frame Control" width="240" /></a>
+<a href="https://frameplayerx.org.uk/frame-control"><img src="../assets/frame-control-button.svg" alt="Install with Frame Control" width="240" /></a>
 
-GitHub doesn't keep links that open apps, so the Frame Control button opens a
-small page that opens Frame Control. If that doesn't work, paste this link
-into the browser's address bar instead:
+If the Frame Control button doesn't open Frame Control, paste this link into
+the browser's address bar instead:
 
 ```
 frame-control://install?manifest=https%3A%2F%2Fgithub.com%2Fremotesojourner%2Fframeplayerx%2Freleases%2Flatest%2Fdownload%2Fframeplayerx.json
 ```
 
-Either app reads the release's manifest (`framedrop.json` or
-`frameplayerx.json`), downloads the latest release, checks its SHA-256 and
-unpacks it into `~/frameplayerx`.
+Frame Control reads the release's manifest (`frameplayerx.json`), downloads
+the latest release and checks its SHA-256. It adds FramePlayerX to the Steam
+library as a sideloaded title, in `~/devkit-game/FramePlayerX`, and lists it
+under its **Sideloaded titles**.
 
 **From a PC with the installer.** Download `frameplayerx-install` for your
 PC from the release page and run it:
@@ -136,8 +140,9 @@ frameplayerx-install uninstall --purge          # deletes them too
 
 Add `--restart-steam` so the library updates right away.
 
-**Installed with Frame Control or FrameDrop.** They install into the same
-folder, `~/frameplayerx`, so either way above removes it.
+**Installed with Frame Control.** It lives in `~/devkit-game/FramePlayerX`,
+which the ways above don't delete. Remove it in Frame Control, under
+**Sideloaded titles**: that deletes its folder and its library entry.
 
 **By hand.** Delete the `frameplayerx` and `frameplayerx.old` folders in
 your home folder, and remove FramePlayerX from the Steam library.
@@ -1002,8 +1007,15 @@ Simplified Chinese. **Settings › General › Language** starts on
 Steam's isn't one of these); choose one to keep it whatever Steam's is.
 Server names, titles and other text from your servers show as they come.
 
-The translations started as machine drafts. If one reads wrong, the
-[README](../README.md#help-translate) says how to correct it or report it.
+The translations started as machine drafts, so some wording is likely to be
+wrong or awkward. To correct it, open
+[Codeberg Translate](https://translate.codeberg.org/projects/frameplayerx/),
+sign in with a Codeberg account, pick a language and edit its messages; no
+Git is needed. A note beside each message says where it shows, and "Short"
+marks a button, chip or tab, which should stay about as long as the English.
+To report a mistake without correcting it, open a
+[Translation problem](https://github.com/remotesojourner/frameplayerx/issues/new?template=translation.yml)
+issue with the language, where it shows and the wording you'd expect.
 
 ## Troubleshooting
 

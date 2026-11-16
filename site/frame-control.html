@@ -5,47 +5,48 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Install FramePlayerX with Frame Control</title>
   <meta name="description" content="Opens Frame Control on this PC to install the latest FramePlayerX on a paired Steam Frame.">
-  <link rel="icon" href="logo.svg" type="image/svg+xml">
+  <link rel="canonical" href="https://frameplayerx.org.uk/frame-control">
+  <link rel="icon" href="/assets/logo.svg" type="image/svg+xml">
   <!-- The README's Frame Control button lands here: GitHub doesn't keep links
        that open apps (frame-control://), a web page can. Opens Frame Control
        with the latest release's manifest, as Frame Control's own landing page
        does, and offers the app if nothing opened. -->
+  <link rel="stylesheet" href="/site.css">
   <style>
-    :root { color-scheme: dark; }
-    * { box-sizing: border-box; }
     body {
-      margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px 16px;
-      background: linear-gradient(180deg, #141a33, #2b1a5e); color: #ecf0f4;
-      font: 16px/1.5 Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+      display: grid; place-items: center; min-height: 100vh; padding: 24px 16px;
+      background:
+        radial-gradient(ellipse at 25% 15%, rgb(92 160 255 / 0.12), transparent 55%),
+        radial-gradient(ellipse at 75% 85%, rgb(170 110 255 / 0.12), transparent 55%),
+        var(--bg);
     }
-    main { max-width: 520px; text-align: center; }
-    img { width: 96px; height: 96px; }
-    h1 { font-size: 26px; margin: 16px 0 8px; }
-    h1 .x { background: linear-gradient(90deg, #5ca0ff, #aa6eff); -webkit-background-clip: text; background-clip: text; color: transparent; }
-    p { color: #b4bccb; margin: 8px 0; }
+    main { max-width: 32rem; text-align: center; }
+    main > a img { width: 96px; height: 96px; margin-inline: auto; }
+    h1 { margin: 1.25rem 0 0.5rem; font-size: 1.75rem; letter-spacing: -0.02em; }
+    p { margin: 0.5rem 0; color: var(--text-2); }
     /* Frame Control's own button style (docs/web-install.md). */
     .install {
       display: inline-block; margin: 20px 0 8px; padding: 10px 18px; border-radius: 4px;
       background: #1a9fff; color: #fff; font: 600 15px -apple-system, "Segoe UI", sans-serif;
       text-decoration: none;
     }
-    .missing { margin-top: 16px; padding: 12px 16px; border-radius: 8px; background: rgba(0, 0, 0, 0.3); }
-    a { color: #8fb8ff; }
-    small { display: block; margin-top: 24px; color: #8a93a6; }
+    .install:hover { color: #fff; }
+    .missing { margin-top: 1rem; padding: 0.75rem 1rem; border: 1px solid var(--line); border-radius: 0.5rem; background: var(--panel); }
+    small { display: block; margin-top: 1.5rem; color: var(--text-3); font-size: 0.875rem; }
   </style>
 </head>
 <body>
   <main>
-    <img src="logo.svg" alt="FramePlayerX logo">
-    <h1>Install FramePlayer<span class="x">X</span></h1>
+    <a href="/" aria-label="FramePlayerX home"><img src="/assets/logo.svg" alt="" width="96" height="96"></a>
+    <h1>Install FramePlayer<span class="brand-x">X</span></h1>
     <p>Opening Frame Control on this PC to install the latest release on your Steam Frame.</p>
     <a class="install" id="install" href="https://github.com/remotesojourner/frameplayerx/releases/latest">Install with Frame Control</a>
     <p>Needs Frame Control running on this PC and the headset paired with it, in Developer Mode.</p>
     <div class="missing" id="missing" hidden>
-      <p>Frame Control didn't open. <a href="https://github.com/saphid/steam-frame/releases/latest">Get Frame Control</a>, pair your headset, then press the button again.</p>
+      <p>Frame Control didn't open. <a href="https://github.com/saphid/frame-control/releases/latest">Get Frame Control</a>, pair your headset, then press the button again.</p>
     </div>
     <small>
-      Or install another way: <a href="https://github.com/remotesojourner/frameplayerx#quick-start">FramePlayerX on GitHub</a>
+      Or install another way: <a href="/install">other ways to install</a>
       · <a href="https://github.com/remotesojourner/frameplayerx/releases/latest">download the release</a>
     </small>
   </main>

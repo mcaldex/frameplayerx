@@ -1,10 +1,10 @@
-//! The community installers' manifest (`framedrop.install/v1`) and install
-//! links.
+//! Frame Control's install manifest (`frame-control.install/v1`) and install
+//! link.
 //!
 //! Format and rules as documented by Frame Control (`docs/web-install.md`):
 //!
 //! ```json
-//! { "schema": "framedrop.install/v1", "name": "My Game",
+//! { "schema": "frame-control.install/v1", "name": "My Game",
 //!   "files": [ { "url": "https://...", "sha256": "<64 hex>", "size": 123,
 //!                "exe": "path/inside/zip" } ] }
 //! ```
@@ -20,31 +20,31 @@ use serde::{Deserialize, Serialize};
 use crate::url::{check_public_https_url, percent_encode_component};
 
 /// Value of the `schema` field.
-pub const FRAMEDROP_SCHEMA: &str = "framedrop.install/v1";
+pub const SCHEMA: &str = "frame-control.install/v1";
 /// Largest accepted manifest document, in bytes.
 pub const MAX_MANIFEST_BYTES: usize = 256 * 1024;
 /// Largest accepted file, in bytes.
 pub const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 /// Longest accepted `name`, in characters.
 pub const MAX_NAME_CHARS: usize = 120;
-/// File extensions the installers accept.
+/// File extensions Frame Control accepts.
 pub const ALLOWED_EXTENSIONS: [&str; 3] = [".apk", ".zip", ".exe"];
 
-/// A `framedrop.install/v1` manifest.
+/// A `frame-control.install/v1` manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FramedropManifest {
-    /// Must be [`FRAMEDROP_SCHEMA`].
+pub struct InstallManifest {
+    /// Must be [`SCHEMA`].
     #[serde(default)]
     pub schema: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Files to install; the first is the title itself.
     #[serde(default)]
-    pub files: Vec<FramedropFile>,
+    pub files: Vec<InstallFile>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FramedropFile {
+pub struct InstallFile {
     /// Download URL (https, public host).
     #[serde(default)]
     pub url: String,
@@ -59,9 +59,9 @@ pub struct FramedropFile {
     pub exe: Option<String>,
 }
 
-/// Why a framedrop manifest was rejected.
+/// Why an install manifest was rejected.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum FramedropError {
+pub enum InstallManifestError {
     /// Document larger than [`MAX_MANIFEST_BYTES`].
     #[error("manifest is {0} bytes; the limit is 256 KiB")]
     TooLarge(usize),
@@ -69,7 +69,7 @@ pub enum FramedropError {
     #[error("manifest is not valid JSON: {0}")]
     NotJson(String),
     /// `schema` missing or different.
-    #[error("schema is {0:?}, expected \"framedrop.install/v1\"")]
+    #[error("schema is {0:?}, expected \"frame-control.install/v1\"")]
     WrongSchema(String),
     #[error("files is missing or empty")]
     NoFiles,
@@ -113,13 +113,13 @@ fn url_path_lower(url: &str) -> String {
     url[..end].to_ascii_lowercase()
 }
 
-impl FramedropManifest {
+impl InstallManifest {
     /// A one-file manifest for a `.zip` title.
     pub fn for_zip(name: &str, url: &str, sha256: &str, size: u64, exe: &str) -> Self {
-        FramedropManifest {
-            schema: FRAMEDROP_SCHEMA.into(),
+        InstallManifest {
+            schema: SCHEMA.into(),
             name: Some(name.into()),
-            files: vec![FramedropFile {
+            files: vec![InstallFile {
                 url: url.into(),
                 sha256: Some(sha256.to_ascii_lowercase()),
                 size: Some(size),
@@ -129,29 +129,29 @@ impl FramedropManifest {
     }
 
     /// Checks every rule except the document-size limit (see
-    /// [`FramedropManifest::to_json`] and [`parse_framedrop_manifest`],
-    /// which check that too).
-    pub fn validate(&self) -> Result<(), FramedropError> {
-        if self.schema != FRAMEDROP_SCHEMA {
-            return Err(FramedropError::WrongSchema(self.schema.clone()));
+    /// [`InstallManifest::to_json`] and [`parse_install_manifest`], which
+    /// check that too).
+    pub fn validate(&self) -> Result<(), InstallManifestError> {
+        if self.schema != SCHEMA {
+            return Err(InstallManifestError::WrongSchema(self.schema.clone()));
         }
         if let Some(name) = &self.name {
             if name.trim().is_empty() {
-                return Err(FramedropError::EmptyName);
+                return Err(InstallManifestError::EmptyName);
             }
             let n = name.chars().count();
             if n > MAX_NAME_CHARS {
-                return Err(FramedropError::NameTooLong(n));
+                return Err(InstallManifestError::NameTooLong(n));
             }
         }
         if self.files.is_empty() {
-            return Err(FramedropError::NoFiles);
+            return Err(InstallManifestError::NoFiles);
         }
         for (index, f) in self.files.iter().enumerate() {
             if f.url.is_empty() {
-                return Err(FramedropError::MissingUrl(index));
+                return Err(InstallManifestError::MissingUrl(index));
             }
-            let bad_url = |reason: String| FramedropError::BadUrl { index, reason };
+            let bad_url = |reason: String| InstallManifestError::BadUrl { index, reason };
             check_public_https_url(&f.url).map_err(bad_url)?;
             let path = url_path_lower(&f.url);
             if !ALLOWED_EXTENSIONS.iter().any(|ext| path.ends_with(ext)) {
@@ -160,15 +160,15 @@ impl FramedropManifest {
             if let Some(h) = &f.sha256
                 && !crate::manifest::is_sha256_hex(h)
             {
-                return Err(FramedropError::BadSha256(index));
+                return Err(InstallManifestError::BadSha256(index));
             }
             if let Some(size) = f.size
                 && size > MAX_FILE_BYTES
             {
-                return Err(FramedropError::TooBig { index, size });
+                return Err(InstallManifestError::TooBig { index, size });
             }
             if let Some(exe) = &f.exe {
-                let bad_exe = |reason: &str| FramedropError::BadExe {
+                let bad_exe = |reason: &str| InstallManifestError::BadExe {
                     index,
                     reason: reason.into(),
                 };
@@ -194,25 +194,25 @@ impl FramedropManifest {
 
     /// Validates and serialises (pretty JSON with a trailing newline),
     /// enforcing the 256 KiB limit.
-    pub fn to_json(&self) -> Result<String, FramedropError> {
+    pub fn to_json(&self) -> Result<String, InstallManifestError> {
         self.validate()?;
         let mut s = serde_json::to_string_pretty(self)
-            .map_err(|e| FramedropError::NotJson(e.to_string()))?;
+            .map_err(|e| InstallManifestError::NotJson(e.to_string()))?;
         s.push('\n');
         if s.len() > MAX_MANIFEST_BYTES {
-            return Err(FramedropError::TooLarge(s.len()));
+            return Err(InstallManifestError::TooLarge(s.len()));
         }
         Ok(s)
     }
 }
 
-/// Parses and validates a manifest document exactly as an installer would.
-pub fn parse_framedrop_manifest(bytes: &[u8]) -> Result<FramedropManifest, FramedropError> {
+/// Parses and validates a manifest document exactly as Frame Control would.
+pub fn parse_install_manifest(bytes: &[u8]) -> Result<InstallManifest, InstallManifestError> {
     if bytes.len() > MAX_MANIFEST_BYTES {
-        return Err(FramedropError::TooLarge(bytes.len()));
+        return Err(InstallManifestError::TooLarge(bytes.len()));
     }
-    let m: FramedropManifest =
-        serde_json::from_slice(bytes).map_err(|e| FramedropError::NotJson(e.to_string()))?;
+    let m: InstallManifest =
+        serde_json::from_slice(bytes).map_err(|e| InstallManifestError::NotJson(e.to_string()))?;
     m.validate()?;
     Ok(m)
 }
@@ -226,25 +226,14 @@ pub fn frame_control_install_link(manifest_url: &str) -> String {
     )
 }
 
-/// `framedrop://install?manifest=<url-encoded manifest URL>`.
-///
-/// UNVERIFIED: FrameDrop's own link scheme has not been confirmed; this
-/// mirrors Frame Control's. Check it against FrameDrop before publishing.
-pub fn framedrop_install_link_unverified(manifest_url: &str) -> String {
-    format!(
-        "framedrop://install?manifest={}",
-        percent_encode_component(manifest_url)
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const SHA: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-    fn good() -> FramedropManifest {
-        FramedropManifest::for_zip(
+    fn good() -> InstallManifest {
+        InstallManifest::for_zip(
             "FramePlayerX",
             "https://github.com/remotesojourner/frameplayerx/releases/download/v1.0.0/frameplayerx-1.0.0-aarch64.zip",
             SHA,
@@ -253,7 +242,7 @@ mod tests {
         )
     }
 
-    fn err_of(m: &FramedropManifest) -> FramedropError {
+    fn err_of(m: &InstallManifest) -> InstallManifestError {
         m.validate().unwrap_err()
     }
 
@@ -261,49 +250,48 @@ mod tests {
     fn good_manifest_round_trips() {
         let m = good();
         let json = m.to_json().unwrap();
-        assert_eq!(parse_framedrop_manifest(json.as_bytes()).unwrap(), m);
+        assert_eq!(parse_install_manifest(json.as_bytes()).unwrap(), m);
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(v["schema"], "framedrop.install/v1");
+        assert_eq!(v["schema"], "frame-control.install/v1");
         assert_eq!(v["files"][0]["exe"], "frameplayerx/frameplayerx.sh");
     }
 
     #[test]
     fn minimal_manifest_is_valid() {
-        let json =
-            br#"{"schema":"framedrop.install/v1","files":[{"url":"https://example.com/a.APK"}]}"#;
-        let m = parse_framedrop_manifest(json).unwrap();
+        let json = br#"{"schema":"frame-control.install/v1","files":[{"url":"https://example.com/a.APK"}]}"#;
+        let m = parse_install_manifest(json).unwrap();
         assert_eq!(m.name, None);
     }
 
     #[test]
     fn required_fields() {
         assert!(matches!(
-            parse_framedrop_manifest(br#"{"files":[{"url":"https://example.com/a.zip"}]}"#),
-            Err(FramedropError::WrongSchema(_))
+            parse_install_manifest(br#"{"files":[{"url":"https://example.com/a.zip"}]}"#),
+            Err(InstallManifestError::WrongSchema(_))
         ));
         assert!(matches!(
-            parse_framedrop_manifest(br#"{"schema":"framedrop.install/v2","files":[{"url":"https://example.com/a.zip"}]}"#),
-            Err(FramedropError::WrongSchema(_))
+            parse_install_manifest(br#"{"schema":"frame-control.install/v2","files":[{"url":"https://example.com/a.zip"}]}"#),
+            Err(InstallManifestError::WrongSchema(_))
         ));
         assert_eq!(
-            parse_framedrop_manifest(br#"{"schema":"framedrop.install/v1"}"#),
-            Err(FramedropError::NoFiles)
+            parse_install_manifest(br#"{"schema":"frame-control.install/v1"}"#),
+            Err(InstallManifestError::NoFiles)
         );
         assert_eq!(
-            parse_framedrop_manifest(br#"{"schema":"framedrop.install/v1","files":[]}"#),
-            Err(FramedropError::NoFiles)
+            parse_install_manifest(br#"{"schema":"frame-control.install/v1","files":[]}"#),
+            Err(InstallManifestError::NoFiles)
         );
         assert_eq!(
-            parse_framedrop_manifest(br#"{"schema":"framedrop.install/v1","files":[{}]}"#),
-            Err(FramedropError::MissingUrl(0))
+            parse_install_manifest(br#"{"schema":"frame-control.install/v1","files":[{}]}"#),
+            Err(InstallManifestError::MissingUrl(0))
         );
         assert!(matches!(
-            parse_framedrop_manifest(b"not json"),
-            Err(FramedropError::NotJson(_))
+            parse_install_manifest(b"not json"),
+            Err(InstallManifestError::NotJson(_))
         ));
         assert!(matches!(
-            parse_framedrop_manifest(br#"{"schema":"framedrop.install/v1","files":[{"url":"https://example.com/a.zip","size":"big"}]}"#),
-            Err(FramedropError::NotJson(_))
+            parse_install_manifest(br#"{"schema":"frame-control.install/v1","files":[{"url":"https://example.com/a.zip","size":"big"}]}"#),
+            Err(InstallManifestError::NotJson(_))
         ));
     }
 
@@ -313,9 +301,9 @@ mod tests {
         m.name = Some("é".repeat(120));
         assert!(m.validate().is_ok(), "120 characters (240 bytes) is fine");
         m.name = Some("x".repeat(121));
-        assert_eq!(err_of(&m), FramedropError::NameTooLong(121));
+        assert_eq!(err_of(&m), InstallManifestError::NameTooLong(121));
         m.name = Some("  ".into());
-        assert_eq!(err_of(&m), FramedropError::EmptyName);
+        assert_eq!(err_of(&m), InstallManifestError::EmptyName);
     }
 
     #[test]
@@ -335,7 +323,10 @@ mod tests {
             m.files[0].url = url.into();
             m.files[0].exe = None;
             assert!(
-                matches!(m.validate(), Err(FramedropError::BadUrl { index: 0, .. })),
+                matches!(
+                    m.validate(),
+                    Err(InstallManifestError::BadUrl { index: 0, .. })
+                ),
                 "{url}"
             );
         }
@@ -343,7 +334,7 @@ mod tests {
         m.files[0].url = "https://example.com/dl/a.ZIP?token=1#x".into();
         assert!(m.validate().is_ok());
         // Rules apply to every file, not just the first.
-        m.files.push(FramedropFile {
+        m.files.push(InstallFile {
             url: "https://10.0.0.1/b.apk".into(),
             sha256: None,
             size: None,
@@ -351,7 +342,7 @@ mod tests {
         });
         assert!(matches!(
             m.validate(),
-            Err(FramedropError::BadUrl { index: 1, .. })
+            Err(InstallManifestError::BadUrl { index: 1, .. })
         ));
     }
 
@@ -359,15 +350,15 @@ mod tests {
     fn sha_and_size_rules() {
         let mut m = good();
         m.files[0].sha256 = Some("abc".into());
-        assert_eq!(err_of(&m), FramedropError::BadSha256(0));
+        assert_eq!(err_of(&m), InstallManifestError::BadSha256(0));
         m.files[0].sha256 = Some("g".repeat(64));
-        assert_eq!(err_of(&m), FramedropError::BadSha256(0));
+        assert_eq!(err_of(&m), InstallManifestError::BadSha256(0));
         m.files[0].sha256 = Some(SHA.to_uppercase());
         assert!(m.validate().is_ok());
         m.files[0].size = Some(MAX_FILE_BYTES);
         assert!(m.validate().is_ok());
         m.files[0].size = Some(MAX_FILE_BYTES + 1);
-        assert!(matches!(err_of(&m), FramedropError::TooBig { .. }));
+        assert!(matches!(err_of(&m), InstallManifestError::TooBig { .. }));
     }
 
     #[test]
@@ -376,39 +367,37 @@ mod tests {
             let mut m = good();
             m.files[0].exe = Some(bad.into());
             assert!(
-                matches!(err_of(&m), FramedropError::BadExe { .. }),
+                matches!(err_of(&m), InstallManifestError::BadExe { .. }),
                 "{bad:?}"
             );
         }
         let mut m = good();
         m.files[0].url = "https://example.com/a.apk".into();
-        assert!(matches!(err_of(&m), FramedropError::BadExe { .. }));
+        assert!(matches!(err_of(&m), InstallManifestError::BadExe { .. }));
     }
 
     #[test]
     fn size_limit() {
-        let mut big = br#"{"schema":"framedrop.install/v1","files":[{"url":"https://example.com/a.zip"}],"pad":""#.to_vec();
+        let mut big = br#"{"schema":"frame-control.install/v1","files":[{"url":"https://example.com/a.zip"}],"pad":""#.to_vec();
         big.extend(std::iter::repeat_n(b'x', MAX_MANIFEST_BYTES));
         big.extend(b"\"}");
         assert!(matches!(
-            parse_framedrop_manifest(&big),
-            Err(FramedropError::TooLarge(_))
+            parse_install_manifest(&big),
+            Err(InstallManifestError::TooLarge(_))
         ));
         let mut m = good();
         m.files = (0..3000).map(|_| good().files[0].clone()).collect();
-        assert!(matches!(m.to_json(), Err(FramedropError::TooLarge(_))));
+        assert!(matches!(
+            m.to_json(),
+            Err(InstallManifestError::TooLarge(_))
+        ));
     }
 
     #[test]
-    fn install_links() {
-        let url = "https://example.com/fp/framedrop.json?v=1";
+    fn install_link() {
         assert_eq!(
-            frame_control_install_link(url),
-            "frame-control://install?manifest=https%3A%2F%2Fexample.com%2Ffp%2Fframedrop.json%3Fv%3D1"
-        );
-        assert!(
-            framedrop_install_link_unverified(url)
-                .starts_with("framedrop://install?manifest=https%3A%2F%2F")
+            frame_control_install_link("https://example.com/fp/frameplayerx.json?v=1"),
+            "frame-control://install?manifest=https%3A%2F%2Fexample.com%2Ffp%2Fframeplayerx.json%3Fv%3D1"
         );
     }
 }

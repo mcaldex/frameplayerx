@@ -19,7 +19,7 @@ use frameplayerx_install::{InstallError, Result};
 /// Before the first run: turn on Developer Mode on the headset. Then simply
 /// run `frameplayerx-install`; if this PC is not paired yet it offers to pair
 /// (or run `frameplayerx-install pair <headset IP>` first). Pairings made by
-/// Frame Control, FrameDrop or Valve's SteamOS Devkit Client work too.
+/// Frame Control or Valve's SteamOS Devkit Client work too.
 #[derive(Debug, Parser)]
 #[command(version, args_conflicts_with_subcommands = true)]
 struct Cli {

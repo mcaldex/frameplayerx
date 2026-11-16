@@ -7,8 +7,8 @@
 //! fp-release manifest --version X --zip PATH --url-base URL [--arch aarch64]
 //!                     [--notes FILE] [--channel stable|beta] [--published RFC3339]
 //!                     [--out manifest.json]
-//! fp-release framedrop --name FramePlayerX --zip PATH --url URL
-//!                      [--out framedrop.json] [--manifest-url URL]
+//! fp-release frame-control --name FramePlayerX --zip PATH --url URL
+//!                          [--out frameplayerx.json] [--manifest-url URL]
 //! ```
 
 use std::collections::HashMap;
@@ -20,9 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use fp_updater::framedrop::{
-    FramedropManifest, frame_control_install_link, framedrop_install_link_unverified,
-};
+use fp_updater::frame_control::{InstallManifest, frame_control_install_link};
 use fp_updater::manifest::{MANIFEST_NAME, public_key_from_bytes};
 use fp_updater::{
     Artifact, Channel, ReleaseManifest, SigningKey, Version, hash_file, inspect_zip, sign_manifest,
@@ -51,11 +49,11 @@ USAGE:
       Write the release manifest. The artifact URL is URL-BASE/<zip file name>.
       The zip is checked (safe paths, binary present, VERSION equals X).
 
-  fp-release framedrop --name NAME --zip PATH --url URL
-                       [--out framedrop.json] [--manifest-url URL]
-      Write a framedrop.install/v1 manifest for Frame Control / FrameDrop,
-      validated against the installers' rules. With --manifest-url, also
-      print the one-click install links.
+  fp-release frame-control --name NAME --zip PATH --url URL
+                           [--out frameplayerx.json] [--manifest-url URL]
+      Write the frame-control.install/v1 manifest Frame Control installs
+      from, validated against its rules. With --manifest-url, also print
+      the one-click install link.
 ";
 
 type CliResult<T = ()> = Result<T, String>;
@@ -93,7 +91,7 @@ fn run(args: &[String]) -> CliResult {
                 "out",
             ],
         )?),
-        "framedrop" => framedrop(&Args::parse(
+        "frame-control" => frame_control(&Args::parse(
             rest,
             &["name", "zip", "url", "out", "manifest-url"],
         )?),
@@ -363,14 +361,14 @@ fn manifest(args: &Args) -> CliResult {
     Ok(())
 }
 
-fn framedrop(args: &Args) -> CliResult {
+fn frame_control(args: &Args) -> CliResult {
     let name = args.need("name")?;
     let zip = PathBuf::from(args.need("zip")?);
     let url = args.need("url")?;
     let info = inspect_zip(&zip).map_err(|e| format!("{}: {e}", zip.display()))?;
     if !info.has_launcher {
         return Err(format!(
-            "{} has no frameplayerx.sh, which the installers launch",
+            "{} has no frameplayerx.sh, which Frame Control launches",
             zip.display()
         ));
     }
@@ -381,11 +379,11 @@ fn framedrop(args: &Args) -> CliResult {
         format!("{root}/frameplayerx.sh")
     };
     let (size, sha256) = hash_file(&zip).map_err(|e| e.to_string())?;
-    let m = FramedropManifest::for_zip(name, url, &sha256, size, &exe);
+    let m = InstallManifest::for_zip(name, url, &sha256, size, &exe);
     let json = m
         .to_json()
         .map_err(|e| format!("manifest would be rejected: {e}"))?;
-    let out = PathBuf::from(args.get("out").unwrap_or("framedrop.json"));
+    let out = PathBuf::from(args.get("out").unwrap_or("frameplayerx.json"));
     write_file(&out, json.as_bytes())?;
     println!(
         "Wrote {} ({name} {}, exe {exe})",
@@ -394,10 +392,6 @@ fn framedrop(args: &Args) -> CliResult {
     );
     if let Some(murl) = args.get("manifest-url") {
         println!("Frame Control link: {}", frame_control_install_link(murl));
-        println!(
-            "FrameDrop link (UNVERIFIED scheme, check before publishing): {}",
-            framedrop_install_link_unverified(murl)
-        );
     }
     Ok(())
 }
@@ -533,9 +527,9 @@ mod tests {
         fs::write(&out, tampered).unwrap();
         assert!(run(&s(&["verify", &out, "--pub", &format!("{prefix}.pub")])).is_err());
 
-        let fd = dir.path().join("framedrop.json").display().to_string();
+        let fc = dir.path().join("frameplayerx.json").display().to_string();
         run(&s(&[
-            "framedrop",
+            "frame-control",
             "--name",
             "FramePlayerX",
             "--zip",
@@ -543,18 +537,19 @@ mod tests {
             "--url",
             "https://example.com/r/frameplayerx-1.2.3-aarch64.zip",
             "--out",
-            &fd,
+            &fc,
         ]))
         .unwrap();
-        let fdm = fp_updater::framedrop::parse_framedrop_manifest(&fs::read(&fd).unwrap()).unwrap();
+        let fcm =
+            fp_updater::frame_control::parse_install_manifest(&fs::read(&fc).unwrap()).unwrap();
         assert_eq!(
-            fdm.files[0].exe.as_deref(),
+            fcm.files[0].exe.as_deref(),
             Some("frameplayerx/frameplayerx.sh")
         );
         // Local URLs are refused before writing.
         assert!(
             run(&s(&[
-                "framedrop",
+                "frame-control",
                 "--name",
                 "FramePlayerX",
                 "--zip",
@@ -562,7 +557,7 @@ mod tests {
                 "--url",
                 "https://192.168.1.5/f.zip",
                 "--out",
-                &fd,
+                &fc,
             ]))
             .is_err()
         );

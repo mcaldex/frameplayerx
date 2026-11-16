@@ -4,8 +4,7 @@
 #
 #   dist/frameplayerx-<version>-aarch64.zip   the install archive
 #   dist/manifest.json                       update manifest (sign it!)
-#   dist/framedrop.json                      FrameDrop manifest
-#   dist/frameplayerx.json                    Frame Control install manifest
+#   dist/frameplayerx.json                   Frame Control install manifest
 #
 # Usage: tools/package.sh [--url-base URL] [--notes FILE] [--key PREFIX.key]
 #   --url-base  where the zip will be downloadable (default: the GitHub
@@ -49,6 +48,8 @@ done
 cp packaging/frameplayerx.sh packaging/README.txt LICENSE NOTICE "$stage/"
 cp packaging/licenses/* "$stage/licenses/"
 cp assets/steam/*.png "$stage/assets/steam/"
+# Frame Control makes the library icon from an icon.png at the top of a title.
+cp assets/steam/icon.png "$stage/icon.png"
 echo "$version" > "$stage/VERSION"
 # The Rust crates compiled into the binary, then the licence, copyright and
 # notice files each crate ships, which their licences ask to go with the
@@ -115,15 +116,8 @@ release="target/release/fp-release"
 args=(manifest --version "$version" --zip "dist/$zip" --url-base "$url_base" --out dist/manifest.json)
 [ -n "$notes" ] && args+=(--notes "$notes")
 "$release" "${args[@]}"
-"$release" framedrop --name FramePlayerX --zip "dist/$zip" --url "$url_base/$zip" --out dist/framedrop.json \
-  --manifest-url "$url_base/framedrop.json"
-# The same file list for Frame Control install links
-# (frame-control://install?manifest=<url of frameplayerx.json>).
-python3 - dist/framedrop.json > dist/frameplayerx.json <<'P'
-import json, sys
-fd = json.load(open(sys.argv[1]))
-print(json.dumps({"schema": "frame-control.install/v1", "name": fd["name"], "files": fd["files"]}, indent=2))
-P
+"$release" frame-control --name FramePlayerX --zip "dist/$zip" --url "$url_base/$zip" --out dist/frameplayerx.json \
+  --manifest-url "$url_base/frameplayerx.json"
 if [ -n "$key" ]; then
   "$release" sign dist/manifest.json --key "$key"
 else

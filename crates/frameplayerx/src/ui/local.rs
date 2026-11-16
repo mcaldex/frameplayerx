@@ -148,7 +148,7 @@ pub fn library_page(
                     tr!("local-not-inserted-desc"),
                 )
             } else {
-                (tr!("local-empty"), tr!("local-empty-desc"))
+                (tr!("local-empty"), tr!("local-empty-usb-desc"))
             };
             page::empty_state(ui, icons::FILM_STRIP, title, body, |_| {});
         },

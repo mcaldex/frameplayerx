@@ -2,7 +2,7 @@
 //! Windows, macOS or Linux PC.
 //!
 //! It drives the system `ssh`/`scp` (so it reuses the pairing done by
-//! Frame Control, FrameDrop or Valve's SteamOS Devkit Client), checks the
+//! Frame Control or Valve's SteamOS Devkit Client), checks the
 //! device, uploads a verified release zip, unpacks it into
 //! `~/frameplayerx` with the same `.old`/`.new` layout the in-app updater
 //! uses, and adds a Steam library shortcut with artwork.

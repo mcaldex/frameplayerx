@@ -207,7 +207,7 @@ settings-channel = Channel
 settings-channel-beta = Beta
 # Short: a chip, the release channel.
 settings-channel-stable = Stable
-settings-dev-build = This is a development build: in-app updates are off. Install new versions with Frame Control or FrameDrop.
+settings-dev-build-frame-control = This is a development build: in-app updates are off. Install new versions with Frame Control.
 settings-update-unknown = Not checked yet
 settings-update-checking = Checking…
 settings-update-latest = You have the latest version
@@ -1059,7 +1059,7 @@ local-scanning-desc = They appear here as they are found.
 local-not-inserted-title = Not inserted
 local-not-inserted-desc = Insert the card or drive to see its videos.
 local-empty = No videos here yet
-local-empty-desc = Copy some into this folder with FrameDrop or a USB drive.
+local-empty-usb-desc = Copy some into this folder from a USB drive.
 local-no-drives = None inserted
 source-not-available = That source is not available
 source-not-inserted = The microSD card or USB drive this is on is not inserted.

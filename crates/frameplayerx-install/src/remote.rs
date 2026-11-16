@@ -3,7 +3,7 @@
 //!
 //! Using the system OpenSSH client (built into Windows 10+, macOS and
 //! Linux) means we reuse the key and `Host frame` alias that Frame Control
-//! (or FrameDrop, or Valve's Devkit Client) set up when pairing, and need no
+//! (or Valve's Devkit Client) set up when pairing, and need no
 //! SSH library.
 
 use std::io::Write as _;

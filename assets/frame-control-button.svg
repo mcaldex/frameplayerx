@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60" width="240" height="60">
-  <!-- Installs through Frame Control (github.com/saphid/steam-frame), in its
+  <!-- Installs through Frame Control (github.com/saphid/frame-control), in its
        blue. One of a set with install-button: same size, shape and type. -->
   <rect x="1" y="1" width="238" height="58" rx="12" fill="#161A26" stroke="#1A9FFF" stroke-width="2"/>
   <!-- a PC -->
