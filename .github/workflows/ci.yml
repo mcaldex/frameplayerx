@@ -357,7 +357,7 @@ jobs:
       - name: Publish the release
         run: |
           files=(dist/frameplayerx-*.zip dist/manifest.json dist/manifest.json.sig
-            dist/framedrop.json dist/frameplayerx.json dist/frameplayerx-install-*
+            dist/frameplayerx.json dist/frameplayerx-install-*
             src/tools/frame-desktop-install/frameplayerx-desktop-install.py
             src/tools/frame-desktop-install/Install-FramePlayerX.desktop
             src/tools/frame-desktop-install/Uninstall-FramePlayerX.desktop)

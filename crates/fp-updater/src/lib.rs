@@ -13,13 +13,13 @@
 //!    directory, validates it, and swaps it in with renames, keeping one
 //!    previous version for [`rollback`].
 //!
-//! The crate also carries the [`framedrop`] manifest used by the community
-//! installers (Frame Control, FrameDrop) and the `fp-release` maintainer
-//! tool that generates keys, manifests and signatures.
+//! The crate also carries the [`frame_control`] install manifest Frame
+//! Control reads and the `fp-release` maintainer tool that generates keys,
+//! manifests and signatures.
 
 pub mod client;
 pub mod error;
-pub mod framedrop;
+pub mod frame_control;
 pub mod github;
 pub mod install;
 pub mod manifest;

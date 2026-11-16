@@ -973,7 +973,7 @@ fn updates(ui: &mut egui::Ui, v: &mut View) {
         });
     });
     if fp_updater::RELEASE_PUBLIC_KEY.is_none() {
-        note(ui, tr!("settings-dev-build"));
+        note(ui, tr!("settings-dev-build-frame-control"));
         return;
     }
     ui.add_space(6.0);

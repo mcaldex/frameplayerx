@@ -41,13 +41,12 @@ also takes `--beta` (the newest release, betas included); see
 [tools/frame-desktop-install](../tools/frame-desktop-install/README.md).
 
 The other two ways need **Developer Mode** on, and the headset paired once
-with your PC by `frameplayerx-install pair` (below), Frame Control,
-FrameDrop or Valve's SteamOS Devkit Client.
+with your PC by `frameplayerx-install pair` (below), Frame Control or
+Valve's SteamOS Devkit Client.
 
-**With FrameDrop or Frame Control, from a PC.** With the app running on
-your PC and the headset paired, press the button in your PC's browser:
+**With Frame Control, from a PC.** With Frame Control running on your PC
+and the headset paired, press the button in your PC's browser:
 
-<a href="https://framedropvr.com/install?manifest=https%3A%2F%2Fgithub.com%2Fremotesojourner%2Fframeplayerx%2Freleases%2Flatest%2Fdownload%2Fframedrop.json"><img src="../assets/framedrop-button.svg" alt="Install with FrameDrop" width="240" /></a>
 <a href="https://remotesojourner.github.io/frameplayerx/frame-control.html"><img src="../assets/frame-control-button.svg" alt="Install with Frame Control" width="240" /></a>
 
 GitHub doesn't keep links that open apps, so the Frame Control button opens a
@@ -58,9 +57,8 @@ into the browser's address bar instead:
 frame-control://install?manifest=https%3A%2F%2Fgithub.com%2Fremotesojourner%2Fframeplayerx%2Freleases%2Flatest%2Fdownload%2Fframeplayerx.json
 ```
 
-Either app reads the release's manifest (`framedrop.json` or
-`frameplayerx.json`), downloads the latest release, checks its SHA-256 and
-unpacks it into `~/frameplayerx`.
+Frame Control reads the release's manifest (`frameplayerx.json`), downloads
+the latest release, checks its SHA-256 and unpacks it into `~/frameplayerx`.
 
 **From a PC with the installer.** Download `frameplayerx-install` for your
 PC from the release page and run it:
@@ -136,8 +134,8 @@ frameplayerx-install uninstall --purge          # deletes them too
 
 Add `--restart-steam` so the library updates right away.
 
-**Installed with Frame Control or FrameDrop.** They install into the same
-folder, `~/frameplayerx`, so either way above removes it.
+**Installed with Frame Control.** It installs into the same folder,
+`~/frameplayerx`, so either way above removes it.
 
 **By hand.** Delete the `frameplayerx` and `frameplayerx.old` folders in
 your home folder, and remove FramePlayerX from the Steam library.

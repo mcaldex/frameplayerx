@@ -2,7 +2,7 @@
 # Run frame-probe on a paired Steam Frame over SSH and copy the report back.
 #
 # Prerequisites on the headset: Developer Mode on, and SSH pairing done once
-# with Frame Control, FrameDrop, or Valve's SteamOS Devkit Client. Frame
+# with Frame Control or Valve's SteamOS Devkit Client. Frame
 # Control writes a `Host frame` entry to ~/.ssh/config, which is the default
 # here; set FRAME_HOST for anything else (e.g. FRAME_HOST=deck@192.168.1.50).
 #

@@ -106,7 +106,7 @@ impl InstallError {
                  - Developer Mode is on (Settings > System > Developer Mode);\n\
                  - the headset is paired: open {PAIRING_MODE_PLACE} on the headset and run \
                  `frameplayerx-install pair <headset IP address>` (or pair once with Frame \
-                 Control, FrameDrop or Valve's SteamOS Devkit Client);\n\
+                 Control or Valve's SteamOS Devkit Client);\n\
                  - if you paired another way, pass --host user@address (current: {host}), and \
                  --ssh-option IdentityFile=<key> if the key is not your default one."
             ),

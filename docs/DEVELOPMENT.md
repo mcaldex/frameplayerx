@@ -552,7 +552,7 @@ headset and copies the text and JSON reports into `probe-reports/`.
    `beta` branch from the Actions tab (Run workflow). CI calculates the
    version, stamps it into `crates/frameplayerx/Cargo.toml`, builds,
    packages, signs `manifest.json` and publishes the GitHub release with
-   the zip, `manifest.json(.sig)`, `framedrop.json`, `frameplayerx-install`
+   the zip, `manifest.json(.sig)`, `frameplayerx.json`, `frameplayerx-install`
    for each PC, and the Desktop Mode installer and its install and uninstall launchers.
 
    - `main` gets the next stable `X.Y.Z` from the conventional commits
@@ -601,14 +601,12 @@ manifest is signed with the release key.
 ### Install buttons
 
 The README's install buttons are images in `assets/`, because GitHub strips
-the inline styles and SVG of the HTML buttons FrameDrop and Frame Control
-publish. They all point at the latest release, so they need no change per
-release:
+the inline styles and SVG of the HTML button Frame Control publishes. They
+all point at the latest release, so they need no change per release:
 
 | Button | Opens |
 |---|---|
 | Desktop Mode / Uninstall | The release's `Install-FramePlayerX.desktop` / `Uninstall-FramePlayerX.desktop` |
-| FrameDrop | `https://framedropvr.com/install?manifest=` with the release's `framedrop.json`, FrameDrop's documented link: it opens FrameDrop, or FrameDrop's site when it isn't installed |
 | Frame Control | `site/frame-control.html` on GitHub Pages, which opens `frame-control://install?manifest=` with the release's `frameplayerx.json`. GitHub doesn't keep links to app schemes like `frame-control://` in Markdown, so a web page has to |
 
 `.github/workflows/pages.yml` publishes `site/` (with the logo) when it
