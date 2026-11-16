@@ -1,6 +1,6 @@
 //! Folders of a source that only has files and folders (SMB, WebDAV, HTTP,
 //! DLNA, local folders): searched within the folder, sorted by name, date or
-//! size, played one at a time or all in order.
+//! size, played one at a time or queued with the folder's playback options.
 
 use super::page;
 use super::theme::{self, Weight};
@@ -10,6 +10,15 @@ use crate::playback::OpenRequest;
 use egui::{Align2, Color32, Sense, Vec2};
 use fp_core::source::{Entry, EntryKind};
 use fp_sources::EntrySort;
+
+#[derive(Clone, Copy)]
+pub enum PlayAllStatus {
+    Scanning,
+    /// Done, past a subfolder that couldn't be read, with this many videos.
+    Partial {
+        count: usize,
+    },
+}
 
 /// A folder listing of `b` under `title` (the source), the folder it is in
 /// underneath: `address` when the source gives one, else `root` at the top
@@ -37,6 +46,7 @@ pub fn page(
         .iter()
         .filter(|e| e.kind == EntryKind::Video)
         .collect();
+    let has_subfolders = b.entries.iter().any(|e| e.kind == EntryKind::Directory);
     let subtitle = match (address, &b.location) {
         (Some(address), _) => shorten(&address),
         (None, Some(l)) => short_location(l),
@@ -47,23 +57,43 @@ pub fn page(
         refresh = widgets::icon_button(ui, icons::ARROWS_CLOCKWISE, 44.0, false)
             .tip(tr!("feed-refresh"))
             .clicked();
-        if !videos.is_empty() {
-            play_all = widgets::button_sized(
-                ui,
-                Some(icons::PLAY),
-                tr!("common-play-all"),
-                Kind::Secondary,
-                44.0,
-            )
-            .clicked();
+        if v.folder_play_all.is_none()
+            && !b.loading
+            && b.error.is_none()
+            && (has_subfolders || !videos.is_empty())
+        {
+            let can_play = !videos.is_empty() || (b.include_subfolders && has_subfolders);
+            play_all = ui
+                .add_enabled_ui(can_play, |ui| {
+                    widgets::button_sized(
+                        ui,
+                        Some(icons::PLAY),
+                        tr!("common-play-all"),
+                        Kind::Secondary,
+                        44.0,
+                    )
+                })
+                .inner
+                .clicked();
+            if has_subfolders
+                && widgets::chip_icon(
+                    ui,
+                    Some(icons::FOLDERS),
+                    tr!("folders-play-all-subfolders"),
+                    b.include_subfolders,
+                )
+                .clicked()
+            {
+                b.include_subfolders = !b.include_subfolders;
+            }
         }
     });
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        page::search_field(ui, &mut b.filter, tr!("folders-search"), 200.0);
+        let filter_changed = page::search_field(ui, &mut b.filter, tr!("folders-search"), 200.0);
         ui.add_space(12.0);
         let mut sort = v.settings.browse_sort;
-        if page::sort_bar(
+        let sort_changed = page::sort_bar(
             ui,
             &[
                 (EntrySort::Name, tr!("sort-name")),
@@ -73,14 +103,21 @@ pub fn page(
                 (EntrySort::Smallest, tr!("sort-smallest")),
             ],
             &mut sort,
-        ) {
+        );
+        if sort_changed {
             v.settings.browse_sort = sort;
             fp_sources::sort_entries_by(&mut b.entries, sort);
+        }
+        if v.folder_play_all.is_some() && (filter_changed || sort_changed) {
+            v.actions.push(Action::CancelFolderPlayAll);
         }
         page::count_label(ui, &counts(&shown));
     });
     ui.add_space(6.0);
     page::status(ui, b.loading, b.error.as_deref());
+    if let Some(status) = v.folder_play_all {
+        play_all_status(ui, v, status);
+    }
 
     let queue = |videos: &[&Entry]| -> Vec<OpenRequest> {
         videos
@@ -96,7 +133,16 @@ pub fn page(
             .collect()
     };
     if play_all {
-        v.actions.push(Action::PlayAll(queue(&videos), 0));
+        if b.include_subfolders && has_subfolders {
+            v.actions.push(Action::FolderPlayAll {
+                source: b.source.clone(),
+                location: b.location.clone(),
+                sort: v.settings.browse_sort,
+                filter: b.filter.clone(),
+            });
+        } else {
+            v.actions.push(Action::PlayAll(queue(&videos), 0));
+        }
     }
     if refresh {
         v.actions.push(Action::Browse {
@@ -150,6 +196,42 @@ pub fn page(
         });
     }
     back
+}
+
+fn play_all_status(ui: &mut egui::Ui, v: &mut View, status: PlayAllStatus) {
+    ui.horizontal(|ui| {
+        let dismiss = match status {
+            PlayAllStatus::Scanning => {
+                ui.spinner();
+                ui.label(
+                    egui::RichText::new(tr!("folders-play-all-scanning")).color(theme::TEXT_2),
+                );
+                tr!("common-cancel")
+            }
+            PlayAllStatus::Partial { count } => {
+                ui.label(
+                    egui::RichText::new(tr!("folders-play-all-unavailable")).color(theme::TEXT_2),
+                );
+                if count > 0 {
+                    let label = tr!("folders-play-all-found", count = count);
+                    if widgets::button_sized(ui, Some(icons::PLAY), &label, Kind::Secondary, 40.0)
+                        .clicked()
+                    {
+                        v.actions.push(Action::PlayFoundFolderVideos);
+                    }
+                    tr!("common-cancel")
+                } else {
+                    ui.label(
+                        egui::RichText::new(tr!("toast-nothing-to-play")).color(theme::TEXT_2),
+                    );
+                    tr!("library-dismiss")
+                }
+            }
+        };
+        if widgets::button_sized(ui, None, dismiss, Kind::Ghost, 40.0).clicked() {
+            v.actions.push(Action::CancelFolderPlayAll);
+        }
+    });
 }
 
 /// "3 folders · 12 videos".

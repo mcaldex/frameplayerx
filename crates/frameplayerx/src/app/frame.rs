@@ -506,11 +506,19 @@ impl App {
                 thumbs,
                 playback,
                 queue,
+                folder_play_all,
                 ..
             } = self;
+            let folder_play_all = folder_play_all.as_ref().and_then(|scan| {
+                state
+                    .folder_mut()
+                    .filter(|b| b.source == scan.source && b.location == scan.location)?;
+                scan.state.status()
+            });
             let mut view = View {
                 state,
                 queue,
+                folder_play_all,
                 settings,
                 services,
                 thumbs,

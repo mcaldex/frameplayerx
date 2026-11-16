@@ -617,6 +617,10 @@ source-self-signed-desc = For HTTPS servers on your own network.
 # A switch on a server's form, with the description below it.
 source-parallel-downloads = Parallel downloads
 source-parallel-downloads-desc = Downloads several parts of a video at once over separate connections, like a download manager. This helps if the server limits the speed of each connection. If it doesn't, it may gain nothing, and a server on hard drives can get slower.
+# A switch on a folder source's form, with the number beside it and the description below.
+source-play-all-limit = Limit videos from subfolders
+source-play-all-limit-desc = The most videos Play all takes when it includes subfolders. Off, it takes them all, and Cancel stops it.
+source-play-all-limit-invalid = Enter a whole number greater than zero for the video limit.
 source-passwords-note = Passwords are stored on this device only, in a file only you can read.
 quick-connect-code = Pairing code
 quick-connect-code-desc = Enter this code in your Jellyfin or Emby app under Quick Connect:
@@ -1105,6 +1109,21 @@ sort-largest = Largest
 sort-smallest = Smallest
 folders-empty = No videos or folders here.
 folders-no-match = Nothing here matches.
+# Short: a chip beside Play all in a folder.
+folders-play-all-subfolders = Include subfolders
+folders-play-all-scanning = Looking for videos in subfolders…
+folders-play-all-waiting = Waiting for the previous folder listing to finish
+folders-play-all-unavailable = Some subfolders couldn’t be listed.
+# $limit is a number of videos.
+folders-play-all-limited-toast = Playing the first { $limit } videos found. Edit the source to change the limit.
+# $count is the limit Play all would have stopped at.
+folders-play-all-unlimited-toast = More than { $count } videos found, and still looking. This may take a while.
+# A button: plays the videos found, though some subfolders couldn't be read.
+folders-play-all-found =
+    { $count ->
+        [one] Play 1 video found
+       *[other] Play { $count } videos found
+    }
 # A tooltip on a video's ⋯ button.
 folders-more-tip = Play next, add to a queue or playlist
 # A tooltip on a video's ⋯ button, where its file can be deleted.

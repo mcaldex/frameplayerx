@@ -464,6 +464,9 @@ source-self-signed = Aceptar certificados autofirmados
 source-self-signed-desc = Para servidores HTTPS de tu propia red.
 source-parallel-downloads = Descargas en paralelo
 source-parallel-downloads-desc = Descarga varias partes de un vídeo a la vez por conexiones separadas, como un gestor de descargas. Ayuda si el servidor limita la velocidad de cada conexión. Si no, puede que no gane nada, y un servidor con discos duros puede ir más lento.
+source-play-all-limit = Limitar los vídeos de subcarpetas
+source-play-all-limit-desc = Cuántos vídeos toma como máximo «Reproducir todo» al incluir subcarpetas. Desactivado, los toma todos y «Cancelar» lo detiene.
+source-play-all-limit-invalid = Escribe un número entero mayor que cero para el límite de vídeos.
 source-passwords-note = Las contraseñas se guardan solo en este dispositivo, en un archivo que solo tú puedes leer.
 quick-connect-code = Código de vinculación
 quick-connect-code-desc = Introduce este código en tu aplicación de Jellyfin o Emby, en Quick Connect:
@@ -800,6 +803,17 @@ sort-largest = Más grandes
 sort-smallest = Más pequeños
 folders-empty = No hay vídeos ni carpetas aquí.
 folders-no-match = Nada de aquí coincide.
+folders-play-all-subfolders = Incluir subcarpetas
+folders-play-all-scanning = Buscando vídeos en las subcarpetas…
+folders-play-all-waiting = Esperando a que termine la lista de carpetas anterior
+folders-play-all-unavailable = No se pudieron leer algunas subcarpetas.
+folders-play-all-limited-toast = Reproduciendo los primeros { $limit } vídeos encontrados. Edita la fuente para cambiar el límite.
+folders-play-all-unlimited-toast = Más de { $count } vídeos encontrados, y la búsqueda sigue. Puede tardar un poco.
+folders-play-all-found =
+    { $count ->
+        [one] Reproducir 1 vídeo encontrado
+       *[other] Reproducir { $count } vídeos encontrados
+    }
 folders-more-tip = Reproducir después, añadir a la cola o a una playlist
 folders-more-tip-delete = Reproducir después, añadir a la cola o a una playlist, o eliminar
 controller-same = Igual

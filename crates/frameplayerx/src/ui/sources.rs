@@ -367,7 +367,13 @@ fn lock_source(v: &mut View, id: &str, name: &str) {
 /// Opens the form editing source `id`.
 fn edit(v: &mut View, id: &str) {
     if let Some(cfg) = v.services.source_config(id) {
-        v.state.source_form = Some(edit_form(cfg));
+        let mut form = edit_form(cfg);
+        let limit = v.settings.play_all_limit(id);
+        form.limit_play_all = limit.is_some();
+        if let Some(limit) = limit {
+            form.play_all_limit = limit.to_string();
+        }
+        v.state.source_form = Some(form);
     }
 }
 
@@ -615,19 +621,20 @@ fn add_form(ui: &mut egui::Ui, v: &mut View) {
     } else if let Some(SourceConfig::Dlna(_)) = &editing {
         dlna_edit_form(ui, f, id)
     } else if f.kind == SourceKind::Dlna {
-        dlna_search(ui, v.actions, &dlna_found, searching, &id)
+        dlna_search(ui, f, v.actions, &dlna_found, searching, &id)
     } else if f.kind == SourceKind::Library {
         library_form(ui, f, id, &configs, v.actions)
     } else {
         server_form(ui, f, id, editing.as_ref(), v.actions)
     };
+    let save = save.zip(form_play_all_limit(f).ok());
     if let Some(old) = &editing {
         pin_rows(ui, v, old.id(), old.name(), pins.contains_key(old.id()));
     }
-    if let Some(cfg) = save {
+    if let Some((cfg, limit)) = save {
         v.actions.push(match editing {
-            Some(_) => Action::UpdateSource(cfg),
-            None => Action::AddSource(cfg),
+            Some(_) => Action::UpdateSource(cfg, limit),
+            None => Action::AddSource(cfg, limit),
         });
         v.state.source_form = None;
     } else if cancel {
@@ -689,6 +696,52 @@ fn form_header(ui: &mut egui::Ui, f: &mut SourceForm, editing: Option<&SourceCon
     cancel
 }
 
+fn supports_play_all_limit(kind: SourceKind) -> bool {
+    matches!(
+        kind,
+        SourceKind::Local
+            | SourceKind::Library
+            | SourceKind::Http
+            | SourceKind::WebDav
+            | SourceKind::Smb
+            | SourceKind::Sftp
+            | SourceKind::Nfs
+            | SourceKind::Dlna
+    )
+}
+
+fn form_play_all_limit(form: &SourceForm) -> Result<Option<usize>, String> {
+    if !supports_play_all_limit(form.kind) {
+        return Ok(Some(crate::settings::DEFAULT_PLAY_ALL_LIMIT));
+    }
+    if !form.limit_play_all {
+        return Ok(None);
+    }
+    form.play_all_limit
+        .trim()
+        .parse::<std::num::NonZeroUsize>()
+        .map(|limit| Some(limit.get()))
+        .map_err(|_| tr!("source-play-all-limit-invalid").into())
+}
+
+fn play_all_limit_row(rows: &mut widgets::Rows<'_>, form: &mut SourceForm) {
+    rows.row(
+        tr!("source-play-all-limit"),
+        Some(tr!("source-play-all-limit-desc")),
+        |ui| {
+            widgets::switch(ui, &mut form.limit_play_all);
+            if form.limit_play_all {
+                ui.add(
+                    egui::TextEdit::singleline(&mut form.play_all_limit)
+                        .margin(egui::Margin::symmetric(12, 9))
+                        .font(theme::font(Weight::Regular, 17.0))
+                        .desired_width(104.0),
+                );
+            }
+        },
+    );
+}
+
 /// A library's name and folder, with folders worth having one for, and
 /// when editing, its videos' upkeep.
 fn library_form(
@@ -725,6 +778,7 @@ fn library_form(
                 });
             });
         }
+        play_all_limit_row(r, f);
     });
     ui.add_space(12.0);
     let built = build_config(f, id).and_then(|cfg| match &cfg {
@@ -793,6 +847,7 @@ fn dlna_edit_form(ui: &mut egui::Ui, f: &mut SourceForm, id: String) -> Option<S
         r.row(tr!("source-address"), None, |ui| {
             text_field(ui, &mut f.address, address_hint(f.kind), false);
         });
+        play_all_limit_row(r, f);
     });
     ui.add_space(12.0);
     ui.horizontal(|ui| match build_config(f, id) {
@@ -817,6 +872,7 @@ fn dlna_edit_form(ui: &mut egui::Ui, f: &mut SourceForm, id: String) -> Option<S
 /// Searching the network for DLNA servers, and adding one.
 fn dlna_search(
     ui: &mut egui::Ui,
+    f: &mut SourceForm,
     actions: &mut Vec<Action>,
     found: &[fp_sources::DlnaDevice],
     searching: bool,
@@ -849,16 +905,25 @@ fn dlna_search(
         }
     } else {
         widgets::rows(ui, |r| {
+            play_all_limit_row(r, f);
+            let limit = form_play_all_limit(f);
+            if let Err(e) = &limit {
+                r.content(|ui| ui.label(RichText::new(e).color(theme::WARN)));
+            }
             for d in found {
                 r.row(&d.friendly_name, Some(d.manufacturer.as_str()), |ui| {
-                    if widgets::button_sized(
-                        ui,
-                        Some(icons::PLUS),
-                        tr!("common-add"),
-                        Kind::Secondary,
-                        44.0,
-                    )
-                    .clicked()
+                    if ui
+                        .add_enabled_ui(limit.is_ok(), |ui| {
+                            widgets::button_sized(
+                                ui,
+                                Some(icons::PLUS),
+                                tr!("common-add"),
+                                Kind::Secondary,
+                                44.0,
+                            )
+                        })
+                        .inner
+                        .clicked()
                     {
                         save = Some(SourceConfig::Dlna(d.to_config(id.to_string())));
                     }
@@ -959,6 +1024,9 @@ fn server_form(
                     &mut f.parallel_downloads,
                 );
             }
+        }
+        if supports_play_all_limit(f.kind) {
+            play_all_limit_row(r, f);
         }
     });
     ui.add_space(12.0);
@@ -1355,6 +1423,7 @@ fn key_locked(f: &SourceForm) -> Option<bool> {
 
 /// Builds a source configuration from the form, validating the address.
 pub fn build_config(f: &SourceForm, id: String) -> Result<SourceConfig, String> {
+    form_play_all_limit(f)?;
     if f.kind == SourceKind::Plex {
         return f
             .plex

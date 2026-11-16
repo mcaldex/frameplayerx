@@ -258,6 +258,19 @@ nothing playing, either plays it. On the Up next page, pick a video to play
 it, move videos up or down, take them out, *Clear* everything but the video
 playing, or *Save as playlist*.
 
+In a folder with subfolders, **Include subfolders** beside **Play all**
+makes it play the videos in every folder below too, at any depth, in the
+folder's order and matching its search. While it looks, a line under the
+search says so, with **Cancel**, which leaves Up next as it was; leaving
+the folder stops it too. To mix the order, use **Shuffle** on Up next.
+
+It takes at most 300 videos, the first it finds going down from the
+folder, and plays them straight away. Edit a source you added to change
+that under **Limit videos from subfolders**, or turn it off to take them
+all: it then says so once it passes 300, and **Cancel** stops it. **On
+this device** always takes 300. If a subfolder can't be read, it offers
+to play the videos it found.
+
 **Shuffle** on the Up next page puts the current video first and every
 other entry in a new random order, including entries that came before it.
 The current video keeps playing; press **Shuffle** again for another order.
