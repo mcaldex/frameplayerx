@@ -1,6 +1,10 @@
 //! Browsing sources: folders, scene feeds, server catalogs, and PIN locks.
 
 use super::*;
+use crate::folder_playback::{Incomplete, ScanOptions};
+use std::sync::atomic::Ordering;
+
+pub(super) type FolderPlayAllResult = Result<(Vec<OpenRequest>, Option<Incomplete>), String>;
 
 fn request_source(library: &Library, req: &OpenRequest) -> Option<String> {
     fp_sources::location_owner(&req.location)
@@ -97,6 +101,7 @@ impl App {
             self.ui.toast(tr!("source-not-available"));
             return;
         };
+        self.cancel_folder_play_all();
         // Into the listing on screen, else a folder page of its own.
         if !self.ui.folder_mut().is_some_and(|b| b.source == source) {
             self.ui.source = Some(SourceView {
@@ -320,6 +325,182 @@ impl App {
         });
     }
 
+    /// Walks the folder tree without blocking the browser.
+    pub(super) fn folder_play_all(
+        &mut self,
+        source: String,
+        location: Option<String>,
+        sort: fp_sources::EntrySort,
+        filter: String,
+    ) {
+        if self.source_locked(&source) {
+            self.ask_pin(&source);
+            return;
+        }
+        let Some(src) = self.services.opener.source(&source) else {
+            self.ui.toast(tr!("source-not-available"));
+            return;
+        };
+        if self
+            .folder_play_all
+            .as_ref()
+            .is_some_and(|scan| matches!(scan.state, FolderPlayAllState::Scanning(_)))
+        {
+            self.ui.toast(tr!("folders-play-all-waiting"));
+            return;
+        }
+        let Some(b) = self.ui.folder_mut().filter(|b| {
+            b.source == source && b.location == location && !b.loading && b.error.is_none()
+        }) else {
+            return;
+        };
+        let entries = b.entries.clone();
+        let max_videos = self.settings.play_all_limit(&source);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let scan = FolderPlayAll {
+            source: source.clone(),
+            location: location.clone(),
+            state: FolderPlayAllState::Scanning(cancel.clone()),
+        };
+        let updates = self.jobs.sender();
+        let job = self.jobs.try_spawn("folder-play-all", move || {
+            let result = crate::folder_playback::collect(
+                src.as_ref(),
+                location.as_deref(),
+                entries,
+                ScanOptions {
+                    sort,
+                    filter: &filter,
+                    max_videos,
+                },
+                || cancel.load(Ordering::Relaxed),
+                || {
+                    let _ = updates.send(Job::FolderPlayAllLarge(cancel.clone()));
+                },
+            )
+            .map_err(|e| ui::errors::source(&e))
+            .map(|scan| {
+                let requests: Vec<_> = scan
+                    .videos
+                    .into_iter()
+                    .map(|entry| OpenRequest {
+                        location: entry.location.clone(),
+                        source_id: Some(source.clone()),
+                        entry: Some(entry),
+                        ..Default::default()
+                    })
+                    .collect();
+                (requests, scan.incomplete)
+            });
+            Job::FolderPlayAll { cancel, result }
+        });
+        match job {
+            Ok(()) => self.folder_play_all = Some(scan),
+            Err(e) => {
+                log::error!("cannot start folder scan: {e}");
+                self.ui.toast(tr!("error-io", error = e.to_string()));
+            }
+        }
+        self.panels[MAIN].request_repaint();
+    }
+
+    pub(super) fn cancel_folder_play_all(&mut self) {
+        let Some(scan) = self.folder_play_all.as_ref() else {
+            return;
+        };
+        if let FolderPlayAllState::Scanning(cancel) = &scan.state {
+            // Keep the slot occupied until an in-flight listing returns so
+            // repeated cancels and retries cannot pile up network requests.
+            if cancel.swap(true, Ordering::Relaxed) {
+                return;
+            }
+        } else {
+            self.folder_play_all = None;
+        }
+        self.panels[MAIN].request_repaint();
+    }
+
+    /// Leaving the list or locking its source also abandons the request.
+    pub(super) fn check_folder_play_all(&mut self) {
+        if let Some(scan) = &self.folder_play_all
+            && scan.state.status().is_some()
+            && ((self.playback.is_some() && (!self.show_browser || !self.ui_visible))
+                || self.ui.screen != Screen::Sources
+                || self.ui.picking.is_some()
+                || !self
+                    .ui
+                    .folder_mut()
+                    .is_some_and(|b| b.source == scan.source && b.location == scan.location)
+                || self.source_locked(&scan.source))
+        {
+            self.cancel_folder_play_all();
+        }
+    }
+
+    pub(super) fn folder_play_all_large(&mut self, cancel: &Arc<AtomicBool>) {
+        if !cancel.load(Ordering::Relaxed)
+            && self
+                .folder_play_all
+                .as_ref()
+                .is_some_and(|scan| scan.state.matches_scan(cancel))
+        {
+            self.ui.toast(tr!(
+                "folders-play-all-unlimited-toast",
+                count = crate::settings::DEFAULT_PLAY_ALL_LIMIT
+            ));
+            self.panels[MAIN].request_repaint();
+        }
+    }
+
+    pub(super) fn folder_play_all_done(
+        &mut self,
+        cancel: &Arc<AtomicBool>,
+        result: FolderPlayAllResult,
+    ) {
+        let Some(scan) = self.folder_play_all.as_mut() else {
+            return;
+        };
+        if !scan.state.matches_scan(cancel) {
+            return;
+        }
+        self.panels[MAIN].request_repaint();
+        // Past a subfolder that couldn't be read, it asks before playing.
+        if !cancel.load(Ordering::Relaxed)
+            && let Ok((requests, Some(Incomplete::Unavailable))) = result
+        {
+            scan.state = FolderPlayAllState::Partial { requests };
+            return;
+        }
+        self.folder_play_all = None;
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        match result {
+            Ok((reqs, reason)) if !reqs.is_empty() => {
+                self.apply(Action::PlayAll(reqs, 0));
+                if let Some(Incomplete::LimitReached(limit)) = reason {
+                    self.ui
+                        .toast(tr!("folders-play-all-limited-toast", limit = limit));
+                }
+            }
+            Ok(_) => self.ui.toast(tr!("toast-nothing-to-play")),
+            Err(e) => self.ui.toast(e),
+        }
+    }
+
+    pub(super) fn play_found_folder_videos(&mut self) {
+        self.check_folder_play_all();
+        if let Some(FolderPlayAll {
+            state: FolderPlayAllState::Partial { requests, .. },
+            ..
+        }) = self.folder_play_all.as_mut()
+        {
+            let requests = std::mem::take(requests);
+            self.cancel_folder_play_all();
+            self.apply(Action::PlayAll(requests, 0));
+        }
+    }
+
     /// A server grid's Play all: the videos among the first of `query`,
     /// fetched, then played through.
     pub(super) fn catalog_play_all(&mut self, source: String, query: fp_sources::CatalogQuery) {
@@ -366,7 +547,12 @@ impl App {
 
     // ---- editing sources ----
 
-    pub(super) fn add_source(&mut self, cfg: fp_sources::SourceConfig) {
+    pub(super) fn add_source(
+        &mut self,
+        cfg: fp_sources::SourceConfig,
+        play_all_limit: Option<usize>,
+    ) {
+        self.settings.set_play_all_limit(cfg.id(), play_all_limit);
         // `nfs://host/` is the server's export `/`: asked of the server first,
         // as one without it is added as the whole server (`nfs://host`).
         if let fp_sources::SourceConfig::Nfs(c) = &cfg
@@ -419,6 +605,7 @@ impl App {
         let change = self.services.set_sources(list);
         match change.errors.into_iter().find(|e| e.id == cfg.id()) {
             Some(e) => {
+                self.settings.clear_play_all_limit(cfg.id());
                 self.ui.toast(e.to_string());
                 false
             }
@@ -434,7 +621,11 @@ impl App {
         }
     }
 
-    pub(super) fn update_source(&mut self, cfg: fp_sources::SourceConfig) {
+    pub(super) fn update_source(
+        &mut self,
+        cfg: fp_sources::SourceConfig,
+        play_all_limit: Option<usize>,
+    ) {
         let id = cfg.id().to_string();
         // The form only opens for unlocked sources, but a PIN could have
         // been set since.
@@ -456,6 +647,7 @@ impl App {
             .map(|c| if c.id() == id { cfg.clone() } else { c.clone() })
             .collect();
         let change = self.services.set_sources(list);
+        self.settings.set_play_all_limit(&id, play_all_limit);
         if moved {
             // Its next scan takes back the videos still in the new folder.
             let lib = &self.services.library;
@@ -487,6 +679,7 @@ impl App {
             return;
         }
         self.settings.source_pins.remove(id);
+        self.settings.clear_play_all_limit(id);
         self.ui.unlocked_sources.remove(id);
         self.close_source_view(id);
         let _ = std::fs::remove_file(fp_sources::FeedLibrary::cache_path(id));

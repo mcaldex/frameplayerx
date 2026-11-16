@@ -464,6 +464,9 @@ source-self-signed = Selbstsignierte Zertifikate akzeptieren
 source-self-signed-desc = Für HTTPS-Server in Ihrem eigenen Netzwerk.
 source-parallel-downloads = Parallele Downloads
 source-parallel-downloads-desc = Lädt mehrere Teile eines Videos gleichzeitig über getrennte Verbindungen, wie ein Download-Manager. Das hilft, wenn der Server die Geschwindigkeit jeder Verbindung begrenzt. Wenn nicht, bringt es womöglich nichts, und ein Server mit Festplatten kann langsamer werden.
+source-play-all-limit = Videos aus Unterordnern begrenzen
+source-play-all-limit-desc = Wie viele Videos „Alle abspielen“ höchstens nimmt, wenn es Unterordner einschließt. Aus: alle, und „Abbrechen“ hält es an.
+source-play-all-limit-invalid = Gib für die Video-Grenze eine ganze Zahl größer als null ein.
 source-passwords-note = Passwörter werden nur auf diesem Gerät gespeichert, in einer Datei, die nur Sie lesen können.
 quick-connect-code = Kopplungscode
 quick-connect-code-desc = Geben Sie diesen Code in Ihrer Jellyfin- oder Emby-App unter Quick Connect ein:
@@ -800,6 +803,17 @@ sort-largest = Größte
 sort-smallest = Kleinste
 folders-empty = Keine Videos oder Ordner hier.
 folders-no-match = Hier passt nichts.
+folders-play-all-subfolders = Unterordner einschließen
+folders-play-all-scanning = Videos in Unterordnern werden gesucht…
+folders-play-all-waiting = Warte, bis die vorige Ordnerliste fertig ist
+folders-play-all-unavailable = Einige Unterordner konnten nicht gelesen werden.
+folders-play-all-limited-toast = Die ersten { $limit } gefundenen Videos werden abgespielt. Bearbeite die Quelle, um die Grenze zu ändern.
+folders-play-all-unlimited-toast = Mehr als { $count } Videos gefunden, die Suche läuft weiter. Das kann dauern.
+folders-play-all-found =
+    { $count ->
+        [one] 1 gefundenes Video abspielen
+       *[other] { $count } gefundene Videos abspielen
+    }
 folders-more-tip = Als Nächstes abspielen, einreihen oder zu einer Playlist
 folders-more-tip-delete = Als Nächstes abspielen, einreihen, zu einer Playlist oder löschen
 controller-same = Gleich

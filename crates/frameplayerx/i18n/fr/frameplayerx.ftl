@@ -464,6 +464,9 @@ source-self-signed = Accepter les certificats auto-signés
 source-self-signed-desc = Pour les serveurs HTTPS de votre propre réseau.
 source-parallel-downloads = Téléchargements parallèles
 source-parallel-downloads-desc = Télécharge plusieurs parties d’une vidéo à la fois sur des connexions séparées, comme un gestionnaire de téléchargement. Cela aide si le serveur limite la vitesse de chaque connexion. Sinon, cela peut ne rien apporter, et un serveur sur disques durs peut ralentir.
+source-play-all-limit = Limiter les vidéos des sous-dossiers
+source-play-all-limit-desc = Le nombre maximal de vidéos que « Tout lire » prend quand il inclut les sous-dossiers. Désactivé, il les prend toutes et « Annuler » l’arrête.
+source-play-all-limit-invalid = Saisissez un nombre entier supérieur à zéro pour la limite de vidéos.
 source-passwords-note = Les mots de passe sont stockés sur cet appareil uniquement, dans un fichier que vous seul pouvez lire.
 quick-connect-code = Code d’association
 quick-connect-code-desc = Saisissez ce code dans votre application Jellyfin ou Emby, sous Quick Connect :
@@ -800,6 +803,17 @@ sort-largest = Plus gros
 sort-smallest = Plus petits
 folders-empty = Aucune vidéo ni dossier ici.
 folders-no-match = Rien ici ne correspond.
+folders-play-all-subfolders = Inclure les sous-dossiers
+folders-play-all-scanning = Recherche de vidéos dans les sous-dossiers…
+folders-play-all-waiting = En attente de la fin de la liste de dossiers précédente
+folders-play-all-unavailable = Certains sous-dossiers n’ont pas pu être lus.
+folders-play-all-limited-toast = Lecture des { $limit } premières vidéos trouvées. Modifiez la source pour changer la limite.
+folders-play-all-unlimited-toast = Plus de { $count } vidéos trouvées, la recherche continue. Cela peut prendre un moment.
+folders-play-all-found =
+    { $count ->
+        [one] Lire la vidéo trouvée
+       *[other] Lire les { $count } vidéos trouvées
+    }
 folders-more-tip = Lire ensuite, ajouter à la file ou à une playlist
 folders-more-tip-delete = Lire ensuite, ajouter à la file ou à une playlist, ou supprimer
 controller-same = Pareil

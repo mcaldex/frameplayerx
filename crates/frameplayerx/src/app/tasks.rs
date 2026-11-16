@@ -32,6 +32,12 @@ pub(super) enum Job {
     },
     /// The videos a server grid's Play all fetched, for Up next.
     PlayAll(Result<Vec<OpenRequest>, String>),
+    /// A folder tree's queue, identified by the cancellation flag of its scan.
+    FolderPlayAll {
+        cancel: Arc<AtomicBool>,
+        result: sources::FolderPlayAllResult,
+    },
+    FolderPlayAllLarge(Arc<AtomicBool>),
     /// A scene feed's listing; `cached`: the one saved last time, shown
     /// while the server answers.
     FeedLibrary {
@@ -368,6 +374,7 @@ impl App {
 
     /// Takes in finished background work and the metadata worker's progress.
     pub(super) fn poll_jobs(&mut self) {
+        self.check_folder_play_all();
         self.services.poll_source_updates();
         for job in self.jobs.poll() {
             self.on_job(job);
@@ -407,6 +414,10 @@ impl App {
                 Ok(_) => self.ui.toast(tr!("toast-nothing-to-play")),
                 Err(e) => self.ui.toast(e),
             },
+            Job::FolderPlayAll { cancel, result } => {
+                self.folder_play_all_done(&cancel, result);
+            }
+            Job::FolderPlayAllLarge(cancel) => self.folder_play_all_large(&cancel),
             Job::FeedLibrary {
                 source,
                 result,
@@ -729,7 +740,12 @@ impl App {
                 self.ui.open_error = None;
                 self.ui.adjust_open = false;
                 self.ui.tracks_open = false;
-                self.show_browser = false;
+                // An earlier open or autoplay can complete during a scan.
+                // Keep the scan controls visible.
+                self.show_browser = self
+                    .folder_play_all
+                    .as_ref()
+                    .is_some_and(|scan| scan.state.status().is_some());
                 self.ui_visible = true;
                 self.last_activity = Instant::now();
                 self.sub_key.clear();

@@ -7,10 +7,19 @@ impl App {
         match a {
             // Up next is this video alone.
             Action::Open(req) => {
+                self.cancel_folder_play_all();
                 self.queue.set(vec![req.clone()], 0);
                 self.open_request(req);
             }
             Action::PlayAll(list, pos) => self.play_all(list, pos),
+            Action::FolderPlayAll {
+                source,
+                location,
+                sort,
+                filter,
+            } => self.folder_play_all(source, location, sort, filter),
+            Action::CancelFolderPlayAll => self.cancel_folder_play_all(),
+            Action::PlayFoundFolderVideos => self.play_found_folder_videos(),
             Action::CatalogPlayAll { source, query } => self.catalog_play_all(source, query),
             Action::Queue { req, next } => self.queue_video(req, next),
             Action::QueueJump(i) => {
@@ -228,8 +237,8 @@ impl App {
                     Job::Toast(tr!("toast-image-cache-cleared", mb = mb))
                 });
             }
-            Action::AddSource(cfg) => self.add_source(cfg),
-            Action::UpdateSource(cfg) => self.update_source(cfg),
+            Action::AddSource(cfg, play_all_limit) => self.add_source(cfg, play_all_limit),
+            Action::UpdateSource(cfg, play_all_limit) => self.update_source(cfg, play_all_limit),
             Action::RemoveSource(id) => self.remove_source(&id),
             Action::UnlockSource { source, pin } => self.unlock_source(source, &pin),
             Action::LockSource(id) => self.lock_source(&id),
@@ -353,6 +362,7 @@ impl App {
 
     fn play_all(&mut self, list: Vec<OpenRequest>, pos: usize) {
         if let Some(req) = list.get(pos).cloned() {
+            self.cancel_folder_play_all();
             self.queue.set(list, pos);
             self.open_request(req);
         }
@@ -485,6 +495,7 @@ impl App {
 
     /// Closes the video, and drops one still opening.
     pub(super) fn close_playback(&mut self) {
+        self.cancel_folder_play_all();
         if let Some(p) = self.playback.take() {
             p.close(&self.services.library);
         }

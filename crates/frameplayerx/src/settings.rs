@@ -51,6 +51,10 @@ pub const UI_SCALES: std::ops::RangeInclusive<f32> = 0.8..=1.5;
 /// Settings › Image cache: the sizes offered, in MB.
 pub const IMAGE_CACHE_SIZES: [u32; 5] = [100, 250, 500, 1000, 2000];
 
+/// The most videos Play all takes from a folder and its subfolders, unless
+/// a source sets its own limit.
+pub const DEFAULT_PLAY_ALL_LIMIT: usize = 300;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -127,6 +131,10 @@ pub struct Settings {
     /// [`crate::pin`]). Left out of the file when empty.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub source_pins: std::collections::BTreeMap<String, String>,
+    /// Play all's limit on videos from subfolders, by source id, where it
+    /// isn't [`DEFAULT_PLAY_ALL_LIMIT`]; `null` turns it off.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub(crate) play_all_limits: std::collections::BTreeMap<String, Option<usize>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -268,11 +276,34 @@ impl Default for Settings {
             panel_offsets: PanelOffsets::default(),
             browse_sort: fp_sources::EntrySort::default(),
             source_pins: Default::default(),
+            play_all_limits: Default::default(),
         }
     }
 }
 
 impl Settings {
+    /// The most videos Play all takes from `source`'s subfolders, `None`
+    /// for no limit.
+    pub fn play_all_limit(&self, source: &str) -> Option<usize> {
+        match self.play_all_limits.get(source) {
+            None | Some(Some(0)) => Some(DEFAULT_PLAY_ALL_LIMIT),
+            Some(limit) => *limit,
+        }
+    }
+
+    pub fn set_play_all_limit(&mut self, source: &str, limit: Option<usize>) {
+        if matches!(limit, Some(0 | DEFAULT_PLAY_ALL_LIMIT)) {
+            self.clear_play_all_limit(source);
+        } else {
+            self.play_all_limits.insert(source.to_owned(), limit);
+        }
+    }
+
+    /// Removes the override for a deleted source or a restored default.
+    pub fn clear_play_all_limit(&mut self, source: &str) {
+        self.play_all_limits.remove(source);
+    }
+
     /// Adjustments for a video that has none saved: the defaults, following
     /// the global chroma key.
     pub fn new_video_view(&self) -> ViewSettings {
@@ -372,6 +403,36 @@ mod tests {
         assert_eq!(s.next_preset(None), Some(0));
         while s.add_preset(view(1.0), None).is_some() {}
         assert_eq!(s.presets.len(), MAX_PRESETS);
+    }
+
+    #[test]
+    fn play_all_limits_default_and_round_trip_per_source() {
+        let mut settings: Settings = serde_json::from_str(r#"{"volume": 0.25}"#).unwrap();
+        assert_eq!(settings.volume, 0.25);
+        assert_eq!(settings.play_all_limit("webdav"), Some(300));
+        let saved = serde_json::to_value(&settings).unwrap();
+        assert!(saved.get("play_all_limits").is_none());
+
+        settings.set_play_all_limit("webdav", Some(128));
+        settings.set_play_all_limit("smb", None);
+        let saved = serde_json::to_value(&settings).unwrap();
+        assert_eq!(saved["play_all_limits"]["webdav"], 128);
+        assert!(saved["play_all_limits"].get("smb").unwrap().is_null());
+        let mut restored: Settings = serde_json::from_value(saved).unwrap();
+        assert_eq!(restored.play_all_limit("webdav"), Some(128));
+        assert_eq!(restored.play_all_limit("smb"), None);
+        assert_eq!(restored.play_all_limit("unknown"), Some(300));
+
+        restored.set_play_all_limit("webdav", Some(DEFAULT_PLAY_ALL_LIMIT));
+        restored.clear_play_all_limit("smb");
+        assert!(restored.play_all_limits.is_empty());
+    }
+
+    #[test]
+    fn a_zero_play_all_limit_falls_back_to_the_default() {
+        let settings: Settings =
+            serde_json::from_str(r#"{"play_all_limits": {"webdav": 0}}"#).unwrap();
+        assert_eq!(settings.play_all_limit("webdav"), Some(300));
     }
 
     #[test]

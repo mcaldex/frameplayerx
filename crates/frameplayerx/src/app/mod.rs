@@ -127,6 +127,38 @@ const OPEN_TIMEOUT: Duration = Duration::from_secs(45);
 /// How often settings that couldn't be saved are tried again.
 const SETTINGS_RETRY: Duration = Duration::from_secs(10);
 
+struct FolderPlayAll {
+    source: String,
+    location: Option<String>,
+    state: FolderPlayAllState,
+}
+
+enum FolderPlayAllState {
+    Scanning(Arc<AtomicBool>),
+    /// Done, past a subfolder that couldn't be read.
+    Partial {
+        requests: Vec<OpenRequest>,
+    },
+}
+
+impl FolderPlayAllState {
+    fn matches_scan(&self, cancel: &Arc<AtomicBool>) -> bool {
+        matches!(self, Self::Scanning(active) if Arc::ptr_eq(active, cancel))
+    }
+
+    fn status(&self) -> Option<ui::folders::PlayAllStatus> {
+        match self {
+            Self::Scanning(cancel) if !cancel.load(std::sync::atomic::Ordering::Relaxed) => {
+                Some(ui::folders::PlayAllStatus::Scanning)
+            }
+            Self::Scanning(_) => None,
+            Self::Partial { requests } => Some(ui::folders::PlayAllStatus::Partial {
+                count: requests.len(),
+            }),
+        }
+    }
+}
+
 pub struct App {
     pub settings: Settings,
     /// The settings last applied.
@@ -159,6 +191,7 @@ pub struct App {
     /// When the video being opened was asked for.
     open_started: Instant,
     jobs: Jobs<Job>,
+    folder_play_all: Option<FolderPlayAll>,
     anchor: Option<Mat4>,
     reanchor: bool,
     ui_visible: bool,
@@ -299,6 +332,7 @@ impl App {
             open_seq: 0,
             open_started: Instant::now(),
             jobs: Jobs::new(),
+            folder_play_all: None,
             anchor: None,
             reanchor: true,
             ui_visible: true,
@@ -617,6 +651,7 @@ impl App {
     }
 
     pub fn shutdown(mut self) {
+        self.cancel_folder_play_all();
         // Cut short the thumbnail being made, so stopping the worker below
         // does not wait for it.
         self.services.set_worker_busy(true);

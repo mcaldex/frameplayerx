@@ -220,6 +220,15 @@ pub enum Action {
     Open(OpenRequest),
     /// Makes the list Up next and plays it from `.1` (Play all, a playlist).
     PlayAll(Vec<OpenRequest>, usize),
+    /// Lists the current folder and its subfolders before starting playback.
+    FolderPlayAll {
+        source: String,
+        location: Option<String>,
+        sort: fp_sources::EntrySort,
+        filter: String,
+    },
+    CancelFolderPlayAll,
+    PlayFoundFolderVideos,
     /// A server grid's Play all when its first videos aren't all loaded:
     /// fetches them by `query`, then plays them as Play all does.
     CatalogPlayAll {
@@ -301,9 +310,9 @@ pub enum Action {
     ClearHistory,
     /// Deletes the server pictures kept on the headset.
     ClearImageCache,
-    AddSource(SourceConfig),
+    AddSource(SourceConfig, Option<usize>),
     /// Saves an edited source (the same id).
-    UpdateSource(SourceConfig),
+    UpdateSource(SourceConfig, Option<usize>),
     RemoveSource(String),
     /// Unlock a source with its PIN (the form says when it is wrong).
     UnlockSource {
@@ -483,6 +492,8 @@ pub struct Browse {
     pub error: Option<String>,
     /// Words the names shown must contain.
     pub filter: String,
+    /// Play all takes in the videos of every folder below this one.
+    pub include_subfolders: bool,
 }
 
 /// A source being browsed, in the browser its kind gets.
@@ -694,6 +705,8 @@ pub struct SourceForm {
     /// The user and group IDs an NFS source sends; blank for this device's.
     pub nfs_uid: String,
     pub nfs_gid: String,
+    pub limit_play_all: bool,
+    pub play_all_limit: String,
     /// Signing in to a Jellyfin/Emby server with Quick Connect rather than a
     /// password.
     pub use_quick_connect: bool,
@@ -739,6 +752,8 @@ impl Default for SourceForm {
             parallel_downloads: false,
             nfs_uid: String::new(),
             nfs_gid: String::new(),
+            limit_play_all: true,
+            play_all_limit: crate::settings::DEFAULT_PLAY_ALL_LIMIT.to_string(),
             use_quick_connect: true,
             quick_connect: QuickConnect::Idle,
             plex: plex::Connect::default(),
@@ -1041,6 +1056,7 @@ impl UiState {
 pub struct View<'a> {
     pub state: &'a mut UiState,
     pub queue: &'a crate::queue::Queue,
+    pub folder_play_all: Option<folders::PlayAllStatus>,
     pub settings: &'a mut crate::settings::Settings,
     pub services: &'a crate::services::Services,
     pub thumbs: &'a mut thumbs::Thumbs,
