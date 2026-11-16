@@ -503,6 +503,8 @@ pub struct MediaBrowserSource {
     /// The version chosen for an item (item id to media source id), kept
     /// while the app runs.
     versions: Mutex<HashMap<String, String>>,
+    /// Per-item `CanDelete` cached from server listings and details.
+    deletable: Mutex<HashMap<String, bool>>,
     /// The play session of the transcode the server is encoding for us.
     encoding: Arc<Mutex<Option<String>>>,
 }
@@ -635,8 +637,27 @@ impl MediaBrowserSource {
             parents: Mutex::new(HashMap::new()),
             tags: Mutex::new(None),
             versions: Mutex::new(HashMap::new()),
+            deletable: Mutex::new(HashMap::new()),
             encoding: Arc::default(),
         })
+    }
+
+    pub(crate) fn record_deletable(&self, id: &str, can_delete: bool) {
+        if id.is_empty() {
+            return;
+        }
+        let mut cache = lock(&self.deletable);
+        if cache.len() >= 4096 {
+            cache.clear();
+        }
+        cache.insert(id.to_string(), can_delete);
+    }
+
+    fn delete_item_by_id(&self, id: &str) -> Result<()> {
+        let path = format!("/Items/{}", encode_form_value(id));
+        self.api_send("DELETE", &path, None, false)?;
+        lock(&self.deletable).remove(id);
+        Ok(())
     }
 
     /// The media source of `location` that plays: the version it names,
@@ -787,6 +808,16 @@ impl MediaBrowserSource {
         path_and_query: &str,
         body: Option<&[u8]>,
     ) -> Result<HttpReply> {
+        self.api_send(method, path_and_query, body, true)
+    }
+
+    fn api_send(
+        &self,
+        method: &str,
+        path_and_query: &str,
+        body: Option<&[u8]>,
+        retry_status: bool,
+    ) -> Result<HttpReply> {
         let (client, _) = self.client()?;
         let url = format!("{}{}", self.base_url, path_and_query);
         let headers: &[(&str, &str)] = if body.is_some() {
@@ -797,7 +828,14 @@ impl MediaBrowserSource {
         } else {
             &[("Accept", "application/json")]
         };
-        let reply = client.request(method, &url, headers, body, JSON_LIMIT)?;
+        let send = |client: &HttpClient| {
+            if retry_status {
+                client.request(method, &url, headers, body, JSON_LIMIT)
+            } else {
+                client.request_no_status_retry(method, &url, headers, body, JSON_LIMIT)
+            }
+        };
+        let reply = send(&client)?;
         if reply.status == 401 {
             log::debug!("MediaBrowser 401 at {}, re-authenticating", redact(&url));
             {
@@ -809,7 +847,7 @@ impl MediaBrowserSource {
             }
             self.authenticate()?;
             let (client, _) = self.client()?;
-            let reply = client.request(method, &url, headers, body, JSON_LIMIT)?;
+            let reply = send(&client)?;
             return reply.error_for_status(&url);
         }
         reply.error_for_status(&url)
@@ -1093,12 +1131,18 @@ impl Source for MediaBrowserSource {
                 loop {
                     let query = format!(
                         "/Users/{user_id}/Items?ParentId={id}&Recursive=false\
-                        &Fields=Path,MediaSources,Overview,DateCreated&SortBy=SortName&SortOrder=Ascending\
+                        &Fields=Path,MediaSources,Overview,DateCreated,CanDelete&SortBy=SortName&SortOrder=Ascending\
                         &StartIndex={start_index}&Limit={PAGE_SIZE}"
                     );
                     let v = self.api_get_json(&query)?;
                     // The page as sent: one of only photos still goes on.
-                    let count = array(&v, "Items").len();
+                    let raw_items = array(&v, "Items");
+                    let count = raw_items.len();
+                    for raw in raw_items {
+                        if let Some(item) = catalog::parse_item(raw, &self.base_url) {
+                            self.record_deletable(&item.id, item.can_delete);
+                        }
+                    }
                     let mut entries = parse_items(&v, &self.base_url);
                     for entry in &mut entries {
                         self.stable_entry(entry);
@@ -1185,9 +1229,13 @@ impl Source for MediaBrowserSource {
             return Ok(entry.clone());
         };
         let (_, user_id) = self.client()?;
-        let path =
-            format!("/Users/{user_id}/Items/{id}?Fields=MediaSources,Chapters,Path,Overview,Tags");
+        let path = format!(
+            "/Users/{user_id}/Items/{id}?Fields=MediaSources,Chapters,Path,Overview,Tags,CanDelete"
+        );
         let v = self.api_get_json(&path)?;
+        if let Some(parsed) = catalog::parse_item(&v, &self.base_url) {
+            self.record_deletable(&parsed.id, parsed.can_delete);
+        }
         let mut out = entry.clone();
         let chosen = location_version(&resolved)
             .map(str::to_string)
@@ -1320,6 +1368,48 @@ impl Source for MediaBrowserSource {
 
     fn as_catalog(&self) -> Option<&dyn crate::Catalog> {
         Some(self)
+    }
+
+    fn can_delete(&self) -> bool {
+        true
+    }
+
+    fn delete_allowed(&self, location: &str) -> Option<bool> {
+        let resolved = self.resolved_location(location).ok()?;
+        let (kind, id) = decode_location(&resolved)?;
+        if kind != "item" {
+            return Some(false);
+        }
+        lock(&self.deletable).get(id).copied()
+    }
+
+    fn ask_delete_allowed(&self, location: &str) -> Result<bool> {
+        let resolved = self.resolved_location(location)?;
+        let Some((kind, id)) = decode_location(&resolved) else {
+            return Err(Error::invalid(location, "not a MediaBrowser location"));
+        };
+        if kind != "item" {
+            return Ok(false);
+        }
+        if let Some(can) = lock(&self.deletable).get(id).copied() {
+            return Ok(can);
+        }
+        Ok(self.item(id)?.can_delete)
+    }
+
+    fn delete(&self, location: &str) -> Result<()> {
+        let resolved = self.resolved_location(location)?;
+        let Some((kind, id)) = decode_location(&resolved) else {
+            return Err(Error::invalid(location, "not a MediaBrowser location"));
+        };
+        // A series or a season would take every episode's files with it.
+        if kind != "item" || !self.item(id)?.kind.playable() {
+            return Err(Error::invalid(
+                location,
+                "only a video's files can be deleted",
+            ));
+        }
+        self.delete_item_by_id(id)
     }
 }
 
@@ -1955,6 +2045,82 @@ mod tests {
         assert_eq!(
             video_3d_format(&v_stream),
             Some(VideoFormat::new(Projection::Flat, StereoLayout::SideBySide))
+        );
+    }
+
+    #[test]
+    fn deletes_playable_items_and_checks_can_delete_permission() {
+        use crate::test_server::{TestServer, resp};
+
+        let server = TestServer::start(|r| match (r.method.as_str(), r.path()) {
+            ("GET", "/Users/u1/Items/del1") => resp(
+                200,
+                serde_json::to_vec(&json!({
+                    "Id": "del1", "Name": "Allowed", "Type": "Movie", "CanDelete": true
+                }))
+                .unwrap(),
+                &[("Content-Type", "application/json")],
+            ),
+            ("GET", "/Users/u1/Items/nodel1") => resp(
+                200,
+                serde_json::to_vec(&json!({
+                    "Id": "nodel1", "Name": "Locked", "Type": "Movie", "CanDelete": false
+                }))
+                .unwrap(),
+                &[("Content-Type", "application/json")],
+            ),
+            ("GET", "/Users/u1/Items/ser1") => resp(
+                200,
+                serde_json::to_vec(&json!({
+                    "Id": "ser1", "Name": "Series", "Type": "Series", "CanDelete": true
+                }))
+                .unwrap(),
+                &[("Content-Type", "application/json")],
+            ),
+            ("DELETE", "/Items/del1" | "/Items/ser1") => resp(204, Vec::new(), &[]),
+            ("DELETE", "/Items/nodel1") => resp(403, Vec::new(), &[]),
+            _ => resp(404, Vec::new(), &[]),
+        });
+        let source = MediaBrowserSource::new(&MediaBrowserConfig {
+            id: "jf".into(),
+            name: "Jellyfin".into(),
+            url: server.base.clone(),
+            credentials: None,
+            user_id: Some("u1".into()),
+            access_token: Some("tok".into()),
+            insecure_tls: false,
+            parallel_downloads: false,
+            max_height: None,
+        })
+        .unwrap();
+        assert!(source.can_delete());
+
+        let allowed_loc = crate::location::encode("jf", "mb", "item=del1");
+        let locked_loc = crate::location::encode("jf", "mb", "item=nodel1");
+        let folder_loc = crate::location::encode("jf", "mb", "folder=f1");
+
+        let series_loc = crate::location::encode("jf", "mb", "item=ser1");
+
+        assert_eq!(source.delete_allowed(&folder_loc), Some(false));
+        assert_eq!(source.delete_allowed(&allowed_loc), None);
+        assert!(source.ask_delete_allowed(&allowed_loc).unwrap());
+        assert_eq!(source.delete_allowed(&allowed_loc), Some(true));
+        assert!(!source.ask_delete_allowed(&locked_loc).unwrap());
+        assert_eq!(source.delete_allowed(&locked_loc), Some(false));
+        assert!(!source.ask_delete_allowed(&series_loc).unwrap());
+
+        source.delete(&allowed_loc).unwrap();
+        assert!(matches!(source.delete(&locked_loc), Err(Error::Auth(_))));
+        for refused in [&folder_loc, &series_loc] {
+            assert!(matches!(
+                source.delete(refused),
+                Err(Error::InvalidLocation { .. })
+            ));
+        }
+        assert_eq!(
+            server.count(|r| r.method == "DELETE" && r.path() == "/Items/ser1"),
+            0,
+            "a series is never deleted"
         );
     }
 }

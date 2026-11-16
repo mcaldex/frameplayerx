@@ -236,6 +236,32 @@ pub trait Source: Send + Sync {
     fn as_catalog(&self) -> Option<&dyn Catalog> {
         None
     }
+
+    /// Whether this source can delete files at all. Folders never are.
+    fn can_delete(&self) -> bool {
+        false
+    }
+
+    /// Whether the file at `location` may be deleted, when that is known
+    /// without asking the server; `None` when only
+    /// [`Source::ask_delete_allowed`] can tell.
+    fn delete_allowed(&self, _location: &str) -> Option<bool> {
+        Some(self.can_delete())
+    }
+
+    /// Whether the file at `location` may be deleted, asking the server when
+    /// [`Source::delete_allowed`] can't tell.
+    fn ask_delete_allowed(&self, location: &str) -> Result<bool> {
+        Ok(self.delete_allowed(location).unwrap_or(false))
+    }
+
+    /// Deletes the file at `location` for good. A folder is refused.
+    fn delete(&self, _location: &str) -> Result<()> {
+        Err(Error::Unsupported(format!(
+            "{} does not support deleting files",
+            self.name()
+        )))
+    }
 }
 
 /// Whether a location binds its resource to one configured source.

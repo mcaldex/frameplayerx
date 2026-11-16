@@ -120,6 +120,9 @@ pub struct CatalogItem {
     /// (details only); `None` plays the tallest that fits the source's
     /// maximum height.
     pub version: Option<String>,
+    /// Whether the server lets this video's files be deleted (never a
+    /// series, a season or a folder).
+    pub can_delete: bool,
 }
 
 /// One version of a film or video: a media source of the item.

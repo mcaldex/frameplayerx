@@ -908,6 +908,17 @@ library-file = File
 # A video's format, and where it came from (your choice, from the file name…).
 library-format-value = { $format } ({ $evidence })
 library-remove-from-history = Remove from history
+# A button: deletes the video's file from where it is kept, after asking.
+delete-file = Delete file
+# Short: the button asks again before deleting the file.
+delete-file-confirm = Delete for good?
+delete-deleting = Deleting…
+# $error says why, starting in lower case.
+delete-failed = Couldn't delete the file: { $error }
+# Why a delete failed: the server turned it away.
+delete-not-allowed = the server doesn't allow it
+# $title is the video's name.
+toast-deleted = Deleted { $title }
 # What a controller button does: nothing.
 action-nothing = Nothing
 action-play-pause = Play / pause
@@ -1096,6 +1107,8 @@ folders-empty = No videos or folders here.
 folders-no-match = Nothing here matches.
 # A tooltip on a video's ⋯ button.
 folders-more-tip = Play next, add to a queue or playlist
+# A tooltip on a video's ⋯ button, where its file can be deleted.
+folders-more-tip-delete = Play next, add to a queue or playlist, or delete
 # Very short: with the grip held, the button does what it does alone.
 controller-same = Same
 # Short: a chip, what the buttons do pressed alone.

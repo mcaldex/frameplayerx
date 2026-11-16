@@ -361,6 +361,20 @@ impl Source for SmbSource {
         video.location = self.current_url(&video.location)?;
         crate::sidecars_from_folder(self, &video)
     }
+
+    fn can_delete(&self) -> bool {
+        cfg!(feature = "smb")
+    }
+
+    fn delete(&self, location: &str) -> Result<()> {
+        let url = self.current_url(location)?;
+        let loc = SmbLocation::parse(&url)?;
+        self.check_same_share(&loc)?;
+        if loc.is_server() || loc.path.is_empty() || url.ends_with('/') {
+            return Err(Error::invalid(location, "a folder cannot be deleted"));
+        }
+        self.delete_file(&loc)
+    }
 }
 
 /// One directory entry as the SMB layer reports it.
@@ -409,6 +423,10 @@ impl SmbSource {
     }
 
     fn open_file(&self, _loc: &SmbLocation) -> Result<Arc<dyn ByteSource>> {
+        Err(Error::SmbUnavailable("compiled without SMB support".into()))
+    }
+
+    fn delete_file(&self, _loc: &SmbLocation) -> Result<()> {
         Err(Error::SmbUnavailable("compiled without SMB support".into()))
     }
 }
@@ -615,6 +633,15 @@ mod imp {
                 })
             })
         }
+
+        /// Deletes a file on the current session.
+        fn delete_file(&self, loc: &SmbLocation, url: &str) -> Result<()> {
+            self.with_session(|session| {
+                let mut s = lock(session);
+                let (client, tree) = s.share(&loc.share, url)?;
+                run(url, client.delete_file(tree, &loc.share_path()))
+            })
+        }
     }
 
     impl SmbSource {
@@ -630,6 +657,10 @@ mod imp {
 
         pub(super) fn list_dir(&self, loc: &SmbLocation) -> Result<Vec<DirItem>> {
             self.sessions.list_dir(loc, &loc.to_url())
+        }
+
+        pub(super) fn delete_file(&self, loc: &SmbLocation) -> Result<()> {
+            self.sessions.delete_file(loc, &loc.to_url())
         }
 
         pub(super) fn open_file(&self, loc: &SmbLocation) -> Result<Arc<dyn ByteSource>> {
@@ -919,6 +950,18 @@ mod tests {
             s.open("smb://nas.local/"),
             Err(Error::InvalidLocation { .. })
         ));
+        assert!(s.can_delete());
+        for folder in [
+            "smb://nas.local/",
+            "smb://nas.local/tv/",
+            "smb://nas.local/tv/shows/",
+            &s.canonical_location("smb://nas.local/tv/shows/").unwrap(),
+        ] {
+            assert!(
+                matches!(s.delete(folder), Err(Error::InvalidLocation { .. })),
+                "{folder}"
+            );
+        }
     }
 
     #[cfg(feature = "smb")]

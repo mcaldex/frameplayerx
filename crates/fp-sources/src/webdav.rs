@@ -84,6 +84,34 @@ impl WebDavSource {
         }
         Ok(webdav_to_http(value))
     }
+
+    /// Whether the server says `url` is a folder.
+    fn is_folder(&self, url: &str) -> Result<bool> {
+        let reply = self
+            .client
+            .request(
+                "PROPFIND",
+                url,
+                &[
+                    ("Depth", "0"),
+                    ("Content-Type", "application/xml; charset=utf-8"),
+                ],
+                Some(PROPFIND_BODY.as_bytes()),
+                1 << 20,
+            )?
+            .error_for_status(url)?;
+        let doc = xml::parse(&reply.text())?;
+        let ms = doc
+            .find("multistatus")
+            .ok_or_else(|| Error::parse("WebDAV response", "no multistatus element"))?;
+        Ok(ms.children_named("response").any(|r| {
+            r.children_named("propstat").any(|ps| {
+                ps.child("prop")
+                    .and_then(|p| p.child("resourcetype"))
+                    .is_some_and(|rt| rt.child("collection").is_some())
+            })
+        }))
+    }
 }
 
 impl Source for WebDavSource {
@@ -156,6 +184,23 @@ impl Source for WebDavSource {
         let mut video = video.clone();
         video.location = self.current_url(&video.location)?;
         crate::sidecars_from_folder(self, &video)
+    }
+
+    fn can_delete(&self) -> bool {
+        true
+    }
+
+    fn delete(&self, location: &str) -> Result<()> {
+        let url = self.current_url(location)?;
+        // DELETE takes a folder with everything in it, and a folder's address
+        // needn't end in a slash, so the server is asked what it is first.
+        if url.ends_with('/') || with_trailing_slash(&url) == self.root || self.is_folder(&url)? {
+            return Err(Error::invalid(location, "a folder cannot be deleted"));
+        }
+        self.client
+            .request_no_status_retry("DELETE", &url, &[], None, 64 << 10)?
+            .error_for_status(&url)?;
+        Ok(())
     }
 }
 
@@ -330,5 +375,61 @@ mod tests {
         assert_eq!(s.root(), "https://nas:5006/vr/");
         assert!(!s.describe().contains("secret"));
         assert!(!format!("{s:?}").contains("secret"));
+    }
+
+    #[test]
+    fn deletes_files_over_http_and_refuses_collections() {
+        use crate::test_server::{TestServer, resp};
+
+        let status = |kind: &str| {
+            format!(
+                r#"<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"><d:response><d:href>/x</d:href>
+<d:propstat><d:prop><d:resourcetype>{kind}</d:resourcetype></d:prop>
+<d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#
+            )
+        };
+        let server = TestServer::start(move |r| match (r.method.as_str(), r.path()) {
+            ("PROPFIND", "/dav/Clip%201.mp4" | "/dav/locked.mp4") => {
+                assert_eq!(r.header("Depth"), Some("0"));
+                resp(207, status(""), &[])
+            }
+            // A folder whose address has no slash at the end.
+            ("PROPFIND", "/dav/Sub") => resp(207, status("<d:collection/>"), &[]),
+            ("PROPFIND", "/dav/missing.mp4") => resp(404, Vec::new(), &[]),
+            ("DELETE", "/dav/Clip%201.mp4") => resp(204, Vec::new(), &[]),
+            ("DELETE", "/dav/locked.mp4") => resp(403, Vec::new(), &[]),
+            _ => resp(500, Vec::new(), &[]),
+        });
+        let source = WebDavSource::new(&HttpConfig {
+            id: "w".into(),
+            name: "WebDAV".into(),
+            url: format!("{}/dav/", server.base),
+            credentials: None,
+            insecure_tls: false,
+            parallel_downloads: false,
+        })
+        .unwrap();
+        assert!(source.can_delete());
+
+        let file = location::encode("w", "webdav", "Clip%201.mp4");
+        source.delete(&file).unwrap();
+
+        let locked = location::encode("w", "webdav", "locked.mp4");
+        assert!(matches!(source.delete(&locked), Err(Error::Auth(_))));
+
+        let missing = location::encode("w", "webdav", "missing.mp4");
+        assert!(matches!(source.delete(&missing), Err(Error::NotFound(_))));
+
+        for folder in [
+            location::encode("w", "webdav", "Sub/"),
+            location::encode("w", "webdav", "Sub"),
+            format!("{}/dav", server.base),
+        ] {
+            assert!(
+                matches!(source.delete(&folder), Err(Error::InvalidLocation { .. })),
+                "{folder}"
+            );
+        }
+        assert_eq!(server.count(|r| r.method == "DELETE"), 2);
     }
 }

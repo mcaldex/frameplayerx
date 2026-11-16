@@ -76,6 +76,7 @@ impl App {
         if hidden != self.services.library.hidden() {
             self.services.library.set_hidden(hidden);
             self.ui.invalidate();
+            self.ui.delete_checks.clear();
             // Locking a source stops its video.
             if self
                 .playback
@@ -477,6 +478,7 @@ impl App {
         self.close_source_view(&id);
         let _ = std::fs::remove_file(fp_sources::FeedLibrary::cache_path(&id));
         self.ui.home = None;
+        self.ui.delete_checks.clear();
     }
 
     pub(super) fn remove_source(&mut self, id: &str) {
@@ -495,6 +497,7 @@ impl App {
             Err(e) => log::warn!("forgetting the videos of {id}: {e}"),
         }
         self.ui.invalidate();
+        self.ui.delete_checks.clear();
         let list = self
             .services
             .source_configs

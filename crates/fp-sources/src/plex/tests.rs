@@ -204,3 +204,119 @@ fn a_server_that_stays_down_is_only_asked_once_in_a_while() {
     *lock(&source.unreachable) = None;
     assert!(source.probe().is_ok());
 }
+
+#[test]
+fn deletion_respects_allow_media_deletion_and_invalidates_metadata_cache() {
+    use std::sync::atomic::AtomicUsize;
+
+    let deleted = Arc::new(AtomicUsize::new(0));
+    for (allow_val, expect_allowed) in [
+        (Some(json!(true)), true),
+        (Some(json!(1)), true),
+        (Some(json!(false)), false),
+        (Some(json!(0)), false),
+        (None, false),
+    ] {
+        let deleted_clone = deleted.clone();
+        let allow_val = allow_val.clone();
+        let server = TestServer::start(move |r| match (r.method.as_str(), r.path()) {
+            ("GET", "/identity") => resp(
+                200,
+                serde_json::to_vec(&json!({"MediaContainer":{"machineIdentifier":"machine"}}))
+                    .unwrap(),
+                &[("Content-Type", "application/json")],
+            ),
+            ("GET", "/") => {
+                let mut container = serde_json::Map::new();
+                if let Some(v) = allow_val.clone() {
+                    container.insert("allowMediaDeletion".into(), v);
+                }
+                resp(
+                    200,
+                    serde_json::to_vec(&json!({"MediaContainer": container})).unwrap(),
+                    &[("Content-Type", "application/json")],
+                )
+            }
+            ("GET", "/library/metadata/100") => resp(
+                200,
+                serde_json::to_vec(&json!({
+                    "MediaContainer": {
+                        "Metadata": [
+                            {"ratingKey": "100", "type": "movie", "title": "Film"}
+                        ]
+                    }
+                }))
+                .unwrap(),
+                &[("Content-Type", "application/json")],
+            ),
+            ("GET", "/library/metadata/200") => resp(
+                200,
+                serde_json::to_vec(&json!({
+                    "MediaContainer": {
+                        "Metadata": [
+                            {"ratingKey": "200", "type": "show", "title": "Series"}
+                        ]
+                    }
+                }))
+                .unwrap(),
+                &[("Content-Type", "application/json")],
+            ),
+            ("DELETE", "/library/metadata/100" | "/library/metadata/200") => {
+                deleted_clone.fetch_add(1, Ordering::Relaxed);
+                resp(200, Vec::new(), &[])
+            }
+            _ => resp(404, Vec::new(), &[]),
+        });
+        let source = PlexSource::new(&PlexConfig {
+            id: "source".into(),
+            name: "Plex".into(),
+            url: server.base.clone(),
+            machine_identifier: "machine".into(),
+            access_token: "token".into(),
+            connections: Vec::new(),
+            auth: None,
+            insecure_tls: false,
+            parallel_downloads: false,
+            max_height: None,
+            local_only: false,
+            allow_relay: false,
+        })
+        .unwrap();
+        let loc = "plex://source/source/machine/item/100";
+        assert!(source.can_delete());
+        assert_eq!(source.delete_allowed(loc), None);
+        assert_eq!(source.ask_delete_allowed(loc).unwrap(), expect_allowed);
+        assert_eq!(source.delete_allowed(loc), Some(expect_allowed));
+        let item = source.item("100").unwrap();
+        assert_eq!(item.can_delete, expect_allowed);
+
+        let before = deleted.load(Ordering::Relaxed);
+        let series = "plex://source/source/machine/item/200";
+        assert!(!source.ask_delete_allowed(series).unwrap());
+        assert!(matches!(
+            source.delete(series),
+            Err(Error::InvalidLocation { .. })
+        ));
+        assert_eq!(
+            deleted.load(Ordering::Relaxed),
+            before,
+            "a series is never deleted"
+        );
+
+        if expect_allowed {
+            let before = deleted.load(Ordering::Relaxed);
+            source.delete(loc).unwrap();
+            assert_eq!(deleted.load(Ordering::Relaxed), before + 1);
+            assert!(
+                !lock(&source.metadata).contains_key("100"),
+                "metadata cache cleared after delete"
+            );
+        } else {
+            assert!(matches!(source.delete(loc), Err(Error::Auth(_))));
+        }
+        assert!(matches!(
+            source.delete("plex://source/source/machine/section/1"),
+            Err(Error::InvalidLocation { .. })
+        ));
+    }
+}

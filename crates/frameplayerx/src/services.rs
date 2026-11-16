@@ -21,6 +21,25 @@ fn not_inserted() -> &'static str {
     tr!("open-not-inserted")
 }
 
+enum DeleteRoute {
+    Local,
+    Source(Arc<dyn Source>),
+    None,
+}
+
+fn is_local_path(location: &str) -> bool {
+    !location.contains("://") && (location.starts_with('/') || Path::new(location).is_absolute())
+}
+
+/// Why a delete failed. A server that refuses one has already let the
+/// headset in, so "authentication failed" would mislead.
+fn delete_error(e: &fp_sources::Error) -> String {
+    match e {
+        fp_sources::Error::Auth(_) => tr!("delete-not-allowed").to_string(),
+        e => crate::ui::errors::source(e),
+    }
+}
+
 /// What changing the source list did.
 pub struct SourcesChange {
     /// Sources that couldn't be set up.
@@ -146,6 +165,76 @@ impl Opener {
 
     pub fn open(&self, location: &str) -> Result<Arc<dyn ByteSource>, String> {
         self.open_in(None, location)
+    }
+
+    fn delete_source(&self, source_id: Option<&str>, location: &str) -> DeleteRoute {
+        if fp_sources::is_source_location(location) {
+            let Some(owner) = fp_sources::location_owner(location) else {
+                return DeleteRoute::None;
+            };
+            if source_id.is_some_and(|s| s != owner) {
+                return DeleteRoute::None;
+            }
+            return self
+                .source(&owner)
+                .map_or(DeleteRoute::None, DeleteRoute::Source);
+        }
+        if location.starts_with(volume::SCHEME)
+            || location.starts_with("file://")
+            || is_local_path(location)
+        {
+            return DeleteRoute::Local;
+        }
+        source_id
+            .and_then(|id| self.source(id))
+            .map_or(DeleteRoute::None, DeleteRoute::Source)
+    }
+
+    /// Whether the file at `location` in `source_id` may be deleted, when
+    /// known without asking the server.
+    pub fn delete_allowed_in(&self, source_id: Option<&str>, location: &str) -> Option<bool> {
+        match self.delete_source(source_id, location) {
+            DeleteRoute::Local => Some(true),
+            DeleteRoute::Source(src) => src.delete_allowed(location),
+            DeleteRoute::None => Some(false),
+        }
+    }
+
+    /// Whether the file at `location` in `source_id` may be deleted, asking
+    /// the server when [`Self::delete_allowed_in`] can't tell.
+    pub fn ask_delete_allowed_in(
+        &self,
+        source_id: Option<&str>,
+        location: &str,
+    ) -> Result<bool, String> {
+        match self.delete_source(source_id, location) {
+            DeleteRoute::Local => Ok(true),
+            DeleteRoute::Source(src) => src
+                .ask_delete_allowed(location)
+                .map_err(|e| crate::ui::errors::source(&e)),
+            DeleteRoute::None => Ok(false),
+        }
+    }
+
+    /// Deletes the file at `location` for good, through the source that owns
+    /// it, or on the headset's own storage.
+    pub fn delete_in(&self, source_id: Option<&str>, location: &str) -> Result<(), String> {
+        match self.delete_source(source_id, location) {
+            DeleteRoute::Local => {
+                let path = match location.strip_prefix("file://") {
+                    Some(path) => path.to_string(),
+                    None => volume::resolve(location)
+                        .ok_or(not_inserted())?
+                        .into_owned(),
+                };
+                if !Path::new(&path).exists() && path.starts_with(&format!("{REMOVABLE_ROOT}/")) {
+                    return Err(not_inserted().into());
+                }
+                fp_sources::LocalSource::delete_path(Path::new(&path)).map_err(|e| delete_error(&e))
+            }
+            DeleteRoute::Source(src) => src.delete(location).map_err(|e| delete_error(&e)),
+            DeleteRoute::None => Err(tr!("open-no-source").into()),
+        }
     }
 
     /// A small file (a script) whole, through the source it came from when
@@ -816,6 +905,99 @@ mod tests {
     }
 
     #[test]
+    fn delete_routes_only_to_owner_or_local_and_never_broadcasts() {
+        use std::sync::atomic::AtomicBool;
+
+        struct DeletableSource {
+            id: &'static str,
+            kind: fp_sources::SourceKind,
+            deletable: bool,
+            deleted: Arc<AtomicBool>,
+        }
+
+        impl Source for DeletableSource {
+            fn id(&self) -> &str {
+                self.id
+            }
+            fn name(&self) -> &str {
+                self.id
+            }
+            fn kind(&self) -> fp_sources::SourceKind {
+                self.kind
+            }
+            fn describe(&self) -> String {
+                self.id.into()
+            }
+            fn list(&self, _: Option<&str>) -> fp_sources::Result<Vec<fp_core::Entry>> {
+                Ok(Vec::new())
+            }
+            fn open(&self, _: &str) -> fp_sources::Result<Arc<dyn ByteSource>> {
+                Ok(Arc::new(Dribble(4)))
+            }
+            fn can_delete(&self) -> bool {
+                self.deletable
+            }
+            fn delete(&self, _: &str) -> fp_sources::Result<()> {
+                if !self.deletable {
+                    return Err(fp_sources::Error::Unsupported("no delete".into()));
+                }
+                self.deleted.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let opener = Opener::new();
+        let owner_deleted = Arc::new(AtomicBool::new(false));
+        let other_deleted = Arc::new(AtomicBool::new(false));
+        opener.insert_source(Arc::new(DeletableSource {
+            id: "dav",
+            kind: fp_sources::SourceKind::WebDav,
+            deletable: true,
+            deleted: owner_deleted.clone(),
+        }));
+        opener.insert_source(Arc::new(DeletableSource {
+            id: "http",
+            kind: fp_sources::SourceKind::Http,
+            deletable: false,
+            deleted: other_deleted.clone(),
+        }));
+        let owned = fp_sources::location::encode("dav", "webdav", "clip.mp4");
+        assert_eq!(opener.delete_allowed_in(None, &owned), Some(true));
+        assert_eq!(opener.delete_allowed_in(Some("http"), &owned), Some(false));
+        assert!(opener.delete_in(Some("http"), &owned).is_err());
+        assert!(!owner_deleted.load(Ordering::SeqCst));
+
+        opener.delete_in(None, &owned).unwrap();
+        assert!(owner_deleted.load(Ordering::SeqCst));
+
+        // Plain HTTP URL with no owning source never broadcasts to WebDAV.
+        assert_eq!(
+            opener.delete_allowed_in(None, "http://example.com/a.mp4"),
+            Some(false)
+        );
+        assert!(opener.delete_in(None, "http://example.com/a.mp4").is_err());
+        assert!(!other_deleted.load(Ordering::SeqCst));
+
+        // Local file deletes cleanly.
+        let dir = std::env::temp_dir().join(format!(
+            "fp-delete-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("local.mp4");
+        std::fs::write(&file, b"abc").unwrap();
+        let path = file.to_string_lossy().into_owned();
+        assert_eq!(opener.delete_allowed_in(None, &path), Some(true));
+        opener.delete_in(None, &path).unwrap();
+        assert!(!file.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn migrating_a_source_then_changing_its_address_keeps_history_and_playlists() {
         use std::io::{BufRead, BufReader, Write};
         let library = Library::open_in_memory().unwrap();
@@ -929,5 +1111,172 @@ mod tests {
         );
         assert_eq!(read_whole(&Dribble(0), 1 << 20).unwrap().len(), 0);
         assert!(read_whole(&Dribble(3 << 20), 1 << 20).is_err());
+    }
+
+    #[test]
+    fn deletable_visibility_matches_source_capabilities_and_item_gate() {
+        let opener = Opener::new();
+        let dir = std::env::temp_dir().join(format!("fp-vis-{}", std::process::id()));
+        let errors = opener.set_sources(&[
+            SourceConfig::Local(fp_sources::LocalConfig {
+                id: "loc".into(),
+                name: "Local".into(),
+                root: dir.clone(),
+            }),
+            SourceConfig::WebDav(fp_sources::HttpConfig {
+                id: "dav".into(),
+                name: "DAV".into(),
+                url: "http://dav.invalid/".into(),
+                credentials: None,
+                insecure_tls: false,
+                parallel_downloads: false,
+            }),
+            SourceConfig::Http(fp_sources::HttpConfig {
+                id: "http".into(),
+                name: "HTTP".into(),
+                url: "http://http.invalid/".into(),
+                credentials: None,
+                insecure_tls: false,
+                parallel_downloads: false,
+            }),
+            SourceConfig::Dlna(fp_sources::DlnaConfig {
+                id: "dlna".into(),
+                name: "DLNA".into(),
+                location: "http://dlna.invalid/desc.xml".into(),
+                control_url: None,
+                service_type: None,
+            }),
+            SourceConfig::Smb(fp_sources::SmbConfig {
+                id: "smb".into(),
+                name: "SMB".into(),
+                host: "smb.invalid".into(),
+                port: None,
+                share: "videos".into(),
+                path: String::new(),
+                credentials: None,
+            }),
+            SourceConfig::Sftp(fp_sources::SftpConfig {
+                id: "sftp".into(),
+                name: "SFTP".into(),
+                host: "sftp.invalid".into(),
+                port: None,
+                path: String::new(),
+                credentials: Some(fp_sources::Credentials::new("user", String::new())),
+                key_file: None,
+                key_passphrase: String::new(),
+                host_key: None,
+            }),
+            SourceConfig::HereSphere(fp_sources::FeedConfig {
+                id: "hs".into(),
+                name: "HereSphere".into(),
+                url: "http://hs.invalid/heresphere".into(),
+                credentials: None,
+                insecure_tls: false,
+                parallel_downloads: false,
+                max_height: None,
+            }),
+            SourceConfig::DeoVr(fp_sources::FeedConfig {
+                id: "deovr".into(),
+                name: "DeoVR".into(),
+                url: "http://deovr.invalid/deovr".into(),
+                credentials: None,
+                insecure_tls: false,
+                parallel_downloads: false,
+                max_height: None,
+            }),
+            SourceConfig::MediaBrowser(fp_sources::MediaBrowserConfig {
+                id: "mb".into(),
+                name: "Jellyfin".into(),
+                url: "http://mb.invalid".into(),
+                credentials: None,
+                insecure_tls: false,
+                parallel_downloads: false,
+                max_height: None,
+                access_token: Some("tok".into()),
+                user_id: Some("u1".into()),
+            }),
+            SourceConfig::Plex(fp_sources::PlexConfig {
+                id: "plex".into(),
+                name: "Plex".into(),
+                url: "http://plex.invalid:32400".into(),
+                machine_identifier: "m1".into(),
+                access_token: "ptok".into(),
+                connections: Vec::new(),
+                auth: None,
+                insecure_tls: false,
+                parallel_downloads: false,
+                max_height: None,
+                local_only: false,
+                allow_relay: true,
+            }),
+        ]);
+        assert!(errors.is_empty(), "{errors:?}");
+
+        assert_eq!(
+            opener.delete_allowed_in(Some("loc"), "/v/a.mp4"),
+            Some(true)
+        );
+        assert_eq!(
+            opener.delete_allowed_in(Some("dav"), "http://dav.invalid/a.mp4"),
+            Some(true)
+        );
+        assert_eq!(
+            opener.delete_allowed_in(
+                Some("smb"),
+                &fp_sources::location::encode("smb", "smb", "a.mp4")
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            opener.delete_allowed_in(
+                Some("sftp"),
+                &fp_sources::location::encode("sftp", "sftp", "a.mp4")
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            opener.delete_allowed_in(Some("hs"), "http://hs.invalid/heresphere/1"),
+            Some(true)
+        );
+
+        assert_eq!(
+            opener.delete_allowed_in(Some("deovr"), "http://deovr.invalid/scene/1"),
+            Some(false)
+        );
+        assert_eq!(
+            opener.delete_allowed_in(Some("http"), "http://http.invalid/a.mp4"),
+            Some(false)
+        );
+        assert_eq!(
+            opener.delete_allowed_in(Some("dlna"), "http://dlna.invalid/1"),
+            Some(false)
+        );
+
+        // MediaBrowser & Plex are item- and server-gated (None until queried for playable items,
+        // and immediately false for non-item locations or mismatched source_id).
+        assert_eq!(
+            opener.delete_allowed_in(Some("mb"), "mb:http://mb.invalid#item=123"),
+            None
+        );
+        assert_eq!(
+            opener.delete_allowed_in(Some("mb"), "mb:http://mb.invalid#folder=1"),
+            Some(false)
+        );
+        assert_eq!(
+            opener.delete_allowed_in(Some("plex"), "plex://source/plex/m1/item/123"),
+            None
+        );
+        assert_eq!(
+            opener.delete_allowed_in(None, "plex://source/plex/m1/item/123"),
+            None
+        );
+        assert_eq!(
+            opener.delete_allowed_in(Some("http"), "plex://source/plex/m1/item/123"),
+            Some(false)
+        );
+        assert_eq!(
+            opener.delete_allowed_in(Some("plex"), "plex://source/plex/m1/folder/1"),
+            Some(false)
+        );
     }
 }

@@ -825,7 +825,11 @@ impl Sim {
                     .first()
                     .map(crate::playback::OpenRequest::shown_title)
                     .unwrap_or_default();
-                self.app.ui.picking = Some(crate::ui::Picking { reqs, title });
+                self.app.ui.picking = Some(crate::ui::Picking {
+                    reqs,
+                    title,
+                    with_delete: false,
+                });
                 self.app.repaint_all();
                 self.run_frames(3)?;
             }

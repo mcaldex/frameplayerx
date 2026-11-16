@@ -19,11 +19,10 @@ use serde_json::Value;
 
 /// Fields asked for in listings, on top of those always sent (name, type,
 /// user data, image tags, run time, ratings, episode numbers).
-const LIST_FIELDS: &str = "Overview,Genres,Path,DateCreated,ChildCount,PremiereDate";
+const LIST_FIELDS: &str = "Overview,Genres,Path,DateCreated,ChildCount,PremiereDate,CanDelete";
 
 /// Fields asked for one item's details.
-const DETAIL_FIELDS: &str =
-    "Overview,Genres,Tags,Studios,People,Path,DateCreated,ChildCount,PremiereDate,MediaSources";
+const DETAIL_FIELDS: &str = "Overview,Genres,Tags,Studios,People,Path,DateCreated,ChildCount,PremiereDate,MediaSources,CanDelete";
 
 /// What a tag can be on, and a person in: films, series, episodes and
 /// other videos.
@@ -484,6 +483,7 @@ pub(crate) fn parse_item(v: &Value, base: &str) -> Option<MbItem> {
         format,
         versions: parse_versions(v),
         version: None,
+        can_delete: kind.playable() && boolean(v, "CanDelete") == Some(true),
         id,
     })
 }
@@ -551,6 +551,7 @@ pub(crate) fn video_libraries(items: Vec<MbItem>) -> Vec<MbItem> {
 
 impl MediaBrowserSource {
     fn stable_item(&self, item: &mut MbItem) {
+        self.record_deletable(&item.id, item.can_delete);
         if let Some(location) = self.canonical_location(&item.location) {
             item.location = location;
         }
