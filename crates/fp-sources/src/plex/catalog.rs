@@ -193,6 +193,7 @@ impl PlexSource {
             format,
             versions,
             version: selected,
+            can_delete: kind.playable() && self.cached_allow_deletion().unwrap_or(false),
             ..Default::default()
         })
     }

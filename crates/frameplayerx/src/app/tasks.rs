@@ -51,6 +51,17 @@ pub(super) enum Job {
         full: bool,
         result: Box<Result<fp_sources::SceneInfo, String>>,
     },
+    /// Whether a file may be deleted, as its server answered.
+    DeleteCheck {
+        source_id: Option<String>,
+        location: String,
+        allowed: bool,
+    },
+    /// A file deleted, or why it couldn't be.
+    Deleted {
+        target: ui::DeleteTarget,
+        result: Result<(), String>,
+    },
     Toast(String),
     /// Nothing to show (a server took a change).
     Done,
@@ -440,6 +451,17 @@ impl App {
                     });
                 }
             }
+            Job::DeleteCheck {
+                source_id,
+                location,
+                allowed,
+            } => {
+                self.ui
+                    .delete_checks
+                    .insert((source_id, location), Some(allowed));
+                self.panels[MAIN].request_repaint();
+            }
+            Job::Deleted { target, result } => self.on_deleted(target, result),
             Job::Toast(t) => self.ui.toast(t),
             Job::Done | Job::WebPageOpened(Ok(())) => {}
             Job::Subtitles { seq, index, result } => {
@@ -530,6 +552,150 @@ impl App {
                 self.ui.toast(tr!("error-open-page", error = e));
             }
         }
+    }
+
+    /// Location aliases (raw path, `volume://` stable URI, canonical URI) that
+    /// may refer to the deleted item across queue, library, playback and pages.
+    pub(super) fn deleted_location_keys(
+        &self,
+        source_id: Option<&str>,
+        location: &str,
+    ) -> Vec<String> {
+        let mut keys = Vec::new();
+        let mut push = |s: &str| {
+            if !s.is_empty() && !keys.iter().any(|k| k == s) {
+                keys.push(s.to_string());
+            }
+        };
+        push(location);
+        let stable = fp_core::volume::stable(location);
+        push(stable.as_ref());
+        if let Some(resolved) = fp_core::volume::resolve(location) {
+            push(&resolved);
+        }
+        if let Some(stripped) = location.strip_prefix("file://") {
+            push(stripped);
+            push(fp_core::volume::stable(stripped).as_ref());
+        }
+        let owner = fp_sources::location_owner(location).or_else(|| source_id.map(str::to_owned));
+        if let Some(src) = owner
+            .as_deref()
+            .and_then(|id| self.services.opener.source(id))
+        {
+            if let Some(c) = src.canonical_location(location) {
+                push(&c);
+            }
+            if let Some(resolved) = fp_core::volume::resolve(location)
+                && let Some(c) = src.canonical_location(&resolved)
+            {
+                push(&c);
+            }
+        }
+        keys
+    }
+
+    fn on_deleted(&mut self, target: ui::DeleteTarget, result: Result<(), String>) {
+        self.ui.deleting = None;
+        self.panels[MAIN].request_repaint();
+        if let Err(e) = result {
+            self.ui.toast(tr!("delete-failed", error = e.as_str()));
+            return;
+        }
+        let ui::DeleteTarget {
+            title,
+            location,
+            source_id,
+            catalog_item_id,
+        } = target;
+        let keys = self.deleted_location_keys(source_id.as_deref(), &location);
+        self.ui.delete_checks.clear();
+
+        if self
+            .playback
+            .as_ref()
+            .is_some_and(|p| keys.contains(&p.request.location))
+        {
+            self.close_playback();
+        }
+        self.queue.remove_where(|r| keys.contains(&r.location));
+        if self
+            .ui
+            .picking
+            .as_ref()
+            .is_some_and(|p| p.reqs.iter().any(|r| keys.contains(&r.location)))
+        {
+            self.ui.picking = None;
+        }
+
+        for k in &keys {
+            self.thumbs.forget(k);
+            if let Ok(Some(rec)) = self.services.library.get_by_location(k) {
+                if let Some(pic) = rec.picture() {
+                    self.thumbs.forget(&pic);
+                }
+                for p in [rec.thumbnail.as_ref(), rec.resume_thumbnail.as_ref()]
+                    .into_iter()
+                    .flatten()
+                {
+                    self.thumbs.forget(&p.to_string_lossy());
+                }
+                if let Some(url) = &rec.thumbnail_url {
+                    self.thumbs.forget(url);
+                }
+                if self.ui.details == Some(rec.id) {
+                    self.ui.details = None;
+                }
+                if self.ui.format_drawer == Some(rec.id) {
+                    self.ui.format_drawer = None;
+                }
+                if let Err(e) = self.services.library.remove_media(rec.id) {
+                    log::warn!("removing deleted media {} from library: {e}", rec.location);
+                }
+            }
+        }
+
+        if let Some(sv) = self.ui.source.as_mut() {
+            match &mut sv.page {
+                SourcePage::Folders(b) => remove_from_browse(b, &keys, &mut self.thumbs),
+                SourcePage::Local(l) => {
+                    if let Some(b) = &mut l.folder {
+                        remove_from_browse(b, &keys, &mut self.thumbs);
+                    }
+                }
+                SourcePage::Library(l) => {
+                    if let Some(b) = &mut l.folder {
+                        remove_from_browse(b, &keys, &mut self.thumbs);
+                    }
+                }
+                SourcePage::Catalog(j) => {
+                    for thumb in j.remove_item(catalog_item_id.as_deref(), &keys) {
+                        self.thumbs.forget(&thumb);
+                    }
+                }
+                SourcePage::Feed(f) => {
+                    let (changed, forgotten) = f.remove_scene(&keys);
+                    for thumb in forgotten {
+                        self.thumbs.forget(&thumb);
+                    }
+                    if changed && let Some(src) = source_id {
+                        f.unsaved = 0;
+                        let lib = f.library();
+                        self.jobs.spawn("feed-save", move || {
+                            let path = fp_sources::FeedLibrary::cache_path(&src);
+                            if let Err(e) = lib.save(&path) {
+                                log::warn!("saving the listing of {src}: {e}");
+                            }
+                            Job::Done
+                        });
+                    }
+                }
+            }
+        }
+
+        self.ui.invalidate();
+        let shown = ui::widgets::display_title(&title);
+        self.ui.toast(tr!("toast-deleted", title = shown.as_str()));
+        self.panels[MAIN].request_repaint();
     }
 
     /// A video finished opening; one asked for before the latest is closed.
@@ -888,4 +1054,17 @@ impl App {
         ));
         self.ui.invalidate();
     }
+}
+
+fn remove_from_browse(b: &mut Browse, keys: &[String], thumbs: &mut ui::thumbs::Thumbs) {
+    b.entries.retain(|e| {
+        if keys.contains(&e.location) {
+            if let Some(t) = &e.thumbnail_url {
+                thumbs.forget(t);
+            }
+            false
+        } else {
+            true
+        }
+    });
 }

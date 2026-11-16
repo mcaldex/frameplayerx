@@ -210,6 +210,17 @@ from history*, or everything with *Clear history*; favorites and ratings
 stay. Browsing a network source never adds anything here. Removing a source
 forgets its videos, except those you watched, marked or put in a playlist.
 
+**Delete file**, on a video's details and under the ⋯ on its row in a
+folder, deletes the video's file for good. It asks first: pressed once it
+turns red as *Delete for good?*, and pressed again within 4 seconds it
+deletes. It's there for videos on the headset, a microSD card or a USB
+drive, an SMB or NFS share and an SFTP or WebDAV server, and on Jellyfin,
+Emby, Plex and HereSphere servers that let you delete. DeoVR feeds, DLNA
+servers and web folders can't delete, and a folder is never deleted. A
+server deletes the way its own apps do: Jellyfin takes a video's folder
+with it when the video has one to itself. The video also leaves your
+history, queue and playlists.
+
 A video you stopped part way shows the frame where you left off, made
 shortly after it stops. Past 90 % it counts as watched: its card gets a ✓,
 it starts from the beginning next time and shows its usual picture again.

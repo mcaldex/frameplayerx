@@ -270,7 +270,8 @@ fn playlist(ui: &mut egui::Ui, v: &mut View, id: PlaylistId) {
 }
 
 /// Adding videos to a playlist: a new one, or one of yours. A single video
-/// also gets Play, Play next and Add to queue (a folder's row opens this).
+/// also gets Play, Play next and Add to queue, and from a folder row's ⋯,
+/// which opens this, Delete file.
 pub fn picker(ui: &mut egui::Ui, v: &mut View) {
     let Some(picking) = v.state.picking.take() else {
         return;
@@ -283,6 +284,7 @@ pub fn picker(ui: &mut egui::Ui, v: &mut View) {
     if back {
         return;
     }
+    let (with_delete, title) = (picking.with_delete, picking.title.clone());
     v.state.picking = Some(picking);
     let reqs = v
         .state
@@ -324,6 +326,17 @@ pub fn picker(ui: &mut egui::Ui, v: &mut View) {
                     next: false,
                 });
                 v.state.picking = None;
+            }
+            if with_delete
+                && super::can_delete_entry(v, req.source_id.as_deref(), &req.location)
+                && super::delete_button(ui, v.state, &req.location)
+            {
+                v.actions.push(Action::DeleteFile(super::DeleteTarget {
+                    title: title.clone(),
+                    location: req.location.clone(),
+                    source_id: req.source_id.clone(),
+                    catalog_item_id: None,
+                }));
             }
         });
         ui.add_space(18.0);

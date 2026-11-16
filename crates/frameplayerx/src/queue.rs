@@ -126,6 +126,37 @@ impl Queue {
             self.clear();
         }
     }
+
+    /// Removes every item matching `remove` (including the current one if its
+    /// underlying file was deleted), adjusting `pos` to stay valid.
+    pub fn remove_where(&mut self, mut remove: impl FnMut(&OpenRequest) -> bool) -> bool {
+        let old_len = self.items.len();
+        let old_pos = self.pos;
+        let mut new_items = Vec::with_capacity(old_len);
+        let mut new_pos = None;
+        let mut kept_before = 0usize;
+        for (i, item) in self.items.drain(..).enumerate() {
+            if remove(&item) {
+                continue;
+            }
+            if i == old_pos {
+                new_pos = Some(new_items.len());
+            } else if i < old_pos {
+                kept_before += 1;
+            }
+            new_items.push(item);
+        }
+        let changed = new_items.len() != old_len;
+        self.items = new_items;
+        self.pos = match new_pos {
+            Some(p) => p,
+            None => kept_before.min(self.items.len().saturating_sub(1)),
+        };
+        if changed {
+            self.version += 1;
+        }
+        changed
+    }
 }
 
 #[cfg(test)]
@@ -382,5 +413,24 @@ mod tests {
         assert_eq!(q.items[q.pos].location, "/v/c.mp4");
         q.clear_rest();
         assert_eq!((names(&q), q.pos), (vec!["c".into()], 0));
+    }
+
+    #[test]
+    fn remove_where_drops_matches_and_keeps_pos_valid() {
+        let mut q = Queue::default();
+        q.set(["a", "b", "c", "d"].map(req).to_vec(), 1);
+        assert!(q.remove_where(|r| r.location == "/v/a.mp4"));
+        assert_eq!(
+            (names(&q), q.pos),
+            (vec!["b".into(), "c".into(), "d".into()], 0)
+        );
+        assert!(q.remove_where(|r| r.location == "/v/b.mp4"));
+        assert_eq!((names(&q), q.pos), (vec!["c".into(), "d".into()], 0));
+        assert!(q.remove_where(|r| r.location == "/v/d.mp4"));
+        assert_eq!((names(&q), q.pos), (vec!["c".into()], 0));
+        assert!(!q.remove_where(|r| r.location == "/v/missing.mp4"));
+        assert!(q.remove_where(|r| r.location == "/v/c.mp4"));
+        assert!(q.items.is_empty());
+        assert_eq!(q.pos, 0);
     }
 }

@@ -27,7 +27,7 @@ A VR video player for the Valve Steam Frame. It plays flat, 180°, 360° and fis
 - **Subtitles and spatial audio**: subtitles from a file or inside the video, picked in your language and shown in any script, and 360° audio that follows your head
 - **Videos on the headset**: browse any folder on the headset, a microSD card or a USB drive, including cards formatted on Windows or a Mac, and make libraries of your folders, with thumbnails, filters and sorting
 - **Media servers**: browse and play from Jellyfin, Emby and Plex, which can transcode while you watch and sync watch state; any server with a DeoVR feed or HereSphere API, transcoding when it offers that and, with HereSphere, syncing watch state; and network shares (SMB, NFS), SFTP servers, WebDAV, DLNA servers and web folders
-- **Watch history, Up next and playlists**: carry on where you left off, queue videos to play one after another, in order or shuffled, and loop the queue or a single video; keep playlists of videos from any source, and mark favorites and ratings
+- **Watch history, Up next and playlists**: carry on where you left off, queue videos to play one after another, in order or shuffled, and loop the queue or a single video; keep playlists of videos from any source, mark favorites and ratings, and delete the files of videos you're done with
 - **PIN locks**: hide a source behind a PIN until you unlock it
 - **Haptic devices**: optional, off until turned on; syncs supported haptic devices with videos that have scripts
 - **Phone remote**: control the player from your phone's browser, which pairs with a code the headset shows and can type into the headset too, or from apps made for DeoVR's remote

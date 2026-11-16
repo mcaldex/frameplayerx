@@ -421,11 +421,7 @@ impl Source for NfsSource {
     fn open(&self, location: &str) -> Result<Arc<dyn ByteSource>> {
         let loc = NfsLocation::parse(&self.current_url(location)?)?;
         self.check_owned(&loc)?;
-        let export_root = match loc.export {
-            Some(n) if self.whole_server() => loc.path.len() <= n,
-            _ => loc.path.len() <= self.export.len(),
-        };
-        if export_root {
+        if self.is_export_root(&loc) {
             return Err(Error::invalid(
                 location,
                 "an export or server cannot be opened as a file",
@@ -478,6 +474,30 @@ impl Source for NfsSource {
         video.location = self.current_url(&video.location)?;
         crate::sidecars_from_folder(self, &video)
     }
+
+    fn can_delete(&self) -> bool {
+        cfg!(feature = "nfs")
+    }
+
+    fn delete(&self, location: &str) -> Result<()> {
+        let url = self.current_url(location)?;
+        let loc = NfsLocation::parse(&url)?;
+        self.check_owned(&loc)?;
+        if url.ends_with('/') || self.is_export_root(&loc) {
+            return Err(Error::invalid(location, "a folder cannot be deleted"));
+        }
+        self.remove_file(&loc)
+    }
+}
+
+impl NfsSource {
+    /// Whether `loc` is an export, or the server's list of them.
+    fn is_export_root(&self, loc: &NfsLocation) -> bool {
+        match loc.export {
+            Some(n) if self.whole_server() => loc.path.len() <= n,
+            _ => loc.path.len() <= self.export.len(),
+        }
+    }
 }
 
 /// One directory entry as the NFS layer reports it.
@@ -506,6 +526,10 @@ impl NfsSource {
     fn open_file(&self, _loc: &NfsLocation) -> Result<Arc<dyn ByteSource>> {
         Err(Error::NfsUnavailable("compiled without NFS support".into()))
     }
+
+    fn remove_file(&self, _loc: &NfsLocation) -> Result<()> {
+        Err(Error::NfsUnavailable("compiled without NFS support".into()))
+    }
 }
 
 #[cfg(feature = "nfs")]
@@ -521,7 +545,8 @@ mod imp {
     use nfs3_client::nfs3_types::mount::{dirpath, mountstat3};
     use nfs3_client::nfs3_types::nfs3::{
         self, FSINFO3args, LOOKUP3args, Nfs3Option, Nfs3Result, READ3args, READDIRPLUS3args,
-        READLINK3args, cookieverf3, diropargs3, fattr3, filename3, ftype3, nfs_fh3, nfsstat3,
+        READLINK3args, REMOVE3args, cookieverf3, diropargs3, fattr3, filename3, ftype3, nfs_fh3,
+        nfsstat3,
     };
     use nfs3_client::nfs3_types::rpc::{auth_stat, auth_unix, opaque_auth};
     use nfs3_client::nfs3_types::xdr_codec::Opaque;
@@ -1114,6 +1139,35 @@ mod imp {
             }
         }
 
+        /// Deletes the file `rest` names inside `export`. A link is removed
+        /// itself, as `rm` does, leaving what it points to.
+        async fn remove(&mut self, export: &[String], rest: &[String], url: &str) -> Result<()> {
+            let Some((name, folder)) = rest.split_last() else {
+                return Err(Error::invalid(url, "a folder cannot be deleted"));
+            };
+            let dir = self.resolve(export, folder, url).await?;
+            let (_, attrs) = self.lookup(&dir.fh, name, url).await?;
+            if attrs.type_ == ftype3::NF3DIR {
+                return Err(Error::invalid(url, "a folder cannot be deleted"));
+            }
+            let reply = self
+                .client
+                .remove(&REMOVE3args {
+                    object: diropargs3 {
+                        dir: dir.fh.clone(),
+                        name: filename3::from(name.as_bytes()),
+                    },
+                })
+                .await
+                .map_err(|e| rpc_err(e, url))?;
+            if let Nfs3Result::Err((stat, _)) = reply {
+                return Err(status_err(stat, url));
+            }
+            let real = [&dir.real[..], std::slice::from_ref(name)].concat();
+            self.handles.remove(&key(&server_path(export), &real));
+            Ok(())
+        }
+
         /// One READ: up to `count` bytes at `offset`, and whether it reached
         /// the end of the file.
         async fn read(
@@ -1275,8 +1329,8 @@ mod imp {
         /// Runs `op` with the current session. After a connection-level
         /// failure the session is dropped; if it had been used before (its
         /// connection may have been closed or lost since), `op` runs once
-        /// more on a new one. Every request here only reads, so repeating
-        /// one is safe.
+        /// more on a new one. Repeating a request is safe: all but REMOVE
+        /// only read, and a REMOVE whose answer was lost finds the file gone.
         fn with_session<T>(&self, op: impl Fn(&Arc<Mutex<Session>>) -> Result<T>) -> Result<T> {
             let (session, reused) = self.session()?;
             let r = op(&session);
@@ -1444,6 +1498,15 @@ mod imp {
             self.client.with_session(|session| {
                 let mut s = lock(session);
                 run(&url, s.list(&export, rest, &url))
+            })
+        }
+
+        pub(super) fn remove_file(&self, loc: &NfsLocation) -> Result<()> {
+            let url = loc.to_url();
+            let (export, rest) = self.split(loc)?;
+            self.client.with_session(|session| {
+                let mut s = lock(session);
+                run(&url, s.remove(&export, rest, &url))
             })
         }
 

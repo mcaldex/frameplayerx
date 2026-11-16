@@ -762,3 +762,65 @@ fn a_connection_the_server_closed_is_replaced_at_once() {
         started.elapsed()
     );
 }
+
+/// Like [`serve`], letting clients change files (no links).
+fn serve_writable(fs: MemFsConfig) -> u16 {
+    let (port_tx, port_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let mut listener = NFSTcpListener::bind("127.0.0.1:0", MemFs::new(fs).unwrap())
+                .await
+                .unwrap();
+            listener.with_export_name("export");
+            port_tx.send(listener.get_listen_port()).unwrap();
+            listener.handle_forever().await.unwrap();
+        });
+    });
+    port_rx.recv().unwrap()
+}
+
+#[test]
+fn deletes_files_and_refuses_folders() {
+    let mut fs = MemFsConfig::default();
+    fs.add_dir("/vr");
+    fs.add_file("/vr/a.mp4", b"abc".to_vec());
+    fs.add_dir("/vr/Old");
+    fs.add_file("/vr/Old/b.mp4", b"def".to_vec());
+    let port = serve_writable(fs);
+    let source = build(&config(port, "/export")).unwrap();
+    assert!(source.can_delete());
+
+    let vr = source.list(None).unwrap();
+    let vr = source.list(Some(&vr[0].location)).unwrap();
+    let old = vr.iter().find(|e| e.name == "Old").unwrap();
+    let clip = vr.iter().find(|e| e.name == "a.mp4").unwrap();
+    // As listed, without the slash a folder's address ends in, and the export.
+    for folder in [
+        old.location.clone(),
+        old.location.trim_end_matches('/').to_string(),
+        format!("nfs://127.0.0.1:{port}/export"),
+    ] {
+        let err = source.delete(&folder).unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidLocation { .. }),
+            "{folder}: {err:?}"
+        );
+    }
+    assert_eq!(source.list(Some(&old.location)).unwrap().len(), 1);
+
+    source.delete(&clip.location).unwrap();
+    let names: Vec<_> = source
+        .list(Some(&source.parent(&clip.location).unwrap()))
+        .unwrap()
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    assert_eq!(names, ["Old"]);
+    let err = source.delete(&clip.location).unwrap_err();
+    assert!(matches!(err, Error::NotFound(_)), "{err:?}");
+}

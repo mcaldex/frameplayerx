@@ -776,19 +776,33 @@ fn details(ui: &mut egui::Ui, v: &mut View, id: fp_library::MediaId) {
                 });
                 rows.row(tr!("library-file"), Some(&location), |_| {});
             });
-            if r.last_played.is_some() {
+            let src = (!r.source_id.is_empty()).then_some(r.source_id.as_str());
+            let can_delete = super::can_delete_entry(v, src, &r.location);
+            if r.last_played.is_some() || can_delete {
                 ui.add_space(12.0);
-                if widgets::button(
-                    ui,
-                    Some(icons::TRASH),
-                    tr!("library-remove-from-history"),
-                    Kind::Danger,
-                )
-                .clicked()
-                {
-                    v.actions.push(Action::RemoveFromHistory(r.id));
-                    v.state.details = None;
-                }
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 12.0;
+                    if r.last_played.is_some()
+                        && widgets::button(
+                            ui,
+                            Some(icons::TRASH),
+                            tr!("library-remove-from-history"),
+                            Kind::Danger,
+                        )
+                        .clicked()
+                    {
+                        v.actions.push(Action::RemoveFromHistory(r.id));
+                        v.state.details = None;
+                    }
+                    if can_delete && super::delete_button(ui, v.state, &r.location) {
+                        v.actions.push(Action::DeleteFile(super::DeleteTarget {
+                            title: r.title.clone(),
+                            location: r.location.clone(),
+                            source_id: src.map(str::to_owned),
+                            catalog_item_id: None,
+                        }));
+                    }
+                });
             }
             ui.add_space(24.0);
         });

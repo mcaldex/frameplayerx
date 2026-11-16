@@ -268,6 +268,11 @@ impl App {
             } => self.queue_feed_scenes(&source, urls, front),
             Action::FeedScene { source, url } => self.load_feed_scene(source, url),
             Action::FeedFavorite { source, url, on } => self.mark_feed_favorite(&source, url, on),
+            Action::CheckDelete {
+                source_id,
+                location,
+            } => self.check_delete(source_id, location),
+            Action::DeleteFile(target) => self.delete_file(target),
             Action::DiscoverDlna => self.discover_dlna(),
             Action::QuickConnectInitiate {
                 address,
@@ -435,6 +440,47 @@ impl App {
             }
         };
         self.open_request(req);
+    }
+
+    fn check_delete(&mut self, source_id: Option<String>, location: String) {
+        let opener = self.services.opener.clone();
+        self.jobs.spawn("delete-check", move || {
+            let allowed = match opener.ask_delete_allowed_in(source_id.as_deref(), &location) {
+                Ok(v) => v,
+                Err(e) => {
+                    log::warn!("checking delete permission for {location}: {e}");
+                    false
+                }
+            };
+            Job::DeleteCheck {
+                source_id,
+                location,
+                allowed,
+            }
+        });
+    }
+
+    fn delete_file(&mut self, target: ui::DeleteTarget) {
+        if self.ui.deleting.is_some() {
+            return;
+        }
+        self.ui.deleting = Some(target.location.clone());
+        let keys = self.deleted_location_keys(target.source_id.as_deref(), &target.location);
+        let wait_playback = self
+            .playback
+            .as_ref()
+            .is_some_and(|p| keys.contains(&p.request.location));
+        if wait_playback {
+            self.close_playback();
+        }
+        let opener = self.services.opener.clone();
+        self.jobs.spawn("delete-file", move || {
+            if wait_playback {
+                let _ = playback::wait_closed(Duration::from_secs(5));
+            }
+            let result = opener.delete_in(target.source_id.as_deref(), &target.location);
+            Job::Deleted { target, result }
+        });
     }
 
     /// Closes the video, and drops one still opening.

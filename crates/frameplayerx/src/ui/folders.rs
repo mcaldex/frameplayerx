@@ -125,6 +125,7 @@ pub fn page(
                     v.state.picking = Some(super::Picking {
                         reqs: queue(&[e]),
                         title: e.name.clone(),
+                        with_delete: true,
                     });
                 } else if open {
                     match e.kind {
@@ -277,7 +278,12 @@ fn row(ui: &mut egui::Ui, v: &mut View, e: &Entry) -> (bool, bool) {
             theme::icon(24.0),
             theme::TEXT_2.lerp_to_gamma(Color32::WHITE, h.max(t * 0.6)),
         );
-        more = m.tip(tr!("folders-more-tip")).clicked();
+        let tip = if v.services.opener.delete_allowed_in(None, &e.location) == Some(true) {
+            tr!("folders-more-tip-delete")
+        } else {
+            tr!("folders-more-tip")
+        };
+        more = m.tip(tip).clicked();
     }
     (resp.clicked() && !more, more)
 }

@@ -372,6 +372,13 @@ pub enum Action {
         url: String,
         on: bool,
     },
+    /// Asks a file's server whether it may be deleted.
+    CheckDelete {
+        source_id: Option<String>,
+        location: String,
+    },
+    /// Deletes a file for good (Delete file was pressed twice).
+    DeleteFile(DeleteTarget),
     DiscoverDlna,
     /// Request a Quick Connect code from a Jellyfin/Emby server.
     QuickConnectInitiate {
@@ -790,6 +797,8 @@ impl RemapSlot {
 pub struct Picking {
     pub reqs: Vec<OpenRequest>,
     pub title: String,
+    /// Opened from a folder row's ⋯, which offers Delete file too.
+    pub with_delete: bool,
 }
 
 /// View-local UI state.
@@ -857,6 +866,14 @@ pub struct UiState {
     pub tracks_open: bool,
     /// The last run crashed: asks whether to send a report.
     pub crash: Option<crash::CrashPrompt>,
+    /// The file whose Delete file was pressed once, and when: a second
+    /// press within 4 seconds deletes it.
+    pub delete_file_armed: Option<(String, std::time::Instant)>,
+    /// The file being deleted.
+    pub deleting: Option<String>,
+    /// Whether files may be deleted, as their servers answered; `None` while
+    /// a server is being asked.
+    pub delete_checks: std::collections::HashMap<(Option<String>, String), Option<bool>>,
     pub open_error: Option<String>,
     pub opening: Option<String>,
     pub toast: Option<(String, std::time::Instant)>,
@@ -869,6 +886,17 @@ pub struct UiState {
     pub keyboard_symbols: bool,
     /// Facts for the About tab (runtime, GPU, decoder...).
     pub about: Vec<(String, String)>,
+}
+
+/// A file Delete file deletes.
+#[derive(Clone, Debug)]
+pub struct DeleteTarget {
+    /// The video's name, for the toast.
+    pub title: String,
+    pub location: String,
+    pub source_id: Option<String>,
+    /// The item's id, when it is on a media server's pages.
+    pub catalog_item_id: Option<String>,
 }
 
 pub struct HomeRows {
@@ -919,6 +947,9 @@ impl Default for UiState {
             adjust_tab: 0,
             tracks_open: false,
             crash: None,
+            delete_file_armed: None,
+            deleting: None,
+            delete_checks: Default::default(),
             open_error: None,
             opening: None,
             toast: None,
@@ -1017,6 +1048,64 @@ pub struct View<'a> {
     pub actions: &'a mut Vec<Action>,
     pub passthrough_available: bool,
     pub devices: &'a [fp_haptics::DeviceStatus],
+}
+
+/// Returns whether `location` in `source_id` can be deleted right now, queueing
+/// a single background check when the source must ask its server first.
+pub(super) fn can_delete_entry(v: &mut View<'_>, source_id: Option<&str>, location: &str) -> bool {
+    if let Some(allowed) = v.services.opener.delete_allowed_in(source_id, location) {
+        return allowed;
+    }
+    let key = (source_id.map(str::to_owned), location.to_string());
+    match v.state.delete_checks.get(&key) {
+        Some(Some(allowed)) => *allowed,
+        Some(None) => false,
+        None => {
+            v.state.delete_checks.insert(key, None);
+            v.actions.push(Action::CheckDelete {
+                source_id: source_id.map(str::to_owned),
+                location: location.to_string(),
+            });
+            false
+        }
+    }
+}
+
+/// Delete file for the file at `location`, which asks again: pressed once
+/// it turns red as "Delete for good?" for 4 seconds. Whether it was pressed
+/// again, so the file is to be deleted.
+pub(super) fn delete_button(ui: &mut egui::Ui, state: &mut UiState, location: &str) -> bool {
+    use widgets::Kind;
+    if state.deleting.as_deref() == Some(location) {
+        ui.add_enabled_ui(false, |ui| {
+            widgets::button(
+                ui,
+                Some(icons::TRASH),
+                tr!("delete-deleting"),
+                Kind::Secondary,
+            )
+        });
+        return false;
+    }
+    let armed = state
+        .delete_file_armed
+        .as_ref()
+        .is_some_and(|(l, at)| l == location && at.elapsed().as_secs_f32() < 4.0);
+    let (label, kind) = if armed {
+        (tr!("delete-file-confirm"), Kind::Danger)
+    } else {
+        (tr!("delete-file"), Kind::Secondary)
+    };
+    let pressed = widgets::button(ui, Some(icons::TRASH), label, kind).clicked();
+    if armed {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(500));
+    }
+    if !pressed {
+        return false;
+    }
+    state.delete_file_armed = (!armed).then(|| (location.to_string(), std::time::Instant::now()));
+    armed
 }
 
 #[cfg(test)]
