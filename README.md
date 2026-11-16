@@ -11,6 +11,9 @@
 
 A VR video player for the Valve Steam Frame. It plays flat, 180°, 360° and fisheye videos, in 2D or 3D, from the headset, a microSD card, a USB drive or a media server. It runs natively on the headset and plays 8K video smoothly with the display at 120 Hz.
 
+<a href="https://frameplayerx.org.uk/"><img src="assets/website-icon.svg" alt="Website" title="Website" width="32" /></a>&nbsp;
+<a href="https://discord.gg/tDZRuZDY7d"><img src="assets/discord-icon.svg" alt="Discord" title="Discord" width="32" /></a>
+
 ---
 
 ## Features
@@ -49,14 +52,14 @@ A VR video player for the Valve Steam Frame. It plays flat, 180°, 360° and fis
 
 <p align="center">
   <a href="https://github.com/remotesojourner/frameplayerx/releases/latest/download/Install-FramePlayerX.desktop"><img src="assets/install-button.svg" alt="Install in Desktop Mode" width="240" /></a>
-  <a href="https://remotesojourner.github.io/frameplayerx/frame-control.html"><img src="assets/frame-control-button.svg" alt="Install with Frame Control" width="240" /></a>
+  <a href="https://frameplayerx.org.uk/frame-control"><img src="assets/frame-control-button.svg" alt="Install with Frame Control" width="240" /></a>
 </p>
 
 1. **Install FramePlayerX** with one of the buttons above, or from a terminal:
 
    - **Desktop Mode, on the headset**: open this page in the headset's browser and press **Desktop Mode** to download the installer. Open `Install-FramePlayerX.desktop` from your Downloads folder and confirm when Desktop Mode asks whether to trust it. A terminal window opens, installs the latest release and adds FramePlayerX to your Steam library. It may ask to close Steam for a moment; the app then shows up in Gaming Mode.
 
-   - **Frame Control from a PC**: turn on Developer Mode (Steam Settings › System › Developer Mode) and pair the headset once with [Frame Control](https://github.com/saphid/steam-frame). Then press its button in your PC's browser and it installs the latest release on the headset.
+   - **Frame Control from a PC**: turn on Developer Mode (Steam Settings › System › Developer Mode) and pair the headset once with [Frame Control](https://github.com/saphid/frame-control). Then press its button in your PC's browser and it installs the latest release on the headset.
 
    - **`frameplayerx-install`, from a PC's terminal**: turn on Developer Mode, download `frameplayerx-install` for your PC from the [release page](https://github.com/remotesojourner/frameplayerx/releases/latest), then:
 
@@ -77,7 +80,7 @@ To update later, open **Settings › Updates** and press **Download and install*
 
 | Guide | What's in it |
 |---|---|
-| [User guide](docs/USER-GUIDE.md) | Installing, updating and uninstalling, sources, browsing, PIN locks, video formats, display settings, controls, passthrough, haptics, remote control and troubleshooting |
+| [User guide](docs/USER-GUIDE.md), also [on the website](https://frameplayerx.org.uk/guide) | Installing, updating and uninstalling, sources, browsing, PIN locks, video formats, display settings, controls, passthrough, haptics, remote control and troubleshooting |
 | [Development](docs/DEVELOPMENT.md) | Building and testing, how the code is organised, running without a headset (Monado and the preview harness), and releasing |
 | [Contributing](CONTRIBUTING.md) | What to do before opening a pull request, what it has to say and how to test it |
 
@@ -126,7 +129,7 @@ FramePlayerX began as a fork of [FramePlayer](https://github.com/yellkell/framep
 
 - Reading hardware-decoded frames straight from the decoder's buffers, without copying them, follows [VideoFrameVR](https://github.com/seaweeduk/VideoFrameVR)'s approach ([#122](https://github.com/remotesojourner/frameplayerx/pull/122))
 - HDR tone mapping is modelled on [mpv](https://mpv.io)'s: the BT.2390 curve, fitted to each scene's measured peak
-- [Frame Control](https://github.com/saphid/steam-frame) by saphid installs FramePlayerX from a PC, and FramePlayerX's install links follow its format
+- [Frame Control](https://github.com/saphid/frame-control) by saphid installs FramePlayerX from a PC, and FramePlayerX's install links follow its format
 - The DeoVR remote API, the DeoVR feed and the HereSphere API come from those players; FramePlayerX implements them so the servers and phone apps made for them work with it
 - [FFmpeg](https://ffmpeg.org) and [dav1d](https://code.videolan.org/videolan/dav1d) decode the video, and the libraries and fonts in [Technology Stack](#technology-stack) do much of the rest. FramePlayerX uses code of FFmpeg licensed under the LGPL 2.1 or later; where to download its source, and every bundled component with its licence, is in [packaging/licenses](packaging/licenses/THIRD-PARTY.txt)
 - The pictures and videos in the screenshots are AI-generated

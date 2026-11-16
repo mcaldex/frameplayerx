@@ -1,0 +1,8 @@
+{
+  "name": "frameplayerx-website",
+  "private": true,
+  "description": "Builds the website: site/ plus the user guide rendered from docs/USER-GUIDE.md",
+  "devDependencies": {
+    "marked": "18.1.2"
+  }
+}

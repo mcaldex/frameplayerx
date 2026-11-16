@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- The README's link to frameplayerx.org.uk: a globe on the site's blue. -->
+  <title>Website</title>
+  <circle cx="32" cy="32" r="32" fill="#2563EB"/>
+  <g fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round">
+    <circle cx="32" cy="32" r="15"/>
+    <ellipse cx="32" cy="32" rx="6.5" ry="15"/>
+    <path d="M17 32h30M19.5 24h25M19.5 40h25"/>
+  </g>
+</svg>
