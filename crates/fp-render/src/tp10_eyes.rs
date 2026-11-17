@@ -34,6 +34,10 @@ pub(crate) struct Tp10Eyes {
     set_layout: vk::DescriptorSetLayout,
     pub layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
+    /// The eye passes with comfort focus (`fs_main_comfort`).
+    comfort_pipeline: vk::Pipeline,
+    /// Comfort focus's samples (`fs_focus`), read as the eye passes read.
+    focus_pipeline: vk::Pipeline,
     set_size: u64,
     /// Where each binding's descriptor is in a slot's buffer.
     offsets: Vec<usize>,
@@ -60,6 +64,8 @@ impl Tp10Eyes {
             set_layout: vk::DescriptorSetLayout::null(),
             layout: vk::PipelineLayout::null(),
             pipeline: vk::Pipeline::null(),
+            comfort_pipeline: vk::Pipeline::null(),
+            focus_pipeline: vk::Pipeline::null(),
             set_size: 0,
             offsets: Vec::new(),
             sampled_size: 0,
@@ -133,10 +139,39 @@ impl Tp10Eyes {
                 .collect();
         }
         self.layout = pipeline::layout(gpu, self.set_layout, 4)?;
+        self.comfort_pipeline = pipeline::create(
+            gpu,
+            &PipelineDesc {
+                spv: crate::SCENE_TP10_SPV,
+                fragment: c"fs_main_comfort",
+                layout: self.layout,
+                color_format,
+                vertex_stride: 0,
+                attributes: &[],
+                blend: false,
+                descriptor_buffer: true,
+                shading_rate,
+            },
+        )?;
+        self.focus_pipeline = pipeline::create(
+            gpu,
+            &PipelineDesc {
+                spv: crate::SCENE_TP10_SPV,
+                fragment: c"fs_focus",
+                layout: self.layout,
+                color_format: crate::focus::SAMPLES_FORMAT,
+                vertex_stride: 0,
+                attributes: &[],
+                blend: false,
+                descriptor_buffer: true,
+                shading_rate: ShadingRate::Unused,
+            },
+        )?;
         self.pipeline = pipeline::create(
             gpu,
             &PipelineDesc {
                 spv: crate::SCENE_TP10_SPV,
+                fragment: c"fs_main",
                 layout: self.layout,
                 color_format,
                 vertex_stride: 0,
@@ -279,8 +314,24 @@ impl Tp10Eyes {
         }
     }
 
-    /// Binds the pipeline and slot `slot`'s descriptors for the eye passes.
-    pub fn bind(&self, gpu: &Gpu, cmd: vk::CommandBuffer, slot: usize) {
+    /// Binds the pipeline and slot `slot`'s descriptors for the eye passes,
+    /// with `comfort` focus or without.
+    pub fn bind(&self, gpu: &Gpu, cmd: vk::CommandBuffer, slot: usize, comfort: bool) {
+        let pipe = if comfort {
+            self.comfort_pipeline
+        } else {
+            self.pipeline
+        };
+        self.bind_with(gpu, cmd, slot, pipe);
+    }
+
+    /// Binds the pipeline drawing comfort focus's samples, with the same
+    /// descriptors.
+    pub fn bind_focus(&self, gpu: &Gpu, cmd: vk::CommandBuffer, slot: usize) {
+        self.bind_with(gpu, cmd, slot, self.focus_pipeline);
+    }
+
+    fn bind_with(&self, gpu: &Gpu, cmd: vk::CommandBuffer, slot: usize, pipe: vk::Pipeline) {
         let Some(s) = self.slots.get(slot) else {
             return;
         };
@@ -294,7 +345,7 @@ impl Tp10Eyes {
         // the slot's descriptors were written for this frame.
         unsafe {
             gpu.device
-                .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.pipeline);
+                .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipe);
             self.db.cmd_bind_descriptor_buffers(cmd, &binding);
             self.db.cmd_set_descriptor_buffer_offsets(
                 cmd,
@@ -326,6 +377,8 @@ impl Tp10Eyes {
         unsafe {
             let d = &gpu.device;
             d.destroy_pipeline(std::mem::take(&mut self.pipeline), None);
+            d.destroy_pipeline(std::mem::take(&mut self.focus_pipeline), None);
+            d.destroy_pipeline(std::mem::take(&mut self.comfort_pipeline), None);
             d.destroy_pipeline_layout(std::mem::take(&mut self.layout), None);
             d.destroy_descriptor_set_layout(std::mem::take(&mut self.set_layout), None);
         }

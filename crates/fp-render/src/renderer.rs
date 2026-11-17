@@ -6,6 +6,7 @@
 //! garbage list and are destroyed when the slot comes round again, by which
 //! time no submitted frame can still read them.
 
+use crate::focus::{AimFilter, ComfortFocus, FocusPass, MEASURE_EVERY};
 use crate::foveation::{Foveation, RateMaps};
 use crate::gpu::Gpu;
 use crate::hdr::PeakDetector;
@@ -172,6 +173,10 @@ pub struct Renderer {
     scene_layout: vk::DescriptorSetLayout,
     scene_pl: vk::PipelineLayout,
     scene_pipe: vk::Pipeline,
+    /// The eye passes with comfort focus (`fs_main_comfort`).
+    comfort_pipe: vk::Pipeline,
+    /// Comfort focus's samples (`fs_focus`), with the eye passes' bindings.
+    focus_pipe: vk::Pipeline,
     tex_layout: vk::DescriptorSetLayout,
     quad_pl: vk::PipelineLayout,
     quad_pipe: vk::Pipeline,
@@ -199,6 +204,12 @@ pub struct Renderer {
     /// default peak.
     peak: Option<PeakPass>,
     hdr_peak: PeakDetector,
+    /// Measures stereo disparity at the gaze point for comfort focus.
+    focus: Option<FocusPass>,
+    focus_aim: AimFilter,
+    comfort_focus: ComfortFocus,
+    /// When comfort focus last measured.
+    focus_measured_at: Option<std::time::Instant>,
     /// Times each frame's parts on the GPU, where it has timestamps.
     timer: Option<FrameTimer>,
     /// The parts of the last frame the GPU finished.
@@ -288,6 +299,7 @@ impl Renderer {
                 &gpu,
                 &PipelineDesc {
                     spv: crate::SCENE_SPV,
+                    fragment: c"fs_main",
                     layout: scene_pl,
                     color_format,
                     vertex_stride: 0,
@@ -295,6 +307,34 @@ impl Renderer {
                     blend: false,
                     descriptor_buffer: false,
                     shading_rate: video_rate,
+                },
+            )?;
+            let comfort_pipe = pipeline::create(
+                &gpu,
+                &PipelineDesc {
+                    spv: crate::SCENE_SPV,
+                    fragment: c"fs_main_comfort",
+                    layout: scene_pl,
+                    color_format,
+                    vertex_stride: 0,
+                    attributes: &[],
+                    blend: false,
+                    descriptor_buffer: false,
+                    shading_rate: video_rate,
+                },
+            )?;
+            let focus_pipe = pipeline::create(
+                &gpu,
+                &PipelineDesc {
+                    spv: crate::SCENE_SPV,
+                    fragment: c"fs_focus",
+                    layout: scene_pl,
+                    color_format: crate::focus::SAMPLES_FORMAT,
+                    vertex_stride: 0,
+                    attributes: &[],
+                    blend: false,
+                    descriptor_buffer: false,
+                    shading_rate: ShadingRate::Unused,
                 },
             )?;
             let tex_layout = pipeline::set_layout(
@@ -329,6 +369,7 @@ impl Renderer {
                 &gpu,
                 &PipelineDesc {
                     spv: crate::QUAD_SPV,
+                    fragment: c"fs_main",
                     layout: quad_pl,
                     color_format,
                     vertex_stride: size_of::<QuadVertex>() as u32,
@@ -363,6 +404,7 @@ impl Renderer {
                 &gpu,
                 &PipelineDesc {
                     spv: crate::EGUI_SPV,
+                    fragment: c"fs_main",
                     layout: egui_pl,
                     color_format: PANEL_FORMATS[0],
                     vertex_stride: 20,
@@ -382,6 +424,8 @@ impl Renderer {
                 scene_layout,
                 scene_pl,
                 scene_pipe,
+                comfort_pipe,
+                focus_pipe,
                 tex_layout,
                 quad_pl,
                 quad_pipe,
@@ -414,6 +458,12 @@ impl Renderer {
                     .inspect_err(|e| log::warn!("HDR scenes aren't measured: {e}"))
                     .ok(),
                 hdr_peak: PeakDetector::default(),
+                focus: FocusPass::new(&gpu, SLOTS)
+                    .inspect_err(|e| log::warn!("comfort focus isn't measured: {e}"))
+                    .ok(),
+                focus_aim: AimFilter::default(),
+                comfort_focus: ComfortFocus::default(),
+                focus_measured_at: None,
                 timer: FrameTimer::new(&gpu, SLOTS),
                 gpu_times: None,
                 imports: Default::default(),
@@ -755,6 +805,9 @@ impl Renderer {
         if let Some(hist) = self.peak.as_mut().and_then(|p| p.take(self.current)) {
             self.hdr_peak.add(&hist);
         }
+        if let Some((scores, aim)) = self.focus.as_mut().and_then(|f| f.take(self.current)) {
+            self.comfort_focus.ingest(&scores, aim);
+        }
         if let Some(t) = self.timer.as_mut() {
             // Read before `begin` resets the queries for this frame.
             self.gpu_times = t.read(&self.gpu, self.current);
@@ -856,6 +909,10 @@ impl Renderer {
                         self.hdr_peak.reset();
                         if let Some(p) = self.peak.as_mut() {
                             p.discard();
+                        }
+                        self.comfort_focus.reset();
+                        if let Some(f) = self.focus.as_mut() {
+                            f.discard();
                         }
                     }
                     self.video_cur = target;
@@ -1005,6 +1062,10 @@ impl Renderer {
             if let Some(peak) = self.peak.as_mut() {
                 peak.discard();
             }
+            self.comfort_focus.reset();
+            if let Some(f) = self.focus.as_mut() {
+                f.discard();
+            }
         }
         let Some(set) = self.videos[target].as_mut() else {
             return Ok(());
@@ -1059,6 +1120,10 @@ impl Renderer {
         self.hdr_peak.reset();
         if let Some(p) = self.peak.as_mut() {
             p.discard();
+        }
+        self.comfort_focus.reset();
+        if let Some(f) = self.focus.as_mut() {
+            f.discard();
         }
     }
 
@@ -1489,6 +1554,47 @@ impl Renderer {
         };
         let mut p = params::build(video, frame_desc.as_ref(), inv);
         p.hdr = params::hdr_levels(self.hdr_peak.peak_nits());
+        let want_focus = video.settings.comfort_focus
+            && video.format.can_comfort_focus()
+            && self.slots[slot_idx].has_video;
+        // Where comfort focus measures this frame, if it does.
+        let mut measure = None;
+        if want_focus {
+            let now = std::time::Instant::now();
+            // Where the head points: between the two eyes' views.
+            let to_world = eyes.map(|e| e.view.inverse());
+            let head = -(to_world[0].z_axis + to_world[1].z_axis).truncate();
+            // The gaze is on hand while foveated rendering follows it.
+            let gaze = self.gaze.filter(|_| self.foveation != Foveation::Off);
+            let aim = self.focus_aim.aim(now, gaze, head);
+            let focus = self.comfort_focus.step(now, aim);
+            // Each eye's offset from the point between them, and the head's
+            // up, in the room frame, to draw each eye from where it is.
+            let room = |v: Vec3| p.anchor_inv.transform_vector3(v);
+            let at = to_world.map(|m| m.w_axis.truncate());
+            let mid = (at[0] + at[1]) * 0.5;
+            let offsets = at.map(|e| room(e - mid));
+            let up = room((to_world[0].y_axis + to_world[1].y_axis).truncate());
+            if let Some([lon, lat]) = crate::focus::aim_angles(&p, aim)
+                && self.focus.is_some()
+                && self
+                    .focus_measured_at
+                    .is_none_or(|t| now.saturating_duration_since(t) >= MEASURE_EVERY)
+            {
+                p.focus.x = lon;
+                p.focus.y = lat;
+                self.focus_measured_at = Some(now);
+                measure = Some(aim);
+            }
+            // The measurement reads the video as filmed, without it.
+            params::set_comfort_focus(&mut p, focus.relief, focus.distance, offsets, up);
+        } else {
+            self.comfort_focus.reset();
+            self.focus_aim = AimFilter::default();
+            if let Some(f) = self.focus.as_mut() {
+                f.discard();
+            }
+        }
         let tp10 = match (self.slots[slot_idx].tp10_bound, self.tp10_eyes.as_mut()) {
             (Some((buffer, desc)), Some(t)) => self.imports.tp10_picture(buffer).map(|pic| {
                 params::sample_tp10(&mut p, desc.height, pic.luma_bands, pic.chroma_bands);
@@ -1611,11 +1717,16 @@ impl Renderer {
                 d.cmd_set_scissor(cmd, 0, &[area]);
                 let scene_pl = match self.tp10_eyes.as_ref().filter(|_| tp10) {
                     Some(t) => {
-                        t.bind(gpu, cmd, slot_idx);
+                        t.bind(gpu, cmd, slot_idx, want_focus);
                         t.layout
                     }
                     None => {
-                        d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.scene_pipe);
+                        let pipe = if want_focus {
+                            self.comfort_pipe
+                        } else {
+                            self.scene_pipe
+                        };
+                        d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipe);
                         d.cmd_bind_descriptor_sets(
                             cmd,
                             vk::PipelineBindPoint::GRAPHICS,
@@ -1681,7 +1792,75 @@ impl Renderer {
                 );
             }
         }
+        if let Some(aim) = measure {
+            self.record_focus(slot_idx, tp10, aim);
+        }
         Ok(())
+    }
+
+    /// Draws comfort focus's samples round `aim` (`fs_focus`) with the eye
+    /// passes' own pipeline layout and bindings, so they read the frame as
+    /// the eye passes just did, then matches them.
+    fn record_focus(&mut self, slot_idx: usize, tp10: bool, aim: Vec3) {
+        let cmd = self.slots[slot_idx].cmd;
+        let Some(focus) = self.focus.as_mut() else {
+            return;
+        };
+        let Some((view, extent)) = focus.begin_samples(&self.gpu, cmd, slot_idx) else {
+            return;
+        };
+        let d = &self.gpu.device;
+        let attachment = [vk::RenderingAttachmentInfo::default()
+            .image_view(view)
+            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+            .load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .store_op(vk::AttachmentStoreOp::STORE)];
+        let area = vk::Rect2D {
+            offset: vk::Offset2D::default(),
+            extent,
+        };
+        // SAFETY: recording into the slot's command buffer with valid
+        // pipelines and descriptors; the frame's planes are still readable as
+        // the eye passes left them.
+        unsafe {
+            d.cmd_begin_rendering(
+                cmd,
+                &vk::RenderingInfo::default()
+                    .render_area(area)
+                    .layer_count(1)
+                    .color_attachments(&attachment),
+            );
+            d.cmd_set_viewport(
+                cmd,
+                0,
+                &[vk::Viewport {
+                    x: 0.0,
+                    y: 0.0,
+                    width: extent.width as f32,
+                    height: extent.height as f32,
+                    min_depth: 0.0,
+                    max_depth: 1.0,
+                }],
+            );
+            d.cmd_set_scissor(cmd, 0, &[area]);
+            match self.tp10_eyes.as_ref().filter(|_| tp10) {
+                Some(t) => t.bind_focus(&self.gpu, cmd, slot_idx),
+                None => {
+                    d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, self.focus_pipe);
+                    d.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        self.scene_pl,
+                        0,
+                        &[self.slots[slot_idx].scene_set],
+                        &[],
+                    );
+                }
+            }
+            d.cmd_draw(cmd, 3, 1, 0, 0);
+            d.cmd_end_rendering(cmd);
+        }
+        focus.record(&self.gpu, cmd, slot_idx, aim);
     }
 
     /// Ends recording and submits the frame.
@@ -2063,6 +2242,9 @@ impl Drop for Renderer {
             if let Some(mut p) = self.peak.take() {
                 p.destroy(&gpu);
             }
+            if let Some(mut f) = self.focus.take() {
+                f.destroy(&gpu);
+            }
             if let Some(mut t) = self.timer.take() {
                 t.destroy(&gpu);
             }
@@ -2097,7 +2279,13 @@ impl Drop for Renderer {
             }
             self.white.image.destroy(&gpu);
             self.dummy.destroy(&gpu);
-            for p in [self.scene_pipe, self.quad_pipe, self.egui_pipe] {
+            for p in [
+                self.scene_pipe,
+                self.comfort_pipe,
+                self.focus_pipe,
+                self.quad_pipe,
+                self.egui_pipe,
+            ] {
                 d.destroy_pipeline(p, None);
             }
             for l in [self.scene_pl, self.quad_pl, self.egui_pl] {

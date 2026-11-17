@@ -17,6 +17,7 @@
 
 pub mod backdrop;
 pub mod capture;
+mod focus;
 mod foveation;
 pub mod gpu;
 pub mod hdr;
@@ -72,5 +73,6 @@ pub(crate) const QUAD_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/qua
 pub(crate) const EGUI_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/egui.spv"));
 pub(crate) const Q10C_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/q10c.spv"));
 pub(crate) const PEAK_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/peak.spv"));
+pub(crate) const FOCUS_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/focus.spv"));
 pub(crate) const SCENE_TP10_SPV: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/scene_tp10.spv"));
