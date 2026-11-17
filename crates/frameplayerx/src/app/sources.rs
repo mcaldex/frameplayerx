@@ -4,7 +4,7 @@ use super::*;
 use crate::folder_playback::{Incomplete, ScanOptions};
 use std::sync::atomic::Ordering;
 
-pub(super) type FolderPlayAllResult = Result<(Vec<OpenRequest>, Option<Incomplete>), String>;
+pub(super) type FolderPlayAllResult = Result<(Vec<OpenRequest>, Incomplete), String>;
 
 fn request_source(library: &Library, req: &OpenRequest) -> Option<String> {
     fp_sources::location_owner(&req.location)
@@ -361,6 +361,7 @@ impl App {
             source: source.clone(),
             location: location.clone(),
             state: FolderPlayAllState::Scanning(cancel.clone()),
+            deleted: Vec::new(),
         };
         let updates = self.jobs.sender();
         let job = self.jobs.try_spawn("folder-play-all", move || {
@@ -427,10 +428,10 @@ impl App {
             && ((self.playback.is_some() && (!self.show_browser || !self.ui_visible))
                 || self.ui.screen != Screen::Sources
                 || self.ui.picking.is_some()
-                || !self
-                    .ui
-                    .folder_mut()
-                    .is_some_and(|b| b.source == scan.source && b.location == scan.location)
+                // A refresh lists the folder anew; what was found was before.
+                || !self.ui.folder_mut().is_some_and(|b| {
+                    b.source == scan.source && b.location == scan.location && !b.loading
+                })
                 || self.source_locked(&scan.source))
         {
             self.cancel_folder_play_all();
@@ -464,40 +465,55 @@ impl App {
             return;
         }
         self.panels[MAIN].request_repaint();
+        let result = result.map(|(mut requests, incomplete)| {
+            requests.retain(|r| !scan.deleted.contains(&r.location));
+            (requests, incomplete)
+        });
         // Past a subfolder that couldn't be read, it asks before playing.
-        if !cancel.load(Ordering::Relaxed)
-            && let Ok((requests, Some(Incomplete::Unavailable))) = result
-        {
-            scan.state = FolderPlayAllState::Partial { requests };
-            return;
-        }
+        let result = match result {
+            Ok((requests, incomplete))
+                if incomplete.unavailable && !cancel.load(Ordering::Relaxed) =>
+            {
+                scan.state = FolderPlayAllState::Partial {
+                    requests,
+                    limit: incomplete.limit_reached,
+                };
+                return;
+            }
+            other => other,
+        };
         self.folder_play_all = None;
         if cancel.load(Ordering::Relaxed) {
             return;
         }
         match result {
-            Ok((reqs, reason)) if !reqs.is_empty() => {
-                self.apply(Action::PlayAll(reqs, 0));
-                if let Some(Incomplete::LimitReached(limit)) = reason {
-                    self.ui
-                        .toast(tr!("folders-play-all-limited-toast", limit = limit));
-                }
+            Ok((reqs, incomplete)) if !reqs.is_empty() => {
+                self.play_found(reqs, incomplete.limit_reached);
             }
             Ok(_) => self.ui.toast(tr!("toast-nothing-to-play")),
             Err(e) => self.ui.toast(e),
         }
     }
 
+    /// Plays what a walk found, saying when its video limit cut it short.
+    fn play_found(&mut self, requests: Vec<OpenRequest>, limit: Option<usize>) {
+        self.apply(Action::PlayAll(requests, 0));
+        if let Some(limit) = limit {
+            self.ui
+                .toast(tr!("folders-play-all-limited-toast", limit = limit));
+        }
+    }
+
     pub(super) fn play_found_folder_videos(&mut self) {
         self.check_folder_play_all();
         if let Some(FolderPlayAll {
-            state: FolderPlayAllState::Partial { requests, .. },
+            state: FolderPlayAllState::Partial { requests, limit },
             ..
         }) = self.folder_play_all.as_mut()
         {
-            let requests = std::mem::take(requests);
+            let (requests, limit) = (std::mem::take(requests), *limit);
             self.cancel_folder_play_all();
-            self.apply(Action::PlayAll(requests, 0));
+            self.play_found(requests, limit);
         }
     }
 

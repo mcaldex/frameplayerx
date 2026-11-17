@@ -383,6 +383,16 @@ impl Source for NfsSource {
         Some(crate::location::encode(&self.id, "nfs", &key))
     }
 
+    fn folder_identity(&self, location: Option<&str>) -> Option<String> {
+        let url = self.current_url(location.unwrap_or(&self.root)).ok()?;
+        let loc = NfsLocation::parse(&url).ok()?;
+        self.check_owned(&loc).ok()?;
+        if self.is_export_list(&loc) {
+            return None;
+        }
+        self.real_folder(&loc).ok()
+    }
+
     fn list(&self, location: Option<&str>) -> Result<Vec<Entry>> {
         let loc = NfsLocation::parse(&self.current_url(location.unwrap_or(&self.root))?)?;
         self.check_owned(&loc)?;
@@ -528,6 +538,10 @@ impl NfsSource {
     }
 
     fn remove_file(&self, _loc: &NfsLocation) -> Result<()> {
+        Err(Error::NfsUnavailable("compiled without NFS support".into()))
+    }
+
+    fn real_folder(&self, _loc: &NfsLocation) -> Result<String> {
         Err(Error::NfsUnavailable("compiled without NFS support".into()))
     }
 }
@@ -1527,6 +1541,18 @@ mod imp {
                 let mut s = lock(session);
                 let broken = s.broken.clone();
                 run_on(&broken, &url, s.list(&export, rest, &url))
+            })
+        }
+
+        /// The server path the folder at `loc` resolves to, links followed.
+        pub(super) fn real_folder(&self, loc: &NfsLocation) -> Result<String> {
+            let url = loc.to_url();
+            let (export, rest) = self.split(loc)?;
+            self.client.with_session(|session| {
+                let mut s = lock(session);
+                let broken = s.broken.clone();
+                let known = run_on(&broken, &url, s.resolve(&export, rest, &url))?;
+                Ok(key(&server_path(&export), &known.real))
             })
         }
 

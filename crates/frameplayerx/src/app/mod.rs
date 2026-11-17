@@ -132,6 +132,9 @@ struct FolderPlayAll {
     source: String,
     location: Option<String>,
     state: FolderPlayAllState,
+    /// Locations of videos deleted since it started, left out of what it
+    /// found.
+    deleted: Vec<String>,
 }
 
 enum FolderPlayAllState {
@@ -139,6 +142,8 @@ enum FolderPlayAllState {
     /// Done, past a subfolder that couldn't be read.
     Partial {
         requests: Vec<OpenRequest>,
+        /// The video limit, when the walk also reached it.
+        limit: Option<usize>,
     },
 }
 
@@ -153,7 +158,7 @@ impl FolderPlayAllState {
                 Some(ui::folders::PlayAllStatus::Scanning)
             }
             Self::Scanning(_) => None,
-            Self::Partial { requests } => Some(ui::folders::PlayAllStatus::Partial {
+            Self::Partial { requests, .. } => Some(ui::folders::PlayAllStatus::Partial {
                 count: requests.len(),
             }),
         }

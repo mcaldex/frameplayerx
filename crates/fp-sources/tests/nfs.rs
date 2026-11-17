@@ -456,6 +456,33 @@ fn symbolic_links_are_listed_and_open_as_what_they_point_to() {
 }
 
 #[test]
+fn a_folder_reached_through_links_is_known_as_itself() {
+    let mut fs = MemFsConfig::default();
+    fs.add_dir("/vr");
+    fs.add_dir("/vr/deep");
+    fs.add_dir("/movies");
+    let (port, _) = serve_with_links(
+        fs,
+        &[
+            ("/vr/deep", "All", "/export"),
+            ("/vr/deep", "Up", ".."),
+            ("/vr/deep", "Movies", "../../movies"),
+        ],
+    );
+    let source = build(&config(port, "/export")).unwrap();
+    let at = |path: &str| {
+        let url = format!("nfs://127.0.0.1:{port}/export/{path}");
+        let location = source.canonical_location(&url).unwrap_or(url);
+        source.folder_identity(Some(&location)).unwrap()
+    };
+    // A walk through subfolders visits each of these once.
+    assert_eq!(at("vr/deep/All/"), source.folder_identity(None).unwrap());
+    assert_eq!(at("vr/deep/All/vr/deep/Up/"), at("vr/"));
+    assert_eq!(at("vr/deep/Movies/"), at("movies/"));
+    assert_ne!(at("vr/"), at("movies/"));
+}
+
+#[test]
 fn links_in_a_folder_source_reach_the_rest_of_its_export() {
     let movie = pattern(4321);
     let mut fs = MemFsConfig::default();

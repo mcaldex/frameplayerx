@@ -631,6 +631,12 @@ impl App {
         {
             self.ui.picking = None;
         }
+        if let Some(scan) = &mut self.folder_play_all {
+            if let FolderPlayAllState::Partial { requests, .. } = &mut scan.state {
+                requests.retain(|r| !keys.contains(&r.location));
+            }
+            scan.deleted.extend(keys.iter().cloned());
+        }
 
         for k in &keys {
             self.thumbs.forget(k);
