@@ -590,11 +590,22 @@ fn starts_empty(data: &[u8], length_size: usize) -> bool {
     !data.is_empty() && data.iter().take(length_size).all(|&b| b == 0)
 }
 
+/// Zero bytes where a NAL unit's length belongs that mark a hole, not the
+/// odd byte of padding at a packet's end.
+const ZERO_HOLE: usize = 16;
+
 /// Whether any NAL unit of a length-prefixed packet holds three zero bytes
-/// in a row, which H.264 7.4.1 and H.265 7.4.2 rule out.
+/// in a row, which H.264 7.4.1 and H.265 7.4.2 rule out, or zeros stand
+/// where its length belongs.
 fn holds_zero_run(data: &[u8], length_size: usize) -> bool {
     let mut rest = data;
     while rest.len() >= length_size {
+        if rest
+            .get(..ZERO_HOLE)
+            .is_some_and(|z| z.iter().all(|&b| b == 0))
+        {
+            return true;
+        }
         let (len, tail) = rest.split_at(length_size);
         let n = len.iter().fold(0usize, |n, &b| (n << 8) | b as usize);
         let nal = &tail[..n.min(tail.len())];
@@ -3560,6 +3571,15 @@ mod tests {
         // A length running past the packet still has its bytes looked at.
         assert!(holds_zero_run(&[0, 0, 0x10, 0, 0x65, 0, 0, 0], 4));
         assert!(!holds_zero_run(&[0, 3, 0x65, 1, 2], 2));
+        // A hole starting where the next unit's length belongs.
+        let mut hole = vec![0, 0, 0, 3, 0x09, 0x10, 0xf0];
+        hole.extend([0; 64]);
+        assert!(holds_zero_run(&hole, 4));
+        // A few bytes of padding at the end aren't one.
+        assert!(!holds_zero_run(
+            &[0, 0, 0, 3, 0x09, 0x10, 0xf0, 0, 0, 0, 0],
+            4
+        ));
     }
 
     #[test]
