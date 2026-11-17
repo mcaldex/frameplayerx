@@ -320,9 +320,12 @@ owner-only permissions on Linux. Only the API client sends the account token
 and consumer key. A separate HTTP client fetches the file links.
 
 **The database.** SQLite, with the schema version in `PRAGMA user_version`
-and forward-only migrations in `fp-library/src/schema.rs`. The scanner
-marks files missing rather than deleting them, so ratings, resume points
-and adjustments survive a card being taken out.
+and forward-only migrations in `fp-library/src/schema.rs`. Each schema has
+a file of its own, `library-<schema>.sqlite3` (`library.sqlite3` up to 4):
+a build with a new schema starts from a copy of the newest earlier file,
+which the version before, refusing a newer schema, keeps opening as it
+was. Only that earlier file is kept; older ones are deleted. The scanner marks files missing rather than deleting them, so
+ratings, resume points and adjustments survive a card being taken out.
 
 **Blu-ray.** `fp-media/src/mvc` rewrites H.264 MVC's second view into
 plain H.264 pictures any decoder takes. In MKV the second view rides in the
