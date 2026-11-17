@@ -778,6 +778,15 @@ gives no picture for 5 seconds, the video carries on in software too; the
 log's `V4L2 decoder stalled` line then says where the decoder's buffers
 were, which is worth including in a bug report.
 
+A damaged stretch of a file, such as a part a download hasn't filled in
+yet, doesn't send the video to software. Playback carries on in hardware
+from the next keyframe that can be read, without reading the damaged
+part; when getting there holds the picture for more than a second,
+"Skipping damaged video…" shows over it meanwhile. What lay in between
+isn't shown. A *Damaged video* pill on
+the control bar then stays for the rest of the video; point at it to see
+how many stretches were skipped and how much video in all.
+
 The pill next to the format on the control bar says which decoder plays
 the video: HW, or SW in amber, with the codec and bit depth. Point at it
 to see the decoder, the format and the resolution, and why a video isn't

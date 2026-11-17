@@ -193,11 +193,25 @@ impl App {
         self.sync_locks();
         self.check_mounts();
         self.remote_events();
+        let was_skipping = self.ui.skipping_damaged;
+        let mut jumped = false;
         if let Some(p) = &mut self.playback {
             p.save_progress(&self.services.library, false);
             p.sync_watch();
             p.save_key(&self.services.library, false);
             p.watch_decoding(self.settings.hardware_decoding);
+            let (skipping, finished) = p.poll_damage_skip();
+            self.ui.skipping_damaged = skipping;
+            jumped = finished;
+        } else {
+            self.ui.skipping_damaged = false;
+        }
+        if self.ui.skipping_damaged != was_skipping {
+            self.panels[TOAST].request_repaint();
+        }
+        // The control bar's pill counts what was skipped.
+        if jumped {
+            self.panels[BAR].request_repaint();
         }
         self.publish_status();
         self.publish_details();
@@ -370,7 +384,7 @@ impl App {
             .toast
             .as_ref()
             .is_some_and(|(_, t)| t.elapsed().as_secs_f32() < VIDEO_TOAST_SECS);
-        self.panels[TOAST].visible = over_video && live;
+        self.panels[TOAST].visible = over_video && (live || self.ui.skipping_damaged);
         // Said and gone: it doesn't come back when the library opens.
         if over_video && !live {
             self.ui.toast = None;

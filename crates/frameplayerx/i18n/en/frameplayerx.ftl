@@ -999,6 +999,8 @@ toast-beginning = Beginning
 toast-last-chapter = Last chapter
 toast-no-subtitles = No subtitles in this video
 toast-subtitles-off = Subtitles off
+# Over the video, beside a spinner, when a jump past a part of the file that can't be read holds the picture for more than a second.
+player-skipping-damaged = Skipping damaged video…
 
 ## Dates, sizes and tracks
 
@@ -1296,6 +1298,12 @@ perf-first-read = first read { $secs } s
 perf-memory = Memory
 perf-memory-value = { $used } of { $total } GB
 notice-not-in-library = Adjustments apply until you close this video (it is not in the library).
+# The notice's tip, once playback has jumped past parts of a file that can't be read; $time is the video they held in all, as 0:42 or 1:02:03.
+notice-damaged =
+    { $count ->
+        [one] Part of this file can't be read, such as where a download hasn't finished: playback skipped it, { $time } of video.
+       *[other] Parts of this file can't be read, such as where a download hasn't finished: playback skipped { $count } of them, { $time } of video in all.
+    }
 # $quality is like 1440p.
 transcode-cannot-play = This file can't play here: the server is transcoding it to { $quality }
 # A bookmark's name, $time where it is.
@@ -1321,6 +1329,7 @@ decoder-pill-too-big = Too big for hardware
 decoder-pill-refused = Decoder refused it
 notice-pill-transcoding = Transcoding
 notice-pill-not-saved = Not saved
+notice-pill-damaged = Damaged video
 player-error-pill = Playback error
 decoder-notice-refused = The hardware decoder can't play this { $stream } ({ $size }), so it stutters in software
 open-not-inserted = This video is on a microSD card or USB drive that is not inserted.

@@ -728,6 +728,7 @@ toast-beginning = Début
 toast-last-chapter = Dernier chapitre
 toast-no-subtitles = Aucun sous-titre dans cette vidéo
 toast-subtitles-off = Sous-titres désactivés
+player-skipping-damaged = Saut de la vidéo endommagée…
 size-kb = { $n } ko
 date-short = { $day } { $month ->
      [1] janv.
@@ -946,6 +947,11 @@ perf-first-read = première lecture { $secs } s
 perf-memory = Mémoire
 perf-memory-value = { $used } sur { $total } Go
 notice-not-in-library = Les ajustements s’appliquent jusqu’à ce que vous fermiez cette vidéo (elle n’est pas dans la bibliothèque).
+notice-damaged =
+    { $count ->
+        [one] Une partie de ce fichier est illisible, par exemple là où un téléchargement n’est pas terminé : la lecture l’a sautée, { $time } de vidéo.
+       *[other] Des parties de ce fichier sont illisibles, par exemple là où un téléchargement n’est pas terminé : la lecture en a sauté { $count }, { $time } de vidéo en tout.
+    }
 transcode-cannot-play = Ce fichier ne peut pas être lu ici : le serveur le transcode en { $quality }
 bookmark-name = Signet { $time }
 decoder-why-none = pas de décodage matériel pour { $stream }
@@ -966,6 +972,7 @@ decoder-pill-too-big = Trop grand pour le matériel
 decoder-pill-refused = Refusé par le décodeur
 notice-pill-transcoding = Transcodage
 notice-pill-not-saved = Non enregistré
+notice-pill-damaged = Vidéo endommagée
 player-error-pill = Erreur de lecture
 decoder-notice-refused = Le décodeur matériel ne peut pas lire ce { $stream } ({ $size }), donc ça saccade en logiciel
 open-not-inserted = Cette vidéo est sur une carte microSD ou une clé USB qui n’est pas insérée.

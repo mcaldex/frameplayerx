@@ -18,6 +18,7 @@ use crate::frame::{FrameConverter, VideoFrame};
 use crate::info::{MediaInfo, read_info};
 use crate::input::Input;
 use crate::subtitle::{self, Cue};
+use crate::v4l2::AnnexbFilter;
 use crate::{Error, Result};
 use fp_core::sync::lock;
 use fp_core::{ByteSource, NetCounters};
@@ -83,6 +84,10 @@ pub struct PlayerConfig {
     /// Whether the viewer says the video is interlaced; None goes by its
     /// headers.
     pub deinterlace: Option<bool>,
+    /// Test hook: run the Annex B bitstream filter even on non-V4L2 software
+    /// decoders so tests exercise damaged-stretch skipping without `/dev/video*`.
+    #[cfg(test)]
+    pub(crate) check_annexb: bool,
 }
 
 impl Default for PlayerConfig {
@@ -100,6 +105,8 @@ impl Default for PlayerConfig {
             timeline: None,
             frame_sequential: None,
             deinterlace: None,
+            #[cfg(test)]
+            check_annexb: false,
         }
     }
 }
@@ -140,6 +147,12 @@ pub struct Stats {
     /// The demuxer has reached the end of the file.
     pub read_to_end: bool,
     pub last_jump: Option<LastJump>,
+    /// True while jumping over a stretch the Annex B filter refused.
+    pub skipping_damaged: bool,
+    /// Incremented each time the player begins jumping over a damaged stretch.
+    pub damaged_jumps: u64,
+    /// Seconds of video the last jump went over, 0 while not known.
+    pub damaged_skipped: f64,
 }
 
 /// What the last open or seek took, up to its picture.
@@ -196,6 +209,29 @@ impl PacketQueue {
         self.bytes.store(0, Ordering::Relaxed);
         self.cv.notify_all();
     }
+    fn take_serial(&self, serial: u64) -> Vec<Option<Packet>> {
+        let mut q = self.lock();
+        let mut out = Vec::new();
+        while let Some((s, p)) = q.pop_front() {
+            if s == serial {
+                out.push(p);
+            }
+        }
+        self.bytes.store(0, Ordering::Relaxed);
+        out
+    }
+    fn push_many(&self, serial: u64, items: impl IntoIterator<Item = Option<Packet>>) {
+        let mut q = self.lock();
+        let mut added = 0usize;
+        for p in items {
+            if let Some(pkt) = &p {
+                added += pkt.size();
+            }
+            q.push_back((serial, p));
+        }
+        self.bytes.fetch_add(added, Ordering::Relaxed);
+        self.cv.notify_all();
+    }
     fn len(&self) -> usize {
         self.lock().len()
     }
@@ -207,9 +243,18 @@ struct SeekRequest {
     precise: bool,
 }
 
+#[derive(Clone, Copy)]
+struct DamageSkip {
+    serial: u64,
+    pos: i64,
+    dts: i64,
+    time: Option<f64>,
+}
+
 struct Control {
     paused: bool,
     seek: Option<SeekRequest>,
+    skip_damaged: Option<DamageSkip>,
     audio_stream: Option<usize>,
     audio_changed: bool,
     subtitle_stream: Option<usize>,
@@ -238,6 +283,11 @@ struct Shared {
     seek_floor: Mutex<Option<(u64, f64)>>,
     /// Waiting for the first frame after open/seek before the clock runs.
     buffering: AtomicBool,
+    /// Currently jumping over a damaged stretch refused by the Annex B filter.
+    skipping_damaged: AtomicBool,
+    damaged_jumps: AtomicU64,
+    /// [`Stats::damaged_skipped`] (`f64` bits).
+    damaged_skipped: AtomicU64,
     demux_eof: AtomicBool,
     video_done: AtomicBool,
     audio_done: AtomicBool,
@@ -327,6 +377,7 @@ impl Player {
             ctl: Mutex::new(Control {
                 paused: config.start_paused,
                 seek: None,
+                skip_damaged: None,
                 audio_stream,
                 audio_changed: false,
                 subtitle_stream: tracks.subtitle,
@@ -345,6 +396,9 @@ impl Player {
             net,
             seek_floor: Mutex::new(None),
             buffering: AtomicBool::new(true),
+            skipping_damaged: AtomicBool::new(false),
+            damaged_jumps: AtomicU64::new(0),
+            damaged_skipped: AtomicU64::new(0),
             demux_eof: AtomicBool::new(false),
             video_done: AtomicBool::new(info.video.is_none()),
             audio_done: AtomicBool::new(info.audio.is_none()),
@@ -373,6 +427,10 @@ impl Player {
                 let mut d = Decoder::open(&input, i, config.hw_decode)?;
                 // Its frames go to the renderer alone.
                 d.share_frames();
+                #[cfg(test)]
+                if config.check_annexb {
+                    d.enable_annexb_check(&input, i);
+                }
                 Some(d)
             }
             None => None,
@@ -534,6 +592,8 @@ impl Player {
             // a stall.
             let mut c = s.ctl();
             s.buffering.store(true, Ordering::Release);
+            s.skipping_damaged.store(false, Ordering::Release);
+            c.skip_damaged = None;
             c.seek = Some(SeekRequest { target, precise });
         }
         // Reflect the new position immediately in the UI.
@@ -645,7 +705,15 @@ impl Player {
         st.read_ahead = ((read_to - s.clock.now()).max(0.0), target);
         st.read_enough = s.read_enough.load(Ordering::Relaxed);
         st.read_to_end = s.demux_eof.load(Ordering::Acquire);
+        st.skipping_damaged = s.skipping_damaged.load(Ordering::Acquire);
+        st.damaged_jumps = s.damaged_jumps.load(Ordering::Acquire);
+        st.damaged_skipped = f64::from_bits(s.damaged_skipped.load(Ordering::Acquire));
         st
+    }
+
+    /// Whether the player is currently jumping over a damaged stretch of video.
+    pub fn is_skipping_damaged(&self) -> bool {
+        self.shared.skipping_damaged.load(Ordering::Acquire)
     }
 
     /// How reading the file over the network is going, when it is.
@@ -669,7 +737,11 @@ impl Player {
             } else {
                 true
             };
-            if ready && s.ctl().seek.is_none() {
+            let no_pending = {
+                let c = s.ctl();
+                c.seek.is_none() && c.skip_damaged.is_none()
+            };
+            if ready && no_pending {
                 if let Some(f) = frames.pop_front() {
                     // Start the clock exactly at the first frame shown.
                     s.clock.set(f.pts);
@@ -691,6 +763,7 @@ impl Player {
                     s.frames_cv.notify_all();
                 }
                 s.buffering.store(false, Ordering::Release);
+                s.skipping_damaged.store(false, Ordering::Release);
                 if !paused {
                     s.clock.resume();
                 }
@@ -718,6 +791,7 @@ impl Player {
                 !s.has_audio.load(Ordering::Acquire) || s.audio_done.load(Ordering::Acquire);
             if video_drained && audio_drained && s.demux_eof.load(Ordering::Acquire) {
                 if !s.ended.swap(true, Ordering::AcqRel) {
+                    s.skipping_damaged.store(false, Ordering::Release);
                     s.clock.pause();
                     if s.duration > 0.0 {
                         s.clock.set(s.duration);
@@ -863,6 +937,7 @@ fn demux_thread(
     let restart = cfg.timeline.as_ref().and_then(|t| t.restart.clone());
     let mut last_video_ts = 0.0f64;
     let mut first_video_ts: Option<f64> = None;
+    let mut annexb: Option<AnnexbFilter> = None;
     // After a seek, video waits for a keyframe so every decoder starts
     // clean: MPEG-TS has no keyframe index, and its seeks land between
     // them. It stops waiting at this media time, in case a stream's
@@ -870,9 +945,14 @@ fn demux_thread(
     let mut await_key: Option<f64> = None;
     let mut read_errors = 0;
     while !sh.quit.load(Ordering::Acquire) {
-        let (seek, audio_stream, sub_stream) = {
+        let (seek, skip_damaged, audio_stream, sub_stream) = {
             let mut c = sh.ctl();
-            (c.seek.take(), c.audio_stream, c.subtitle_stream)
+            (
+                c.seek.take(),
+                c.skip_damaged.take(),
+                c.audio_stream,
+                c.subtitle_stream,
+            )
         };
         if let Some(req) = seek {
             let serial = sh.serial.fetch_add(1, Ordering::AcqRel) + 1;
@@ -886,6 +966,7 @@ fn demux_thread(
                         input = next;
                         time_base = time_bases(&input);
                         shift = origin - input.origin();
+                        annexb = None;
                     }
                     Err(e) => {
                         if sh.quit.load(Ordering::Acquire) {
@@ -910,12 +991,110 @@ fn demux_thread(
                 .store(!sh.has_audio.load(Ordering::Acquire), Ordering::Release);
             sh.ended.store(false, Ordering::Release);
             sh.buffering.store(true, Ordering::Release);
+            sh.skipping_damaged.store(false, Ordering::Release);
             sh.clock.pause();
             sh.clock.set(req.target);
             sh.read_to.store(req.target.to_bits(), Ordering::Relaxed);
             first_video_ts = None;
             await_key = Some(req.target + 20.0);
             sh.frames_cv.notify_all();
+            sh.ctl_cv.notify_all();
+        } else if let Some(skip) = skip_damaged
+            && let Some(vi) = video_index
+            && skip.serial == sh.serial()
+        {
+            if annexb.is_none()
+                && let Some(&st) = input.streams().get(vi)
+            {
+                // SAFETY: `st` lives as long as `input`.
+                annexb = unsafe { AnnexbFilter::open((*st).codecpar, (*st).time_base) }
+                    .ok()
+                    .flatten();
+            }
+            let jump = jump_damaged(
+                &sh,
+                &mut input,
+                annexb.as_mut(),
+                vi,
+                &time_base,
+                origin,
+                shift,
+                restart.is_some(),
+                skip,
+                &mut pkt,
+            );
+            match &jump {
+                JumpResult::QueueResumed { t_good, .. } | JumpResult::Seeked { t_good } => {
+                    let skipped = skip.time.map_or(0.0, |from| (t_good - from).max(0.0));
+                    sh.damaged_skipped
+                        .store(skipped.to_bits(), Ordering::Release);
+                    log::info!(
+                        "video: resuming at {t_good:.2} s after {skipped:.2} s of damaged video"
+                    );
+                }
+                JumpResult::EndOfFile => log::info!("video: nothing readable after the damage"),
+                JumpResult::Aborted => {}
+            }
+            match jump {
+                JumpResult::QueueResumed {
+                    t_good,
+                    last_ts,
+                    eof,
+                } => {
+                    for (_, d) in subs.0.iter_mut() {
+                        d.flush();
+                    }
+                    sh.demux_eof.store(eof, Ordering::Release);
+                    sh.video_done.store(false, Ordering::Release);
+                    sh.audio_done
+                        .store(!sh.has_audio.load(Ordering::Acquire), Ordering::Release);
+                    sh.ended.store(false, Ordering::Release);
+                    first_video_ts = Some(t_good);
+                    last_video_ts = last_ts;
+                    sh.read_to.store(last_ts.to_bits(), Ordering::Relaxed);
+                    await_key = None;
+                    read_errors = 0;
+                    sh.frames_cv.notify_all();
+                    sh.ctl_cv.notify_all();
+                }
+                JumpResult::Seeked { t_good } => {
+                    for (_, d) in subs.0.iter_mut() {
+                        d.flush();
+                    }
+                    sh.demux_eof.store(false, Ordering::Release);
+                    sh.video_done.store(false, Ordering::Release);
+                    sh.audio_done
+                        .store(!sh.has_audio.load(Ordering::Acquire), Ordering::Release);
+                    sh.ended.store(false, Ordering::Release);
+                    sh.clock.pause();
+                    sh.clock.set(t_good);
+                    sh.read_to.store(t_good.to_bits(), Ordering::Relaxed);
+                    first_video_ts = None;
+                    last_video_ts = t_good;
+                    await_key = Some(t_good + 20.0);
+                    read_errors = 0;
+                    sh.frames_cv.notify_all();
+                    sh.ctl_cv.notify_all();
+                }
+                JumpResult::EndOfFile => {
+                    let serial = sh.serial.fetch_add(1, Ordering::AcqRel) + 1;
+                    sh.vpkts.clear();
+                    sh.apkts.clear();
+                    sh.frames().clear();
+                    *lock(&sh.seek_floor) = None;
+                    sh.vpkts.push(serial, None);
+                    sh.apkts.push(serial, None);
+                    sh.demux_eof.store(true, Ordering::Release);
+                    sh.skipping_damaged.store(false, Ordering::Release);
+                    await_key = None;
+                    sh.frames_cv.notify_all();
+                    sh.ctl_cv.notify_all();
+                }
+                JumpResult::Aborted => {
+                    sh.skipping_damaged.store(false, Ordering::Release);
+                    sh.ctl_cv.notify_all();
+                }
+            }
         }
         if sh.demux_eof.load(Ordering::Acquire) {
             let c = sh.ctl();
@@ -1016,6 +1195,437 @@ fn demux_thread(
     }
 }
 
+fn packet_is_key(pkt: *const ff::AVPacket) -> bool {
+    // SAFETY: caller passes a valid non-null packet pointer.
+    unsafe { (*pkt).flags & ff::AV_PKT_FLAG_KEY as i32 != 0 }
+}
+
+fn packet_dts_or_pts(pkt: *const ff::AVPacket) -> i64 {
+    // SAFETY: caller passes a valid non-null packet pointer.
+    let p = unsafe { &*pkt };
+    if p.dts != ff::AV_NOPTS_VALUE {
+        p.dts
+    } else {
+        p.pts
+    }
+}
+
+fn packet_media_time(pkt: *const ff::AVPacket, tb: f64, origin: f64) -> Option<f64> {
+    if pkt.is_null() || tb <= 0.0 {
+        return None;
+    }
+    // SAFETY: `pkt` is valid and non-null.
+    let p = unsafe { &*pkt };
+    let ts = if p.pts != ff::AV_NOPTS_VALUE {
+        p.pts
+    } else {
+        p.dts
+    };
+    (ts != ff::AV_NOPTS_VALUE).then_some(ts as f64 * tb - origin)
+}
+
+enum JumpResult {
+    QueueResumed {
+        t_good: f64,
+        last_ts: f64,
+        eof: bool,
+    },
+    Seeked {
+        t_good: f64,
+    },
+    EndOfFile,
+    Aborted,
+}
+
+enum Probe {
+    Good(f64),
+    Bad(Option<f64>),
+    Eof,
+    Aborted,
+}
+
+enum SearchKey {
+    Indexed { raw_ts: i64, media_time: f64 },
+    ByTime { media_time: f64 },
+    EndOfFile,
+    Aborted,
+}
+
+fn jump_aborted(sh: &Shared) -> bool {
+    sh.quit.load(Ordering::Acquire) || sh.ctl().seek.is_some()
+}
+
+struct DamageProbe<'a> {
+    sh: &'a Shared,
+    input: &'a mut Input,
+    bsf: &'a mut AnnexbFilter,
+    video_index: usize,
+    video_tb: f64,
+    origin: f64,
+    shift: f64,
+    pkt: &'a mut Packet,
+}
+
+impl DamageProbe<'_> {
+    /// Reads forward from the current seek position until the first video
+    /// keyframe (or EOF) and tests whether the Annex B filter accepts it. When
+    /// `target_dts` is supplied (indexed keyframe seek), reaching
+    /// `dts >= target_dts` without a usable keyframe fails immediately instead
+    /// of reading further through a hole.
+    fn keyframe(&mut self, target_dts: Option<i64>) -> Probe {
+        for _ in 0..128 {
+            if jump_aborted(self.sh) {
+                self.pkt.unref();
+                return Probe::Aborted;
+            }
+            match self.input.read(self.pkt.as_ptr()) {
+                Ok(true) => {
+                    if self.pkt.stream_index() != self.video_index {
+                        self.pkt.unref();
+                        continue;
+                    }
+                    let ptr = self.pkt.as_ptr() as *const ff::AVPacket;
+                    let is_key = packet_is_key(ptr);
+                    let at_target = target_dts.is_some_and(|target| {
+                        let dts = packet_dts_or_pts(ptr);
+                        dts != ff::AV_NOPTS_VALUE && dts >= target
+                    });
+                    if !is_key && !at_target && self.bsf.accepts_keyframe(ptr) {
+                        self.pkt.unref();
+                        continue;
+                    }
+                    let t =
+                        packet_media_time(ptr, self.video_tb, self.origin).map(|t| t + self.shift);
+                    let ok = is_key && self.bsf.accepts_keyframe(ptr);
+                    self.pkt.unref();
+                    return if ok {
+                        Probe::Good(t.unwrap_or(0.0))
+                    } else {
+                        Probe::Bad(t)
+                    };
+                }
+                Ok(false) => {
+                    self.pkt.unref();
+                    return Probe::Eof;
+                }
+                Err(_) => {
+                    self.pkt.unref();
+                    return Probe::Bad(None);
+                }
+            }
+        }
+        Probe::Bad(None)
+    }
+
+    fn at(&mut self, raw_ts: i64) -> Probe {
+        if jump_aborted(self.sh) {
+            return Probe::Aborted;
+        }
+        if self
+            .input
+            .seek_video_timestamp(self.video_index, raw_ts)
+            .is_err()
+        {
+            return Probe::Bad(None);
+        }
+        self.keyframe(Some(raw_ts))
+    }
+
+    fn after(&mut self, t: f64) -> Probe {
+        if jump_aborted(self.sh) {
+            return Probe::Aborted;
+        }
+        if self.input.seek_after(t).is_err() {
+            return Probe::Eof;
+        }
+        self.keyframe(None)
+    }
+
+    /// Seeks forward in growing steps (1, 2, 4… keyframes) through indexed
+    /// keyframes `kfs` until finding a good one, then steps back to the first
+    /// good keyframe.
+    fn find_indexed(&mut self, kfs: &[i64]) -> SearchKey {
+        let mut last_bad = match self.at(kfs[0]) {
+            Probe::Good(t) => {
+                return SearchKey::Indexed {
+                    raw_ts: kfs[0],
+                    media_time: t,
+                };
+            }
+            Probe::Bad(_) => 0usize,
+            Probe::Eof => return SearchKey::EndOfFile,
+            Probe::Aborted => return SearchKey::Aborted,
+        };
+        let mut step = 1usize;
+        let mut first_good: Option<(usize, f64)> = None;
+        let mut eof_bound: Option<usize> = None;
+        while last_bad + 1 < kfs.len() {
+            let next = (last_bad + step).min(kfs.len() - 1);
+            match self.at(kfs[next]) {
+                Probe::Good(t) => {
+                    first_good = Some((next, t));
+                    break;
+                }
+                Probe::Bad(_) => {
+                    last_bad = next;
+                    if next + 1 == kfs.len() {
+                        break;
+                    }
+                    step = step.saturating_mul(2);
+                }
+                Probe::Eof => {
+                    eof_bound = Some(next);
+                    break;
+                }
+                Probe::Aborted => return SearchKey::Aborted,
+            }
+        }
+        if first_good.is_none()
+            && let Some(mut ub) = eof_bound
+        {
+            while last_bad + 1 < ub {
+                let mid = last_bad + (ub - last_bad) / 2;
+                match self.at(kfs[mid]) {
+                    Probe::Good(t) => {
+                        first_good = Some((mid, t));
+                        break;
+                    }
+                    Probe::Bad(_) => last_bad = mid,
+                    Probe::Eof => ub = mid,
+                    Probe::Aborted => return SearchKey::Aborted,
+                }
+            }
+        }
+        let Some((mut good_idx, mut good_time)) = first_good else {
+            return SearchKey::EndOfFile;
+        };
+        while last_bad + 1 < good_idx {
+            let mid = last_bad + (good_idx - last_bad) / 2;
+            match self.at(kfs[mid]) {
+                Probe::Good(t) => (good_idx, good_time) = (mid, t),
+                Probe::Bad(_) => last_bad = mid,
+                Probe::Eof => break,
+                Probe::Aborted => return SearchKey::Aborted,
+            }
+        }
+        SearchKey::Indexed {
+            raw_ts: kfs[good_idx],
+            media_time: good_time,
+        }
+    }
+
+    /// Fallback for containers without a preloaded keyframe index: steps forward
+    /// in growing GOP multiples via `seek_after` and binary-searches back.
+    fn find_by_time(&mut self, start_t: f64) -> SearchKey {
+        let dur = self.sh.duration;
+        let t0 = match self.after(start_t) {
+            Probe::Good(t) => return SearchKey::ByTime { media_time: t },
+            Probe::Bad(t) => t.filter(|v| *v > start_t + 0.05).unwrap_or(start_t + 1.0),
+            Probe::Eof => return SearchKey::EndOfFile,
+            Probe::Aborted => return SearchKey::Aborted,
+        };
+        let gop = (t0 - start_t).clamp(0.5, 10.0);
+        let mut last_bad_t = t0;
+        let mut step = gop;
+        let mut first_good_t: Option<f64> = None;
+        for _ in 0..32 {
+            let target = last_bad_t + step;
+            if dur > 0.0 && target >= dur {
+                break;
+            }
+            match self.after(target) {
+                Probe::Good(t) => {
+                    first_good_t = Some(t);
+                    break;
+                }
+                Probe::Bad(bt) => {
+                    last_bad_t = bt.unwrap_or(target).max(target + 0.05);
+                    step *= 2.0;
+                }
+                Probe::Eof => break,
+                Probe::Aborted => return SearchKey::Aborted,
+            }
+        }
+        let Some(mut good_t) = first_good_t else {
+            return SearchKey::EndOfFile;
+        };
+        while good_t - last_bad_t > gop * 1.25 {
+            let mid = 0.5 * (last_bad_t + good_t);
+            match self.after(mid) {
+                Probe::Good(t) => {
+                    if t >= good_t - 0.05 {
+                        break;
+                    }
+                    good_t = t;
+                }
+                Probe::Bad(bt) => {
+                    let Some(t) = bt else { break };
+                    if t <= last_bad_t + 0.05 || t >= good_t - 0.05 {
+                        break;
+                    }
+                    last_bad_t = t;
+                }
+                Probe::Eof | Probe::Aborted => {
+                    if jump_aborted(self.sh) {
+                        return SearchKey::Aborted;
+                    }
+                    break;
+                }
+            }
+        }
+        SearchKey::ByTime { media_time: good_t }
+    }
+}
+
+/// Jumps over a stretch the Annex B filter refused to the first good keyframe:
+/// from `sh.vpkts` when already read ahead, otherwise by seeking forward in
+/// growing steps and stepping back to the first good keyframe.
+#[allow(clippy::too_many_arguments)]
+fn jump_damaged(
+    sh: &Shared,
+    input: &mut Input,
+    bsf: Option<&mut AnnexbFilter>,
+    video_index: usize,
+    time_base: &[f64],
+    origin: f64,
+    shift: f64,
+    is_restart: bool,
+    skip: DamageSkip,
+    pkt: &mut Packet,
+) -> JumpResult {
+    let Some(bsf) = bsf else {
+        return JumpResult::EndOfFile;
+    };
+    let mut queued = sh.vpkts.take_serial(skip.serial);
+    let queue_eof = queued.last().is_some_and(Option::is_none);
+    let video_tb = time_base.get(video_index).copied().unwrap_or(0.0);
+    let mut frontier_pos = skip.pos;
+    let mut frontier_dts = skip.dts;
+    let mut frontier_time = skip.time;
+
+    let mut found_at = None;
+    for (idx, item) in queued.iter().enumerate() {
+        let Some(p) = item else {
+            break;
+        };
+        let ptr = p.as_ptr() as *const ff::AVPacket;
+        // SAFETY: `p` is a valid queued packet.
+        unsafe {
+            if (*ptr).pos >= 0 {
+                frontier_pos = (*ptr).pos;
+            }
+            let dts = packet_dts_or_pts(ptr);
+            if dts != ff::AV_NOPTS_VALUE {
+                frontier_dts = dts;
+            }
+        }
+        if let Some(t) = packet_media_time(ptr, video_tb, origin) {
+            frontier_time = Some(t);
+        }
+        if packet_is_key(ptr) && bsf.accepts_keyframe(ptr) {
+            found_at = Some(idx);
+            break;
+        }
+    }
+
+    if let Some(i) = found_at {
+        let remaining: Vec<Option<Packet>> = queued.drain(i..).collect();
+        let first_ptr = remaining
+            .first()
+            .and_then(Option::as_ref)
+            .map(|p| p.as_ptr() as *const ff::AVPacket)
+            .unwrap_or(std::ptr::null());
+        let t_good = packet_media_time(first_ptr, video_tb, origin)
+            .or(frontier_time)
+            .unwrap_or(0.0);
+        let last_ts = remaining
+            .iter()
+            .rev()
+            .filter_map(Option::as_ref)
+            .find_map(|p| packet_media_time(p.as_ptr() as *const ff::AVPacket, video_tb, origin))
+            .unwrap_or(t_good);
+        let audio = sh.apkts.take_serial(skip.serial);
+        sh.frames().clear();
+        *lock(&sh.seek_floor) = None;
+        sh.buffering.store(true, Ordering::Release);
+        sh.clock.pause();
+        sh.clock.set(t_good);
+        let new_serial = sh.serial.fetch_add(1, Ordering::AcqRel) + 1;
+        sh.vpkts.push_many(new_serial, remaining);
+        let kept_audio = audio.into_iter().filter(|item| match item {
+            None => true,
+            Some(ap) => {
+                let tb = time_base.get(ap.stream_index()).copied().unwrap_or(0.0);
+                packet_media_time(ap.as_ptr() as *const ff::AVPacket, tb, origin)
+                    .is_none_or(|t| t >= t_good - 0.5)
+            }
+        });
+        sh.apkts.push_many(new_serial, kept_audio);
+        return JumpResult::QueueResumed {
+            t_good,
+            last_ts,
+            eof: queue_eof,
+        };
+    }
+
+    if queue_eof || is_restart {
+        return JumpResult::EndOfFile;
+    }
+
+    let search = {
+        let kfs = input.video_keyframes_after(video_index, frontier_dts, frontier_pos);
+        let mut probe = DamageProbe {
+            sh,
+            input,
+            bsf,
+            video_index,
+            video_tb,
+            origin,
+            shift,
+            pkt,
+        };
+        if !kfs.is_empty() {
+            probe.find_indexed(&kfs)
+        } else {
+            let start_t = frontier_time.unwrap_or_else(|| sh.clock.now());
+            probe.find_by_time(start_t)
+        }
+    };
+
+    let t_good = match search {
+        SearchKey::Indexed { raw_ts, media_time } => {
+            *lock(&sh.jump) = Some((Instant::now(), true));
+            if let Some(net) = &sh.net {
+                net.expect_first_read();
+            }
+            if input.seek_video_timestamp(video_index, raw_ts).is_err() {
+                return JumpResult::EndOfFile;
+            }
+            media_time
+        }
+        SearchKey::ByTime { media_time } => {
+            *lock(&sh.jump) = Some((Instant::now(), true));
+            if let Some(net) = &sh.net {
+                net.expect_first_read();
+            }
+            if input.seek((media_time - 0.01).max(0.0)).is_err() {
+                return JumpResult::EndOfFile;
+            }
+            media_time
+        }
+        SearchKey::EndOfFile => return JumpResult::EndOfFile,
+        SearchKey::Aborted => return JumpResult::Aborted,
+    };
+
+    sh.vpkts.clear();
+    sh.apkts.clear();
+    sh.frames().clear();
+    *lock(&sh.seek_floor) = None;
+    sh.buffering.store(true, Ordering::Release);
+    sh.serial.fetch_add(1, Ordering::AcqRel);
+    JumpResult::Seeked { t_good }
+}
+
 /// The server's transcoding stream asked for again from `at`, with the streams `current`
 /// has (the decoders were made for those).
 fn reopen(restart: &Restart, current: &Input, at: f64, quit: Arc<AtomicBool>) -> Result<Input> {
@@ -1071,6 +1681,46 @@ fn video_thread(sh: Arc<Shared>, mut dec: Decoder, cap: usize) {
         loop {
             let accepted = match dec.send(pkt_ptr) {
                 Ok(a) => a,
+                Err(e) if e.is_annexb_refused() && !pkt_ptr.is_null() => {
+                    log::info!(
+                        "video: bitstream filter refused packet; jumping over damaged stretch"
+                    );
+                    // SAFETY: `pkt_ptr` is valid for the duration of this loop.
+                    let (pos, dts) = unsafe { ((*pkt_ptr).pos, packet_dts_or_pts(pkt_ptr)) };
+                    let time = packet_media_time(pkt_ptr, crate::q2d(dec.time_base), dec.origin);
+                    {
+                        let mut frames = sh.frames();
+                        let mut c = sh.ctl();
+                        if sh.serial() == serial && c.seek.is_none() && c.skip_damaged.is_none() {
+                            // Clear pre-damage queued frames (keeping `current` shown)
+                            // so `current_frame` keeps `buffering`/`skipping_damaged`
+                            // active until the post-jump keyframe is decoded.
+                            frames.clear();
+                            sh.buffering.store(true, Ordering::Release);
+                            sh.skipping_damaged.store(true, Ordering::Release);
+                            sh.damaged_jumps.fetch_add(1, Ordering::AcqRel);
+                            sh.damaged_skipped.store(0, Ordering::Release);
+                            sh.clock.pause();
+                            c.skip_damaged = Some(DamageSkip {
+                                serial,
+                                pos,
+                                dts,
+                                time,
+                            });
+                        }
+                    }
+                    sh.ctl_cv.notify_all();
+                    sh.frames_cv.notify_all();
+                    let mut c = sh.ctl();
+                    while !sh.quit.load(Ordering::Acquire) && sh.serial() == serial {
+                        c = sh
+                            .ctl_cv
+                            .wait_timeout(c, Duration::from_millis(20))
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .0;
+                    }
+                    break;
+                }
                 Err(e) => {
                     log::warn!("video decode: {e}");
                     end_after_error();
@@ -1722,5 +2372,435 @@ mod tests {
             f.is_some() && p.state() == PlayerState::Playing
         });
         assert!(p.position() < 0.5);
+    }
+
+    fn be32(b: &[u8]) -> u32 {
+        u32::from_be_bytes(b[..4].try_into().unwrap())
+    }
+
+    fn put_be32(out: &mut Vec<u8>, v: u32) {
+        out.extend_from_slice(&v.to_be_bytes());
+    }
+
+    fn box_wrap(tag: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(8 + body.len());
+        put_be32(&mut out, (8 + body.len()) as u32);
+        out.extend_from_slice(tag);
+        out.extend_from_slice(body);
+        out
+    }
+
+    fn iter_boxes(mut buf: &[u8]) -> Vec<([u8; 4], &[u8])> {
+        let mut out = Vec::new();
+        while buf.len() >= 8 {
+            let sz = be32(buf) as usize;
+            assert!(sz >= 8 && sz <= buf.len(), "bad box size {sz}");
+            let tag: [u8; 4] = buf[4..8].try_into().unwrap();
+            out.push((tag, &buf[8..sz]));
+            buf = &buf[sz..];
+        }
+        out
+    }
+
+    fn scale_be32_in_box(body: &mut [u8], body_off: usize, factor: u32) {
+        let v = be32(&body[body_off..body_off + 4]);
+        body[body_off..body_off + 4].copy_from_slice(&(v * factor).to_be_bytes());
+    }
+
+    fn rebuild_stbl(body: &[u8], repeats: u32, payload_len: u32) -> Vec<u8> {
+        let boxes = iter_boxes(body);
+        let sample_count = boxes
+            .iter()
+            .find(|(t, _)| t == b"stsz")
+            .map(|(_, b)| be32(&b[8..12]))
+            .unwrap();
+        let chunk_count = boxes
+            .iter()
+            .find(|(t, _)| t == b"stco")
+            .map(|(_, b)| be32(&b[4..8]))
+            .unwrap();
+        let mut out = Vec::new();
+        for (tag, b) in boxes {
+            let mut nb = Vec::new();
+            match &tag {
+                b"stts" => {
+                    let entries = be32(&b[4..8]);
+                    nb.extend_from_slice(&b[..4]);
+                    if entries == 1 {
+                        put_be32(&mut nb, 1);
+                        put_be32(&mut nb, be32(&b[8..12]) * repeats);
+                        nb.extend_from_slice(&b[12..16]);
+                    } else {
+                        put_be32(&mut nb, entries * repeats);
+                        for _ in 0..repeats {
+                            nb.extend_from_slice(&b[8..]);
+                        }
+                    }
+                }
+                b"stss" => {
+                    let entries = be32(&b[4..8]);
+                    nb.extend_from_slice(&b[..4]);
+                    put_be32(&mut nb, entries * repeats);
+                    for r in 0..repeats {
+                        for k in 0..entries as usize {
+                            let s = be32(&b[8 + k * 4..]);
+                            put_be32(&mut nb, s + r * sample_count);
+                        }
+                    }
+                }
+                b"ctts" => {
+                    let entries = be32(&b[4..8]);
+                    nb.extend_from_slice(&b[..4]);
+                    put_be32(&mut nb, entries * repeats);
+                    for _ in 0..repeats {
+                        nb.extend_from_slice(&b[8..]);
+                    }
+                }
+                b"stsc" => {
+                    let entries = be32(&b[4..8]);
+                    nb.extend_from_slice(&b[..4]);
+                    put_be32(&mut nb, entries * repeats);
+                    for r in 0..repeats {
+                        for k in 0..entries as usize {
+                            let off = 8 + k * 12;
+                            put_be32(&mut nb, be32(&b[off..]) + r * chunk_count);
+                            nb.extend_from_slice(&b[off + 4..off + 12]);
+                        }
+                    }
+                }
+                b"stsz" => {
+                    let sample_sz = be32(&b[4..8]);
+                    nb.extend_from_slice(&b[..4]);
+                    put_be32(&mut nb, sample_sz);
+                    put_be32(&mut nb, sample_count * repeats);
+                    if sample_sz == 0 {
+                        for _ in 0..repeats {
+                            nb.extend_from_slice(&b[12..]);
+                        }
+                    }
+                }
+                b"stco" => {
+                    nb.extend_from_slice(&b[..4]);
+                    put_be32(&mut nb, chunk_count * repeats);
+                    for r in 0..repeats {
+                        for k in 0..chunk_count as usize {
+                            let c = be32(&b[8 + k * 4..]);
+                            put_be32(&mut nb, c + r * payload_len);
+                        }
+                    }
+                }
+                b"sgpd" | b"sbgp" => continue,
+                _ => nb.extend_from_slice(b),
+            }
+            out.extend_from_slice(&box_wrap(&tag, &nb));
+        }
+        out
+    }
+
+    fn rebuild_tree(tag: &[u8; 4], body: &[u8], repeats: u32, payload_len: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (child, b) in iter_boxes(body) {
+            let new_body = match &child {
+                b"trak" | b"edts" | b"mdia" | b"minf" => {
+                    rebuild_tree(&child, b, repeats, payload_len)
+                }
+                b"stbl" => rebuild_stbl(b, repeats, payload_len),
+                b"mvhd" | b"mdhd" => {
+                    let mut v = b.to_vec();
+                    scale_be32_in_box(&mut v, 16, repeats);
+                    v
+                }
+                b"tkhd" => {
+                    let mut v = b.to_vec();
+                    scale_be32_in_box(&mut v, 20, repeats);
+                    v
+                }
+                b"elst" => {
+                    let mut v = b.to_vec();
+                    scale_be32_in_box(&mut v, 8, repeats);
+                    v
+                }
+                _ => b.to_vec(),
+            };
+            out.extend_from_slice(&box_wrap(&child, &new_body));
+        }
+        let _ = tag;
+        out
+    }
+
+    struct HoleSource {
+        prefix: Vec<u8>,
+        payload: Vec<u8>,
+        moov: Vec<u8>,
+        repeats: u64,
+        holes: Vec<(u64, u64)>,
+        bytes_read: AtomicU64,
+        read_calls: AtomicU64,
+        last_end: Mutex<u64>,
+        seeks: AtomicU64,
+        gate: Option<(u64, Arc<AtomicBool>)>,
+    }
+
+    impl HoleSource {
+        fn build(repeats: u32, keep_audio: bool, holes: Vec<(u64, u64)>) -> (Arc<Self>, u64) {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/data/h264_aac_180_LR.mp4");
+            let raw = std::fs::read(&path).unwrap();
+            let top = iter_boxes(&raw);
+            let mdat_idx = top.iter().position(|(t, _)| t == b"mdat").unwrap();
+            let prefix_end: usize = top[..mdat_idx].iter().map(|(_, b)| 8 + b.len()).sum();
+            let payload = top[mdat_idx].1.to_vec();
+            let payload_len = payload.len() as u64;
+            let total_mdat_len = 8 + repeats as u64 * payload_len;
+            assert!(u32::try_from(total_mdat_len).is_ok());
+
+            let mut prefix = Vec::with_capacity(prefix_end + 8);
+            prefix.extend_from_slice(&raw[..prefix_end]);
+            put_be32(&mut prefix, total_mdat_len as u32);
+            prefix.extend_from_slice(b"mdat");
+
+            let moov_orig = top.iter().find(|(t, _)| t == b"moov").unwrap().1;
+            let mut moov_body = Vec::new();
+            for (child, b) in iter_boxes(moov_orig) {
+                if &child == b"trak" && !keep_audio {
+                    let mdia = iter_boxes(b)
+                        .into_iter()
+                        .find(|(t, _)| t == b"mdia")
+                        .unwrap()
+                        .1;
+                    let hdlr = iter_boxes(mdia)
+                        .into_iter()
+                        .find(|(t, _)| t == b"hdlr")
+                        .unwrap()
+                        .1;
+                    if &hdlr[8..12] != b"vide" {
+                        continue;
+                    }
+                }
+                let rebuilt = match &child {
+                    b"trak" => rebuild_tree(b"trak", b, repeats, payload_len as u32),
+                    b"mvhd" => {
+                        let mut v = b.to_vec();
+                        scale_be32_in_box(&mut v, 16, repeats);
+                        v
+                    }
+                    _ => b.to_vec(),
+                };
+                moov_body.extend_from_slice(&box_wrap(&child, &rebuilt));
+            }
+            let moov = box_wrap(b"moov", &moov_body);
+
+            let src = Arc::new(Self {
+                prefix,
+                payload,
+                moov,
+                repeats: repeats as u64,
+                holes,
+                bytes_read: AtomicU64::new(0),
+                read_calls: AtomicU64::new(0),
+                last_end: Mutex::new(0),
+                seeks: AtomicU64::new(0),
+                gate: None,
+            });
+            (src, payload_len)
+        }
+
+        fn total_len(&self) -> u64 {
+            self.prefix.len() as u64
+                + self.repeats * self.payload.len() as u64
+                + self.moov.len() as u64
+        }
+
+        fn raw_byte(&self, off: u64) -> u8 {
+            let plen = self.prefix.len() as u64;
+            if off < plen {
+                return self.prefix[off as usize];
+            }
+            let moff = off - plen;
+            let mdat_bytes = self.repeats * self.payload.len() as u64;
+            if moff < mdat_bytes {
+                return self.payload[(moff % self.payload.len() as u64) as usize];
+            }
+            self.moov[(moff - mdat_bytes) as usize]
+        }
+    }
+
+    impl ByteSource for HoleSource {
+        fn size(&self) -> Option<u64> {
+            Some(self.total_len())
+        }
+
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
+            if let Some((gate_off, open)) = &self.gate
+                && offset >= *gate_off
+                && offset < self.prefix.len() as u64 + self.repeats * self.payload.len() as u64
+            {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !open.load(Ordering::Acquire) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            let end = self.total_len();
+            if offset >= end || buf.is_empty() {
+                return Ok(0);
+            }
+            let n = buf.len().min((end - offset) as usize);
+            {
+                let mut prev = lock(&self.last_end);
+                if *prev != 0 && offset != *prev {
+                    self.seeks.fetch_add(1, Ordering::Relaxed);
+                }
+                *prev = offset + n as u64;
+            }
+            self.read_calls.fetch_add(1, Ordering::Relaxed);
+            self.bytes_read.fetch_add(n as u64, Ordering::Relaxed);
+            for (i, dst) in buf[..n].iter_mut().enumerate() {
+                let off = offset + i as u64;
+                if self.holes.iter().any(|&(s, e)| off >= s && off < e) {
+                    *dst = 0;
+                } else {
+                    *dst = self.raw_byte(off);
+                }
+            }
+            Ok(n)
+        }
+
+        fn describe(&self) -> String {
+            "virtual repeated MP4 with zeroed holes".to_string()
+        }
+    }
+
+    #[test]
+    fn queue_hole_jumps_without_reading_through_or_falling_back() {
+        // 4 repeats = 8 s (8 keyframes at 0..7 s), with audio preserved.
+        // Zero out repeat 1 (t = 2.0..4.0 s) while allowing read-ahead to buffer
+        // past t = 4.0 s before unpausing, so the jump resolves from `sh.vpkts`.
+        let (_, payload_len) = HoleSource::build(1, true, vec![]);
+        let (src, _) = HoleSource::build(4, true, vec![(48 + payload_len, 48 + 2 * payload_len)]);
+        let p = Player::open(
+            src.clone(),
+            "queue_hole.mp4",
+            PlayerConfig {
+                start_paused: true,
+                check_annexb: true,
+                read_ahead_secs: 6.0,
+                read_ahead_bytes: 4 * 1024 * 1024,
+                ..cfg()
+            },
+            |_| Tracks::default(),
+        )
+        .unwrap();
+        // Wait for the opening frame and for read-ahead to buffer beyond the
+        // hole (t > 4.0 s).
+        run(&p, 3.0, |p, f| {
+            f.is_some() && p.state() == PlayerState::Paused && p.stats().read_ahead.0 >= 4.5
+        });
+        let seeks_before_play = src.seeks.load(Ordering::Relaxed);
+        p.play();
+
+        let shown = run(&p, 8.0, |p, _| p.state() == PlayerState::Ended);
+        assert_eq!(p.state(), PlayerState::Ended, "err={:?}", p.error());
+        assert_eq!(p.error(), None);
+        assert!(!p.is_skipping_damaged());
+        assert_eq!(p.stats().damaged_jumps, 1);
+        let skipped = p.stats().damaged_skipped;
+        assert!((skipped - 2.0).abs() < 0.2, "skipped {skipped:.3} s");
+        assert_eq!(src.seeks.load(Ordering::Relaxed), seeks_before_play);
+        assert!(
+            shown.iter().any(|&t| (t - 4.0).abs() < 0.2),
+            "expected resume near 4.0 s, got {shown:?}"
+        );
+    }
+
+    #[test]
+    fn large_hole_jumps_with_growing_steps_and_lands_on_first_good_keyframe() {
+        // 300 repeats = 600 s (10 minutes, ~118 MB virtual mdat, 600 keyframes).
+        // Corrupt [4 s .. 501 s) (~98 MB, 497 keyframes) so the hole far exceeds
+        // read-ahead and ends right before keyframe at t = 501.0 s.
+        let (_, payload_len) = HoleSource::build(1, false, vec![]);
+        let hole_start = 48 + 2 * payload_len;
+        let first_good_kf_pos = 210_840 + 250 * payload_len;
+        let hole_len = first_good_kf_pos - hole_start;
+        let (src, _) = HoleSource::build(300, false, vec![(hole_start, first_good_kf_pos)]);
+
+        let p = Player::open(
+            src.clone(),
+            "ten_min_hole.mp4",
+            PlayerConfig {
+                check_annexb: true,
+                read_ahead_secs: 2.0,
+                read_ahead_bytes: 512 * 1024,
+                ..cfg()
+            },
+            |_| Tracks::default(),
+        )
+        .unwrap();
+
+        let shown = run(&p, 12.0, |_, f| f.is_some_and(|f| f.pts >= 501.2));
+        let post_jump = shown
+            .iter()
+            .copied()
+            .find(|&t| t >= 500.0)
+            .expect("resumed after hole");
+        assert!(
+            (post_jump - 501.0).abs() < 0.15,
+            "must step back to first good keyframe (501.0 s), landed on {post_jump:.3} s; shown={shown:?}"
+        );
+        assert_eq!(p.error(), None);
+        assert!(!p.is_skipping_damaged());
+        assert_eq!(p.stats().damaged_jumps, 1);
+        let skipped = p.stats().damaged_skipped;
+        assert!((skipped - 497.0).abs() < 0.5, "skipped {skipped:.3} s");
+
+        let bytes_read = src.bytes_read.load(Ordering::Relaxed);
+        let read_calls = src.read_calls.load(Ordering::Relaxed);
+        let seeks = src.seeks.load(Ordering::Relaxed);
+        assert!(
+            seeks <= 25,
+            "expected growing-step + step-back seeks, got {seeks} (calls={read_calls}, bytes={bytes_read})"
+        );
+        assert!(
+            bytes_read < hole_len / 10,
+            "jumped {hole_len} B hole reading {bytes_read} B total (calls={read_calls}, seeks={seeks})"
+        );
+    }
+
+    #[test]
+    fn trailing_hole_to_eof_ends_cleanly_and_reports_skipping_while_jumping() {
+        // 20 repeats = 40 s; trailing hole from 2 s to EOF, gated after 2 MB so
+        // the viewer's `is_skipping_damaged()` flag is observable live.
+        let (_, payload_len) = HoleSource::build(1, false, vec![]);
+        let hole_start = 48 + payload_len;
+        let hole_end = 48 + 20 * payload_len;
+        let (mut src, _) = HoleSource::build(20, false, vec![(hole_start, hole_end)]);
+        let gate_open = Arc::new(AtomicBool::new(false));
+        Arc::get_mut(&mut src).unwrap().gate = Some((48 + 4 * payload_len, gate_open.clone()));
+
+        let p = Player::open(
+            src.clone(),
+            "trailing_hole.mp4",
+            PlayerConfig {
+                check_annexb: true,
+                read_ahead_secs: 1.5,
+                read_ahead_bytes: 256 * 1024,
+                ..cfg()
+            },
+            |_| Tracks::default(),
+        )
+        .unwrap();
+
+        run(&p, 6.0, |p, _| p.is_skipping_damaged());
+        assert!(
+            p.is_skipping_damaged(),
+            "expected skipping_damaged while jump in flight"
+        );
+        assert!(p.stats().skipping_damaged);
+        gate_open.store(true, Ordering::Release);
+
+        run(&p, 6.0, |p, _| p.state() == PlayerState::Ended);
+        assert_eq!(p.state(), PlayerState::Ended, "err={:?}", p.error());
+        assert_eq!(p.error(), None);
+        assert!(!p.is_skipping_damaged());
+        assert_eq!(p.stats().damaged_jumps, 1);
     }
 }

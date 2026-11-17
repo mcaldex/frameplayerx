@@ -728,6 +728,7 @@ toast-beginning = Anfang
 toast-last-chapter = Letztes Kapitel
 toast-no-subtitles = Keine Untertitel in diesem Video
 toast-subtitles-off = Untertitel aus
+player-skipping-damaged = Beschädigtes Video wird übersprungen…
 size-kb = { $n } kB
 date-short = { $day }. { $month ->
      [1] Jan.
@@ -943,6 +944,11 @@ perf-first-read = erstes Lesen { $secs } s
 perf-memory = Speicher
 perf-memory-value = { $used } von { $total } GB
 notice-not-in-library = Anpassungen gelten, bis Sie dieses Video schließen (es ist nicht in der Bibliothek).
+notice-damaged =
+    { $count ->
+        [one] Ein Teil dieser Datei lässt sich nicht lesen, etwa wo ein Download noch nicht fertig ist: Die Wiedergabe hat ihn übersprungen, { $time } Video.
+       *[other] Teile dieser Datei lassen sich nicht lesen, etwa wo ein Download noch nicht fertig ist: Die Wiedergabe hat { $count } davon übersprungen, insgesamt { $time } Video.
+    }
 transcode-cannot-play = Diese Datei kann hier nicht abgespielt werden: Der Server transkodiert sie in { $quality }
 bookmark-name = Lesezeichen { $time }
 decoder-why-none = keine Hardware-Dekodierung für { $stream }
@@ -963,6 +969,7 @@ decoder-pill-too-big = Zu groß für Hardware
 decoder-pill-refused = Vom Decoder abgelehnt
 notice-pill-transcoding = Transkodierung
 notice-pill-not-saved = Nicht gespeichert
+notice-pill-damaged = Beschädigtes Video
 player-error-pill = Wiedergabefehler
 decoder-notice-refused = Der Hardware-Decoder kann dieses { $stream } ({ $size }) nicht abspielen, daher ruckelt es in Software
 open-not-inserted = Dieses Video liegt auf einer microSD-Karte oder einem USB-Laufwerk, das nicht eingesteckt ist.
