@@ -2239,7 +2239,9 @@ fn track_list(
     widgets::section_label(&mut ui, label);
     widgets::card(&mut ui, |ui| {
         let salt = (label, video);
-        let fresh = egui::scroll_area::State::load(ui.ctx(), ui.make_persistent_id(salt)).is_none();
+        // `id_salt` files the area's state under the salt made an `Id`.
+        let id = ui.make_persistent_id(egui::Id::new(salt));
+        let fresh = egui::scroll_area::State::load(ui.ctx(), id).is_none();
         egui::ScrollArea::vertical()
             .id_salt(salt)
             .auto_shrink([false, true])
@@ -2564,6 +2566,22 @@ mod tests {
             collect_texts(&cs.shape, &mut texts);
         }
         texts
+    }
+
+    #[test]
+    fn a_track_list_scrolls_to_the_track_in_use_only_when_first_shown() {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut fresh = Vec::new();
+        for _ in 0..3 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let rect = ui.max_rect();
+                    track_list(ui, rect, "Subtitles", "Video", |_, first| fresh.push(first));
+                });
+            });
+        }
+        assert_eq!(fresh, [true, false, false]);
     }
 
     #[test]
