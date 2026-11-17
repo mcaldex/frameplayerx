@@ -805,8 +805,8 @@ impl Renderer {
         if let Some(hist) = self.peak.as_mut().and_then(|p| p.take(self.current)) {
             self.hdr_peak.add(&hist);
         }
-        if let Some((scores, aim)) = self.focus.as_mut().and_then(|f| f.take(self.current)) {
-            self.comfort_focus.ingest(&scores, aim);
+        if let Some((scores, aim, lat)) = self.focus.as_mut().and_then(|f| f.take(self.current)) {
+            self.comfort_focus.ingest(&scores, aim, lat);
         }
         if let Some(t) = self.timer.as_mut() {
             // Read before `begin` resets the queries for this frame.
@@ -1584,7 +1584,7 @@ impl Renderer {
                 p.focus.x = lon;
                 p.focus.y = lat;
                 self.focus_measured_at = Some(now);
-                measure = Some(aim);
+                measure = Some((aim, lat));
             }
             // The measurement reads the video as filmed, without it.
             params::set_comfort_focus(&mut p, focus.relief, focus.distance, offsets, up);
@@ -1792,8 +1792,8 @@ impl Renderer {
                 );
             }
         }
-        if let Some(aim) = measure {
-            self.record_focus(slot_idx, tp10, aim);
+        if let Some((aim, lat)) = measure {
+            self.record_focus(slot_idx, tp10, aim, lat);
         }
         Ok(())
     }
@@ -1801,7 +1801,7 @@ impl Renderer {
     /// Draws comfort focus's samples round `aim` (`fs_focus`) with the eye
     /// passes' own pipeline layout and bindings, so they read the frame as
     /// the eye passes just did, then matches them.
-    fn record_focus(&mut self, slot_idx: usize, tp10: bool, aim: Vec3) {
+    fn record_focus(&mut self, slot_idx: usize, tp10: bool, aim: Vec3, lat: f32) {
         let cmd = self.slots[slot_idx].cmd;
         let Some(focus) = self.focus.as_mut() else {
             return;
@@ -1860,7 +1860,7 @@ impl Renderer {
             d.cmd_draw(cmd, 3, 1, 0, 0);
             d.cmd_end_rendering(cmd);
         }
-        focus.record(&self.gpu, cmd, slot_idx, aim);
+        focus.record(&self.gpu, cmd, slot_idx, aim, lat);
     }
 
     /// Ends recording and submits the frame.

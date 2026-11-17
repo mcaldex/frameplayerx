@@ -124,10 +124,12 @@ const COMPUTE_READ: (vk::PipelineStageFlags2, vk::AccessFlags2) = (
     vk::AccessFlags2::SHADER_SAMPLED_READ,
 );
 
-/// The aim's longitude and latitude in the room frame the video is centred
-/// in, as `fs_focus` lays its lattice out.
+/// The aim's longitude and latitude in the video's own frame, its Position
+/// corrections applied, where its cameras sit side by side: `fs_focus` lays
+/// its lattice out there, so its rows run along the video's disparity.
 pub(crate) fn aim_angles(scene: &SceneParams, aim: Vec3) -> Option<[f32; 2]> {
-    let d = scene.anchor_inv.transform_vector3(aim).try_normalize()?;
+    let room = scene.anchor_inv.transform_vector3(aim);
+    let d = scene.correction.transform_vector3(room).try_normalize()?;
     Some([d.x.atan2(-d.z), d.y.clamp(-1.0, 1.0).asin()])
 }
 
@@ -135,8 +137,10 @@ struct SlotFocus {
     samples: Image,
     scores: Buffer,
     set: vk::DescriptorSet,
-    /// Where the measurement recorded in this slot aimed, in the play space.
+    /// Where the measurement recorded in this slot aimed, in the play space,
+    /// and the lattice's latitude there.
     aim: Vec3,
+    lat: f32,
     pending: bool,
 }
 
@@ -296,6 +300,7 @@ impl FocusPass {
             scores,
             set,
             aim: Vec3::NEG_Z,
+            lat: 0.0,
             pending: false,
         })
     }
@@ -323,7 +328,7 @@ impl FocusPass {
 
     /// Matches the samples drawn for `slot`, which aimed at `aim` (play
     /// space), for reading back once the slot's fence has signalled.
-    pub fn record(&mut self, gpu: &Gpu, cmd: vk::CommandBuffer, slot: usize, aim: Vec3) {
+    pub fn record(&mut self, gpu: &Gpu, cmd: vk::CommandBuffer, slot: usize, aim: Vec3, lat: f32) {
         let Some(s) = self.slots.get_mut(slot) else {
             return;
         };
@@ -364,17 +369,18 @@ impl FocusPass {
             );
         }
         s.aim = aim;
+        s.lat = lat;
         s.pending = true;
     }
 
     /// Reads the per-patch scores (`PATCHES * CANDIDATES` `(score, std)`
     /// pairs) and where they aimed from `slot` once its fence has signalled.
-    pub fn take(&mut self, slot: usize) -> Option<(Vec<[f32; 2]>, Vec3)> {
+    pub fn take(&mut self, slot: usize) -> Option<(Vec<[f32; 2]>, Vec3, f32)> {
         let s = self.slots.get_mut(slot)?;
         if !std::mem::take(&mut s.pending) {
             return None;
         }
-        let aim = s.aim;
+        let (aim, lat) = (s.aim, s.lat);
         let bytes = s.scores.bytes();
         if bytes.len() < PATCHES * CANDIDATES * 8 {
             return None;
@@ -388,7 +394,7 @@ impl FocusPass {
                 ]
             })
             .collect();
-        Some((out, aim))
+        Some((out, aim, lat))
     }
 
     pub fn discard(&mut self) {
@@ -566,10 +572,11 @@ impl ComfortFocus {
         *self = Self::default();
     }
 
-    /// Takes the read-back patch scores of a completed frame and where they
-    /// aimed (play space).
-    pub fn ingest(&mut self, scores: &[[f32; 2]], aim: Vec3) {
-        self.pending = Some((aim_kappa(scores), aim));
+    /// Takes the read-back patch scores of a completed frame, where they
+    /// aimed (play space) and the lattice's latitude there: its steps of
+    /// longitude span `cos(lat)` of their angle.
+    pub fn ingest(&mut self, scores: &[[f32; 2]], aim: Vec3, lat: f32) {
+        self.pending = Some((aim_kappa(scores).map(|k| k * lat.cos()), aim));
     }
 
     /// Advances to `now` with the eyes on `aim` (play space).
@@ -735,7 +742,7 @@ mod tests {
         (0..frames)
             .map(|_| {
                 *t += FRAME;
-                cf.ingest(scores, aim);
+                cf.ingest(scores, aim, 0.0);
                 cf.step(*t, aim)
             })
             .collect()

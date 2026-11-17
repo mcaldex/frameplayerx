@@ -458,10 +458,10 @@ fn shade(in: VsOut, comfort: bool) -> vec4<f32> {
 // Comfort focus's samples (src/focus.rs, matched by focus.wgsl), drawn into a
 // small float target with the eye passes' own bindings, so any frame they
 // can read is measured too. For each patch of a 3 x 3 cluster round the aim,
-// a strip of each eye's luma on a lattice of room-frame longitude and
-// latitude FOCUS_STEP apart: turning a ray about the room's vertical, as the
-// depth setting does, moves it along a row, so a disparity is a shift along
-// the rows. Each sample is the mean of 2 x 2 taps over its cell, a box
+// a strip of each eye's luma on a lattice of the video's own longitude and
+// latitude FOCUS_STEP apart, its Position corrections undone: the cameras
+// sit side by side there, so a disparity is a shift along the rows, of
+// cos(lat) of its angle (`ComfortFocus::ingest`). Each sample is the mean of 2 x 2 taps over its cell, a box
 // filter so the comparison sees the same detail in both pictures. Rows: patch
 // after patch, FOCUS_ROWS each; columns: the left eye's strip, then the
 // right's, FOCUS_COLS each. A sample off the picture is -1.
@@ -474,8 +474,13 @@ const FOCUS_RIGHT0: i32 = -39;
 const FOCUS_GRID_X: f32 = 0.06;
 const FOCUS_GRID_Y: f32 = 0.05;
 
+// A lattice direction in the video's own frame, where its cameras sit side
+// by side, turned back by its Position corrections into the frame
+// `video_uv` takes: the rows run along the video's disparity.
 fn lattice(lon: f32, lat: f32) -> vec3<f32> {
-    return vec3<f32>(cos(lat) * sin(lon), sin(lat), -cos(lat) * cos(lon));
+    let v = vec3<f32>(cos(lat) * sin(lon), sin(lat), -cos(lat) * cos(lon));
+    let c = params.correction;
+    return transpose(mat3x3<f32>(c[0].xyz, c[1].xyz, c[2].xyz)) * v;
 }
 
 @fragment
