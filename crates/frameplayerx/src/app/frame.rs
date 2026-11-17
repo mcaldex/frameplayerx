@@ -43,10 +43,9 @@ impl App {
         }
     }
 
-    /// The panel the keyboard types into: the library or adjust panel with
-    /// a text field in focus.
+    /// The visible panel with a text field in focus.
     pub(super) fn keyboard_target(&self) -> Option<usize> {
-        [MAIN, ADJUST]
+        [MAIN, ADJUST, TRACKS]
             .into_iter()
             .find(|&i| self.panels[i].visible && self.panels[i].wants_keyboard())
     }
@@ -89,7 +88,10 @@ impl App {
             _ => room,
         };
         let grab = grab.and_then(|(panel, hand)| match panel {
-            KEYBOARD => self.keyboard_target().map(|t| (t, hand)),
+            KEYBOARD => self.keyboard_target().map(|t| {
+                let panel = if t == TRACKS { BAR } else { t };
+                (panel, hand)
+            }),
             MAIN | ADJUST | PERF => Some((panel, hand)),
             BAR | TRACKS if self.playback.is_some() => Some((BAR, hand)),
             _ => None,
@@ -434,7 +436,17 @@ impl App {
             None => (anchor, [0.0, 0.0]),
         };
         let kb_anchor = place_around(kb_from, ky, kp, 0.0, 0.0);
-        self.panels[KEYBOARD].pose = place(kb_anchor, 0.0, 0.95, -0.55, 35.0);
+        self.panels[KEYBOARD].pose = if kb_target == Some(TRACKS) {
+            let bar = &self.panels[BAR];
+            bar.pose
+                * Mat4::from_translation(Vec3::new(
+                    0.0,
+                    -(bar.size.y + self.panels[KEYBOARD].size.y) / 2.0,
+                    0.03,
+                ))
+        } else {
+            place(kb_anchor, 0.0, 0.95, -0.55, 35.0)
+        };
         // From the same point as the library panel, so it stays in the room or
         // follows along with the menus.
         let start = perf_start_yaw(
@@ -544,6 +556,9 @@ impl App {
             let r = panels[idx].paint(renderer, input.time, |ctx| match idx {
                 MAIN => ui::library::browser(ctx, &mut view),
                 BAR => ui::player::control_bar(ctx, &mut view),
+                TRACKS if view.state.subtitle_search.is_some() => {
+                    ui::subtitle_search::panel(ctx, &mut view);
+                }
                 TRACKS => ui::player::tracks_panel(ctx, &mut view),
                 TOAST => ui::player::toast_panel(ctx, &mut view),
                 _ => ui::player::adjust_panel(ctx, &mut view),
@@ -554,6 +569,9 @@ impl App {
         }
         for a in actions {
             self.apply(a);
+        }
+        if !self.ui.tracks_open || !self.ui_visible || self.show_browser {
+            self.close_subtitle_search();
         }
         self.sync_settings();
     }

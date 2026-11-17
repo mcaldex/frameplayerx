@@ -114,6 +114,8 @@ pub struct Playback {
     pub markers: Vec<Marker>,
     pub subtitle_files: Vec<SubtitleFile>,
     pub active_subtitle_file: Option<usize>,
+    pub managed_subtitles: Vec<fp_library::UserSubtitle>,
+    pub subtitle_signature: fp_library::OriginalSubtitleSignature,
     /// The subtitles Subtitles on / off last turned off, to turn back on.
     pub last_subtitles: Option<Pick>,
     /// The audio and subtitles picked for this video in the player (see
@@ -430,7 +432,7 @@ pub fn open(
     if !wait_closed(CLOSE_WAIT) {
         log::warn!("previous video still closing; opening anyway");
     }
-    let (script_locs, subs) = sidecars(
+    let (script_locs, mut subs) = sidecars(
         &location,
         &name,
         entry.as_ref(),
@@ -442,6 +444,50 @@ pub fn open(
         .as_ref()
         .map(|r| r.tracks.clone())
         .unwrap_or_default();
+    let managed_subtitles = record.as_ref().map_or_else(Vec::new, |r| {
+        library.user_subtitles(r.id).unwrap_or_else(|err| {
+            log::warn!("reading subtitle downloads: {err}");
+            Vec::new()
+        })
+    });
+    let mut original = subtitle_signature(
+        &location,
+        entry
+            .as_ref()
+            .and_then(|e| e.size)
+            .or_else(|| record.as_ref().and_then(|r| r.size)),
+        entry
+            .as_ref()
+            .and_then(|e| e.modified)
+            .or_else(|| record.as_ref().and_then(|r| r.mtime)),
+    );
+    if managed_subtitles.iter().any(|s| {
+        s.original_signature
+            .as_ref()
+            .is_some_and(|s| s.moviehash.is_some())
+    }) && let Some(file) = local_subtitle_original(&location)
+        && let Ok(Some(hash)) = fp_sources::media_identity::movie_hash(
+            &file,
+            Instant::now() + Duration::from_secs(1),
+            || false,
+        )
+    {
+        original.moviehash = Some(hash.hash);
+    }
+    let mut eligible: Vec<usize> = (0..subs.len()).collect();
+    for attachment in &managed_subtitles {
+        let file = attachment.as_file();
+        let present = opener.open(&file.location).is_ok();
+        let changed = attachment
+            .original_signature
+            .as_ref()
+            .is_some_and(|signature| signature.differs_from(&original));
+        if present && !changed {
+            eligible.push(subs.len());
+        }
+        subs.push(file);
+    }
+    let starting_files: Vec<_> = eligible.iter().map(|&i| subs[i].clone()).collect();
     let source_tracks = source
         .as_ref()
         .filter(|s| s.kind() == fp_sources::SourceKind::Plex)
@@ -477,10 +523,25 @@ pub fn open(
                 settings.subtitles,
                 &settings.subtitle_language,
                 info,
-                &subs,
+                &starting_files,
                 &name,
             );
-            if let Some(id) = req.source_subtitle.as_deref() {
+            if let Pick::File(i) = pick {
+                pick = Pick::File(eligible[i]);
+            }
+            // A local file picked for this video beats the server subtitle a
+            // request carries over.
+            let explicit_local = match (pick, &picked.subtitles) {
+                (Pick::File(i), Some(fp_library::PickedSubtitles::File(location))) => {
+                    let file = &subs[i].location;
+                    file == location
+                        && !source_tracks
+                            .iter()
+                            .any(|t| t.subtitle && t.location.as_ref() == Some(file))
+                }
+                _ => false,
+            };
+            if !explicit_local && let Some(id) = req.source_subtitle.as_deref() {
                 let track = source_tracks.iter().find(|t| t.subtitle && t.id == id);
                 pick = track
                     .and_then(|t| {
@@ -492,7 +553,7 @@ pub fn open(
                     })
                     .unwrap_or(Pick::Off);
             }
-            if server_tracks {
+            if server_tracks && !explicit_local {
                 pick = Pick::Off;
             }
             fp_media::Tracks {
@@ -650,6 +711,12 @@ pub fn open(
     let active_subtitle_file = match pick {
         Pick::File(i) => read_subtitle_file(opener, &subs[i]).ok().map(|cues| {
             player.set_external_subtitles(cues);
+            if let Some(download) = managed_subtitles
+                .iter()
+                .find(|s| s.location() == subs[i].location)
+            {
+                player.set_external_subtitle_delay(download.delay_ms);
+            }
             i
         }),
         _ => None,
@@ -712,6 +779,8 @@ pub fn open(
             markers,
             subtitle_files: subs,
             active_subtitle_file,
+            managed_subtitles,
+            subtitle_signature: original,
             last_subtitles: None,
             picked,
             script_count: scripts.len(),
@@ -806,7 +875,8 @@ fn saved_source_tracks(
         Some(PickedSubtitles::File(file)) => subtitles
             .clone()
             .find(|t| t.location.as_ref() == Some(file))
-            .map(|t| t.id.clone()),
+            .map(|t| t.id.clone())
+            .or_else(|| Some("0".into())),
     };
     (audio, subtitle)
 }
@@ -951,6 +1021,43 @@ fn load_scripts(
     scripts
 }
 
+fn local_video_path(location: &str) -> Option<std::path::PathBuf> {
+    let local = fp_core::volume::resolve(location);
+    let path = local.as_deref().unwrap_or(location);
+    let path = std::path::Path::new(path.strip_prefix("file://").unwrap_or(path));
+    path.is_absolute().then(|| path.to_path_buf())
+}
+
+pub(crate) fn local_subtitle_original(location: &str) -> Option<fp_core::source::FileSource> {
+    let path = local_video_path(location)?;
+    std::fs::metadata(&path)
+        .ok()?
+        .is_file()
+        .then(|| fp_core::source::FileSource::open(&path).ok())
+        .flatten()
+}
+
+/// Metadata available without opening the video remotely. The media ID also
+/// identifies the selected version of a server item.
+fn subtitle_signature(
+    location: &str,
+    size: Option<u64>,
+    mtime: Option<i64>,
+) -> fp_library::OriginalSubtitleSignature {
+    let metadata = local_video_path(location).and_then(|path| std::fs::metadata(path).ok());
+    let metadata = metadata.filter(std::fs::Metadata::is_file);
+    let local_mtime = metadata
+        .as_ref()
+        .and_then(|m| m.modified().ok())
+        .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|m| i64::try_from(m.as_secs()).ok());
+    fp_library::OriginalSubtitleSignature {
+        size: metadata.as_ref().map(std::fs::Metadata::len).or(size),
+        mtime: local_mtime.or(mtime),
+        ..Default::default()
+    }
+}
+
 /// A subtitle file's cues. Blocks while a server answers, so not on the
 /// frame loop.
 pub fn read_subtitle_file(opener: &Opener, file: &SubtitleFile) -> Result<Vec<Cue>, String> {
@@ -1059,6 +1166,22 @@ fn bookmarked_near(markers: &[Marker], time: f64) -> bool {
 }
 
 impl Playback {
+    pub fn active_managed_subtitle(&self) -> Option<&fp_library::UserSubtitle> {
+        let file = self.subtitle_files.get(self.active_subtitle_file?)?;
+        self.managed_subtitles
+            .iter()
+            .find(|s| s.location() == file.location)
+    }
+
+    pub fn subtitle_needs_review(&self, location: &str) -> bool {
+        self.managed_subtitles.iter().any(|s| {
+            s.location() == location
+                && s.original_signature
+                    .as_ref()
+                    .is_some_and(|known| known.differs_from(&self.subtitle_signature))
+        })
+    }
+
     /// The subtitles showing: a file, an embedded stream, or none.
     pub fn subtitles_showing(&self) -> Pick {
         match (self.active_subtitle_file, self.player.subtitle_stream()) {
@@ -1987,13 +2110,21 @@ mod tests {
         reopen_rooted_clip(true);
     }
 
-    /// A server whose file this player can't read, which transcodes it to
-    /// 1080p or 720p (a real clip).
+    /// A server that can transcode to 1080p or 720p using a real test clip.
+    /// By default its original file cannot play.
     #[derive(Default)]
     struct Unplayable {
         files: Mutex<u32>,
         asked: Mutex<Vec<(String, f64)>>,
         plex: bool,
+        original_available: bool,
+        transcode_subtitles: Mutex<Vec<Option<String>>>,
+    }
+
+    fn open_test_clip() -> fp_sources::Result<Arc<dyn fp_core::ByteSource>> {
+        let clip = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../fp-media/tests/data/h264_aac_180_LR.mp4");
+        Ok(Arc::new(fp_core::source::FileSource::open(&clip)?))
     }
 
     impl Source for Unplayable {
@@ -2018,6 +2149,9 @@ mod tests {
         }
         fn open(&self, _: &str) -> fp_sources::Result<Arc<dyn fp_core::ByteSource>> {
             *lock(&self.files) += 1;
+            if self.original_available {
+                return open_test_clip();
+            }
             if self.plex {
                 return Err(fp_sources::Error::Unsupported(
                     "Plex requires conversion".into(),
@@ -2037,6 +2171,17 @@ mod tests {
                 subtitle_stream: None,
             })
         }
+        fn playback_tracks(&self, _: &Entry) -> fp_sources::Result<Vec<fp_sources::PlaybackTrack>> {
+            Ok(vec![fp_sources::PlaybackTrack {
+                id: "301".into(),
+                index: Some(2),
+                location: None,
+                subtitle: true,
+                title: "Server subtitles".into(),
+                codec: "srt".into(),
+                selected: true,
+            }])
+        }
         fn transcode_targets(&self, _: &Entry) -> Vec<TranscodeTarget> {
             [1080, 720]
                 .map(|h| TranscodeTarget {
@@ -2054,9 +2199,17 @@ mod tests {
             start: f64,
         ) -> fp_sources::Result<Arc<dyn fp_core::ByteSource>> {
             lock(&self.asked).push((id.to_string(), start));
-            let clip = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../fp-media/tests/data/h264_aac_180_LR.mp4");
-            Ok(Arc::new(fp_core::source::FileSource::open(&clip)?))
+            open_test_clip()
+        }
+        fn open_transcode_session(
+            &self,
+            location: &str,
+            id: &str,
+            start: f64,
+            session: &fp_sources::WatchSession,
+        ) -> fp_sources::Result<Arc<dyn fp_core::ByteSource>> {
+            lock(&self.transcode_subtitles).push(session.subtitle_stream.clone());
+            self.open_transcode(location, id, start)
         }
     }
 
@@ -2121,6 +2274,110 @@ mod tests {
         lock(&server.asked).clear();
         assert!(open_from(server.clone(), Quality::Original, None).is_err());
         assert!(lock(&server.asked).is_empty());
+    }
+
+    #[test]
+    fn saved_subtitle_download_restores_with_timing_in_plex_original_and_transcode() {
+        use fp_library::{NewUserSubtitle, PickedSubtitles, PickedTracks, SubtitleStore};
+
+        let dir = std::env::temp_dir().join(format!("fpx-plex-subs-{}", std::process::id()));
+        let store = SubtitleStore::new(dir.clone());
+        let server = Arc::new(Unplayable {
+            plex: true,
+            original_available: true,
+            ..Default::default()
+        });
+        let opener = Opener::with_subtitle_store(store.clone());
+        opener.insert_source(server.clone());
+        let mut entry = Entry::new("Film", "plex://source/server/item/1", EntryKind::Video);
+        entry.duration = Some(300.0);
+        let library = Library::open_in_memory().unwrap();
+        let id = library.upsert_entry("server", &entry).unwrap().id;
+        let bytes = b"1\n00:00:00,150 --> 00:00:00,550\nLocal original\n\n\
+                      2\n00:00:30,150 --> 00:00:30,550\nLocal transcode\n";
+        let attachment = store
+            .commit(
+                store.stage(bytes).unwrap(),
+                &library,
+                &library.subtitle_target(id).unwrap(),
+                NewUserSubtitle {
+                    provider: "opensubtitles".into(),
+                    provider_file_id: 42,
+                    download_parameters: "srt:utf-8".into(),
+                    display_name: "Film.en.srt".into(),
+                    language: "en".into(),
+                    language_name: None,
+                    release: None,
+                    flags: Default::default(),
+                    checksum: "fixture".into(),
+                    original_signature: None,
+                },
+            )
+            .unwrap();
+        library
+            .set_tracks(
+                id,
+                &PickedTracks {
+                    audio: None,
+                    subtitles: Some(PickedSubtitles::File(attachment.location())),
+                },
+            )
+            .unwrap();
+        library.set_subtitle_delay(id, &attachment.id, 500).unwrap();
+        let settings = Settings {
+            hardware_decoding: false,
+            resume: false,
+            ..Default::default()
+        };
+        let reports = Reports::start();
+
+        for (quality, target, start, text) in [
+            (Quality::Original, None, 0.8, "Local original"),
+            (
+                Quality::Transcode("720".into()),
+                Some("720"),
+                30.8,
+                "Local transcode",
+            ),
+        ] {
+            let request = OpenRequest {
+                location: entry.location.clone(),
+                source_id: Some("server".into()),
+                entry: Some(entry.clone()),
+                start_at: Some(start),
+                quality,
+                transcode: target.map(str::to_owned),
+                // A copied request still has a server subtitle selected.
+                source_subtitle: Some("301".into()),
+                paused: true,
+                ..Default::default()
+            };
+            let pb = open(request, &opener, &library, &settings, &reports)
+                .unwrap()
+                .playback;
+            assert_eq!(pb.transcoding.as_ref().map(|t| t.id.as_str()), target);
+            assert_eq!(pb.request.source_subtitle.as_deref(), Some("0"));
+            assert_eq!(
+                pb.active_managed_subtitle().map(|sub| &sub.id),
+                Some(&attachment.id)
+            );
+            assert!(pb.player.is_paused());
+            let until = Instant::now() + Duration::from_secs(5);
+            while pb.player.current_frame().is_none() {
+                assert!(
+                    Instant::now() < until,
+                    "video did not decode: {:?}",
+                    pb.player.error()
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let cues = pb.player.subtitles();
+            assert_eq!(cues.len(), 1, "position {}", pb.player.position());
+            assert_eq!(cues[0].text, text);
+        }
+        assert_eq!(*lock(&server.transcode_subtitles), [Some("0".into())]);
+        store.remove(&library, id, &attachment.id).unwrap();
+        std::fs::remove_dir(dir).unwrap();
     }
 
     #[test]

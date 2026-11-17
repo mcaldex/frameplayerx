@@ -773,7 +773,12 @@ fn tracks_label(pb: &crate::playback::Playback, language: &str) -> Option<String
     let audio: Vec<_> = info.audio_streams().collect();
     let subtitles = crate::subtitles::rows(language, info, &pb.subtitle_files);
     if audio.len() < 2 && subtitles.is_empty() && pb.targets.is_empty() {
-        return None;
+        return Some(format!(
+            "{}  {}   {}",
+            icons::SUBTITLES,
+            tr!("settings-subtitles"),
+            icons::CARET_UP
+        ));
     }
     let mut label = String::new();
     if !pb.targets.is_empty() {
@@ -2019,7 +2024,15 @@ pub fn tracks_panel(ctx: &egui::Context, v: &mut View) {
             0
         })
         .max(1)
-        .max(subtitles.len() + 1)
+        .max(
+            subtitles.len()
+                + 2
+                + if pb.active_managed_subtitle().is_some() {
+                    3
+                } else {
+                    0
+                },
+        )
         .max(quality_rows) as f32;
     let tall = 2.0 * TRACK_PAD + label_h + LIST_GAP + 8.0 + rows * TRACK_ROW;
     let full = ctx.screen_rect() - widgets::SHADOW_ROOM;
@@ -2097,12 +2110,19 @@ pub fn tracks_panel(ctx: &egui::Context, v: &mut View) {
                 tr!("settings-subtitles"),
                 &pb.title,
                 |ui, fresh| {
+                    if track_row(ui, tr!("subtitle-find"), "", false).clicked() {
+                        actions.push(Action::SubtitleSearch(super::subtitle_search::Action::Open));
+                    }
+                    if let Some(attachment) = pb.active_managed_subtitle() {
+                        super::subtitle_search::timing(ui, attachment.delay_ms, actions);
+                    }
                     if server_tracks {
-                        let off = pb
-                            .request
-                            .source_subtitle
-                            .as_deref()
-                            .is_none_or(|id| id == "0");
+                        let off = pb.active_subtitle_file.is_none()
+                            && pb
+                                .request
+                                .source_subtitle
+                                .as_deref()
+                                .is_none_or(|id| id == "0");
                         if track_row(ui, tr!("tracks-off"), "", off).clicked() && !off {
                             actions.push(Action::SelectSourceSubtitles(None));
                         }
@@ -2116,7 +2136,6 @@ pub fn tracks_panel(ctx: &egui::Context, v: &mut View) {
                                 actions.push(Action::SelectSourceSubtitles(Some(s.id.clone())));
                             }
                         }
-                        return;
                     }
                     let mut pick = |ui: &mut egui::Ui, title: &str, detail: &str, pick: Pick| {
                         let on = showing(pb, pick);
@@ -2128,9 +2147,30 @@ pub fn tracks_panel(ctx: &egui::Context, v: &mut View) {
                             actions.push(Action::SelectSubtitles(pick));
                         }
                     };
-                    pick(ui, tr!("tracks-off"), "", Pick::Off);
+                    if !server_tracks {
+                        pick(ui, tr!("tracks-off"), "", Pick::Off);
+                    }
                     for row in &subtitles {
-                        pick(ui, &row.title, &row.detail, row.pick);
+                        let file = match row.pick {
+                            Pick::File(i) => pb.subtitle_files.get(i),
+                            _ => None,
+                        };
+                        // The server's own files are among its tracks above.
+                        if server_tracks
+                            && file.is_none_or(|f| {
+                                pb.source_tracks
+                                    .iter()
+                                    .any(|t| t.subtitle && t.location.as_ref() == Some(&f.location))
+                            })
+                        {
+                            continue;
+                        }
+                        if file.is_some_and(|f| pb.subtitle_needs_review(&f.location)) {
+                            let detail = format!("{} · {}", tr!("subtitle-review"), row.detail);
+                            pick(ui, &row.title, &detail, row.pick);
+                        } else {
+                            pick(ui, &row.title, &row.detail, row.pick);
+                        }
                     }
                 },
             );
@@ -2199,7 +2239,9 @@ fn track_list(
     widgets::section_label(&mut ui, label);
     widgets::card(&mut ui, |ui| {
         let salt = (label, video);
-        let fresh = egui::scroll_area::State::load(ui.ctx(), ui.make_persistent_id(salt)).is_none();
+        // `id_salt` files the area's state under the salt made an `Id`.
+        let id = ui.make_persistent_id(egui::Id::new(salt));
+        let fresh = egui::scroll_area::State::load(ui.ctx(), id).is_none();
         egui::ScrollArea::vertical()
             .id_salt(salt)
             .auto_shrink([false, true])
@@ -2209,7 +2251,7 @@ fn track_list(
 
 /// A row of the picker: the whole row picks its track, and a check marks
 /// the one in use.
-fn track_row(ui: &mut egui::Ui, title: &str, detail: &str, on: bool) -> egui::Response {
+pub(super) fn track_row(ui: &mut egui::Ui, title: &str, detail: &str, on: bool) -> egui::Response {
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, TRACK_ROW), Sense::click());
     if ui.is_rect_visible(rect) {
@@ -2524,6 +2566,22 @@ mod tests {
             collect_texts(&cs.shape, &mut texts);
         }
         texts
+    }
+
+    #[test]
+    fn a_track_list_scrolls_to_the_track_in_use_only_when_first_shown() {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut fresh = Vec::new();
+        for _ in 0..3 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let rect = ui.max_rect();
+                    track_list(ui, rect, "Subtitles", "Video", |_, first| fresh.push(first));
+                });
+            });
+        }
+        assert_eq!(fresh, [true, false, false]);
     }
 
     #[test]

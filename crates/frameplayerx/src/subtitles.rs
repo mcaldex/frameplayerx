@@ -53,6 +53,14 @@ fn stem(name: &str) -> &str {
     name.rsplit_once('.').map_or(name, |(s, _)| s)
 }
 
+/// A file's tag, with its explicit provider flags when available.
+fn file_tag(f: &SubtitleFile) -> Tag {
+    let mut tag = Tag::parse(f.language.as_deref().unwrap_or(""));
+    tag.forced |= f.flags.forced;
+    tag.sdh |= f.flags.sdh;
+    tag
+}
+
 /// A stream's tag, with what its dispositions and title add.
 fn stream_tag(s: &StreamInfo) -> Tag {
     let mut tag = Tag::parse(s.language.as_deref().unwrap_or(""));
@@ -83,7 +91,7 @@ pub fn choose(
         .enumerate()
         .map(|(i, f)| Track {
             pick: Pick::File(i),
-            tag: Tag::parse(f.language.as_deref().unwrap_or("")),
+            tag: file_tag(f),
             default: false,
             beside: f.language.is_none() && stem(&f.name).eq_ignore_ascii_case(stem(video_name)),
         })
@@ -225,7 +233,7 @@ pub fn stream_detail(s: &StreamInfo) -> String {
 /// own name, else its place in the list (`n` counts from 1); the detail is
 /// what tells it from the others: forced, SDH, its own name and its format.
 pub fn file_label(f: &SubtitleFile, n: usize) -> (String, String) {
-    let tag = Tag::parse(f.language.as_deref().unwrap_or(""));
+    let tag = file_tag(f);
     let own = f.name.trim();
     let said = own.to_ascii_lowercase();
     let mut parts = Vec::new();
@@ -235,7 +243,11 @@ pub fn file_label(f: &SubtitleFile, n: usize) -> (String, String) {
     if tag.sdh && !said.contains("sdh") {
         parts.push("SDH".to_string());
     }
-    let title = match tag.code.and_then(crate::ui::language_name) {
+    let title = match f
+        .language_name
+        .clone()
+        .or_else(|| tag.code.and_then(crate::ui::language_name))
+    {
         Some(language) => {
             // A file named for its language in English or in the
             // interface's says nothing more.
@@ -302,7 +314,7 @@ pub fn rows(language: &str, info: &MediaInfo, files: &[SubtitleFile]) -> Vec<Row
         .enumerate()
         .map(|(i, f)| {
             let (title, detail) = file_label(f, i + 1);
-            let code = Tag::parse(f.language.as_deref().unwrap_or("")).code;
+            let code = file_tag(f).code;
             (
                 code,
                 Row {
@@ -465,6 +477,8 @@ mod tests {
             name: name.into(),
             location: format!("/v/{name}"),
             language: language.map(str::to_string),
+            language_name: None,
+            flags: Default::default(),
         }
     }
 
@@ -659,6 +673,8 @@ mod tests {
             name: name.into(),
             location: format!("http://jf/Videos/1/m/Subtitles/4/Stream.{codec}"),
             language: Some(language.into()),
+            language_name: None,
+            flags: Default::default(),
         };
         assert_eq!(
             file_label(&served("", "subrip", "ger.forced"), 1),

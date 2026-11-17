@@ -19,6 +19,7 @@ use crate::xml;
 use crate::{Source, dir_entry, file_entry, sort_entries};
 use fp_core::source::{ByteSource, Entry};
 use std::sync::Arc;
+use std::time::Instant;
 
 /// Properties requested for each child.
 const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -170,6 +171,18 @@ impl Source for WebDavSource {
 
     fn open(&self, location: &str) -> Result<Arc<dyn ByteSource>> {
         Ok(Arc::new(self.client.open(&self.current_url(location)?)?))
+    }
+
+    fn open_original(
+        &self,
+        video: &Entry,
+        deadline: Instant,
+    ) -> Result<Option<Arc<dyn ByteSource>>> {
+        let Some(location) = self.canonical_location(&video.location) else {
+            return Ok(None);
+        };
+        self.client
+            .open_original(&self.current_url(&location)?, deadline)
     }
 
     fn picture_request(&self, location: &str) -> Option<(HttpClient, String)> {

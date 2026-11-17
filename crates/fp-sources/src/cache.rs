@@ -965,6 +965,10 @@ impl<F: RangeFetch> ByteSource for CachedSource<F> {
         true
     }
 
+    fn efficient_random_access(&self) -> bool {
+        !self.inner.fetcher.sequential_only()
+    }
+
     fn net(&self) -> Option<Arc<NetCounters>> {
         Some(self.inner.net.clone())
     }

@@ -113,9 +113,33 @@ ALTER TABLE media ADD COLUMN resume_thumbnail_at REAL;
 /// Version 4: the audio and subtitles picked for a video.
 const V4: &str = "ALTER TABLE media ADD COLUMN tracks TEXT;";
 
+/// Version 5: durable subtitle attachments. The lazy per-row target token
+/// distinguishes a deleted video from any new row reusing its numeric ID.
+const V5: &str = "
+ALTER TABLE media ADD COLUMN subtitle_target_token BLOB;
+
+CREATE TABLE user_subtitles (
+    id                    TEXT PRIMARY KEY NOT NULL,
+    media_id              INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+    provider              TEXT NOT NULL,
+    provider_file_id      INTEGER NOT NULL,
+    download_parameters   TEXT NOT NULL,
+    storage_key           TEXT NOT NULL UNIQUE,
+    display_name          TEXT NOT NULL,
+    language              TEXT NOT NULL,
+    language_name         TEXT,
+    release               TEXT,
+    flags                 TEXT NOT NULL,
+    checksum              TEXT NOT NULL,
+    original_signature    TEXT,
+    delay_ms              INTEGER NOT NULL DEFAULT 0 CHECK (delay_ms BETWEEN -10000 AND 10000),
+    added_at              INTEGER NOT NULL,
+    UNIQUE (media_id, provider, provider_file_id, download_parameters)
+);";
+
 /// All migrations, oldest first. The schema version equals the number of
 /// migrations applied.
-pub(crate) const MIGRATIONS: &[&str] = &[V1, V2, V3, V4];
+pub(crate) const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5];
 
 /// Schema version this build writes.
 pub const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
@@ -184,6 +208,7 @@ mod tests {
             "playlist_items",
             "playlists",
             "tags",
+            "user_subtitles",
         ] {
             assert!(tables.iter().any(|x| x == t), "missing table {t}");
         }

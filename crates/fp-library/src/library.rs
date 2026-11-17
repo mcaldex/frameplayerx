@@ -903,7 +903,7 @@ impl Library {
     }
 
     /// Deletes a row and everything attached to it (tags, markers, history,
-    /// playlist entries). Only for explicit user requests: scans never
+    /// playlist entries, downloaded subtitles). Only for explicit user requests: scans never
     /// delete, they mark rows missing.
     pub fn remove_media(&self, id: MediaId) -> Result<()> {
         self.in_tx(|c| {
@@ -1214,7 +1214,7 @@ impl Library {
 
     /// Deletes the videos of `source_id` that were never played and carry
     /// nothing the user set (favourite, rating, tags, format, adjustments,
-    /// keyframes, bookmarks, playlists), for a source being removed.
+    /// keyframes, bookmarks, playlists, downloaded subtitles), for a source being removed.
     /// Returns how many were deleted.
     pub fn forget_unwatched(&self, source_id: &str) -> Result<usize> {
         self.in_tx(|c| {
@@ -1229,6 +1229,7 @@ impl Library {
                                        WHERE k.media_id = m.id AND k.from_source = 0)
                        AND NOT EXISTS (SELECT 1 FROM playlist_items p WHERE p.media_id = m.id)
                        AND NOT EXISTS (SELECT 1 FROM history h WHERE h.media_id = m.id)
+                       AND NOT EXISTS (SELECT 1 FROM user_subtitles s WHERE s.media_id = m.id)
                        AND m.source_id = ?1)",
                 [source_id],
             )?;

@@ -1,6 +1,6 @@
 //! Source-scoped migration of persistent media and asset locations.
 
-use crate::{Error, Library, Result};
+use crate::{Error, Library, Result, SUBTITLE_SCHEME};
 use rusqlite::{OptionalExtension, params};
 
 struct Locations {
@@ -55,6 +55,9 @@ fn rewrite_tracks(
     else {
         return Ok(None);
     };
+    if file.starts_with(SUBTITLE_SCHEME) {
+        return Ok(None);
+    }
     if rewrite_one(file, rewrite)? {
         Ok(Some(serde_json::to_string(&tracks)?))
     } else {

@@ -732,6 +732,13 @@ impl App {
     pub(super) fn lock_source(&mut self, id: &str) {
         self.ui.unlocked_sources.remove(id);
         self.close_source_view(id);
+        if self
+            .playback
+            .as_ref()
+            .is_some_and(|p| self.locked_source_of(&p.request).is_some())
+        {
+            self.close_subtitle_search();
+        }
         let name = self.source_name(id);
         self.ui.toast(tr!("source-locked-toast", name = name));
     }

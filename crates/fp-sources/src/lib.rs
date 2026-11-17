@@ -35,8 +35,10 @@ pub mod httpdir;
 mod json;
 pub mod local;
 pub mod location;
+pub mod media_identity;
 pub mod mediabrowser;
 pub mod nfs;
+pub mod opensubtitles;
 pub mod plex;
 pub mod sftp;
 pub mod sidecar;
@@ -119,6 +121,23 @@ pub trait Source: Send + Sync {
         _session: &WatchSession,
     ) -> Result<Arc<dyn ByteSource>> {
         self.open(location)
+    }
+
+    /// Matching metadata for the selected video and media version. May use
+    /// the source's item details endpoint, so call this off the frame loop.
+    fn media_identity(&self, _video: &Entry) -> Result<Option<media_identity::MediaIdentity>> {
+        Ok(None)
+    }
+
+    /// Opens a separate reader for the selected original file, when the
+    /// adapter can establish that playback is permitted and that the bytes
+    /// are the original. The same deadline covers opening and reading.
+    fn open_original(
+        &self,
+        _video: &Entry,
+        _deadline: std::time::Instant,
+    ) -> Result<Option<Arc<dyn ByteSource>>> {
+        Ok(None)
     }
 
     /// A refreshed configuration to persist; taking it performs no network I/O.

@@ -294,7 +294,7 @@ struct Shared {
     ended: AtomicBool,
     error: Mutex<Option<String>>,
     cues: Mutex<Vec<Cue>>,
-    external_cues: Mutex<Vec<Cue>>,
+    external_cues: Mutex<(Vec<Cue>, i32)>,
     head: Mutex<ambisonic::Quat>,
     volume: Mutex<f32>,
     speed: Mutex<f64>,
@@ -405,7 +405,7 @@ impl Player {
             ended: AtomicBool::new(false),
             error: Mutex::new(None),
             cues: Mutex::new(Vec::new()),
-            external_cues: Mutex::new(Vec::new()),
+            external_cues: Mutex::default(),
             head: Mutex::new(ambisonic::IDENTITY),
             volume: Mutex::new(config.volume),
             speed: Mutex::new(1.0),
@@ -669,19 +669,24 @@ impl Player {
     /// Shows `cues` (from [`subtitle::load_file`]) in place of the
     /// embedded subtitles.
     pub fn set_external_subtitles(&self, cues: Vec<Cue>) {
-        *lock(&self.shared.external_cues) = cues;
+        *lock(&self.shared.external_cues) = (cues, 0);
+    }
+
+    pub fn set_external_subtitle_delay(&self, delay_ms: i32) {
+        lock(&self.shared.external_cues).1 = delay_ms;
     }
 
     pub fn clear_external_subtitles(&self) {
-        lock(&self.shared.external_cues).clear();
+        *lock(&self.shared.external_cues) = (Vec::new(), 0);
     }
 
     /// Subtitle cues visible now (external file first, then embedded).
     pub fn subtitles(&self) -> Vec<Cue> {
         let t = self.position();
         let ext = lock(&self.shared.external_cues);
-        if !ext.is_empty() {
-            return subtitle::active(&ext, t).into_iter().cloned().collect();
+        if !ext.0.is_empty() {
+            let at = t - f64::from(ext.1) / 1000.0;
+            return subtitle::active(&ext.0, at).into_iter().cloned().collect();
         }
         let cues = lock(&self.shared.cues);
         subtitle::active(&cues, t).into_iter().cloned().collect()
@@ -2075,6 +2080,32 @@ mod tests {
         assert!((t - 200.0).abs() < 0.1, "after seeking, first frame at {t}");
         assert_eq!(*lock(&asked), [200.0]);
         assert!((p.position() - 200.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn external_subtitle_delay_uses_the_absolute_transcode_timeline() {
+        let p = transcode(100.0, None);
+        first_frame(&p);
+        p.pause();
+        let t = p.position();
+        let cue = |start, end, text: &str| Cue {
+            start: t + start,
+            end: t + end,
+            text: text.into(),
+            bitmaps: Vec::new(),
+        };
+        p.set_external_subtitles(vec![
+            cue(-0.35, -0.15, "earlier cue"),
+            cue(-0.10, 0.10, "current cue"),
+            cue(0.15, 0.35, "later cue"),
+        ]);
+        assert_eq!(p.subtitles()[0].text, "current cue");
+        p.set_external_subtitle_delay(250);
+        assert_eq!(p.subtitles()[0].text, "earlier cue");
+        p.set_external_subtitle_delay(-250);
+        assert_eq!(p.subtitles()[0].text, "later cue");
+        p.clear_external_subtitles();
+        assert!(p.subtitles().is_empty());
     }
 
     #[test]

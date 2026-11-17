@@ -21,6 +21,7 @@ use crate::urlutil::{
 use crate::{Source, dir_entry, file_entry, sort_entries};
 use fp_core::source::{ByteSource, Entry, EntryKind};
 use std::sync::Arc;
+use std::time::Instant;
 
 /// An HTTP(S) folder served with autoindex listings.
 pub struct HttpDirSource {
@@ -127,6 +128,18 @@ impl Source for HttpDirSource {
 
     fn open(&self, location: &str) -> Result<Arc<dyn ByteSource>> {
         Ok(Arc::new(self.client.open(&self.current_url(location)?)?))
+    }
+
+    fn open_original(
+        &self,
+        video: &Entry,
+        deadline: Instant,
+    ) -> Result<Option<Arc<dyn ByteSource>>> {
+        let Some(location) = self.canonical_location(&video.location) else {
+            return Ok(None);
+        };
+        self.client
+            .open_original(&self.current_url(&location)?, deadline)
     }
 
     fn picture_request(&self, location: &str) -> Option<(HttpClient, String)> {

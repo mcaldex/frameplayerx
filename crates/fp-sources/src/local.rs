@@ -13,6 +13,7 @@ use fp_core::source::{ByteSource, Entry, FileSource};
 use fp_core::volume;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 /// A local folder or a library.
 #[derive(Clone, Debug)]
@@ -144,6 +145,19 @@ impl Source for LocalSource {
 
     fn delete(&self, location: &str) -> Result<()> {
         Self::delete_path(&path_of(location)?)
+    }
+
+    fn open_original(
+        &self,
+        video: &Entry,
+        deadline: Instant,
+    ) -> Result<Option<Arc<dyn ByteSource>>> {
+        let path = path_of(&video.location)?;
+        if Instant::now() >= deadline || !path.is_file() {
+            return Ok(None);
+        }
+        let file = FileSource::open(&path).map_err(|e| not_found_or_io(e, &path))?;
+        Ok(Some(Arc::new(file)))
     }
 
     fn parent(&self, location: &str) -> Option<String> {

@@ -77,6 +77,8 @@ pub fn subtitle_file(location: &str, video_name: &str) -> SubtitleFile {
         name,
         location: location.to_string(),
         language,
+        language_name: None,
+        flags: Default::default(),
     }
 }
 
@@ -186,6 +188,8 @@ pub fn match_sidecars(video_name: &str, siblings: &[Entry]) -> Sidecars {
                 name: e.name.clone(),
                 location: e.location.clone(),
                 language: suffix.map(str::to_string),
+                language_name: None,
+                flags: Default::default(),
             });
         }
     }
@@ -349,6 +353,8 @@ mod tests {
                 name: "Clip.srt".into(),
                 location: "http://h/v/Clip.srt".into(),
                 language: None,
+                language_name: None,
+                flags: Default::default(),
             }],
         };
         s.merge(extra);

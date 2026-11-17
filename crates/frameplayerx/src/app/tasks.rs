@@ -97,10 +97,13 @@ pub(super) enum Job {
     CrashSent(Result<(), String>),
     /// Steam was asked to open a web page.
     WebPageOpened(Result<(), String>),
-    /// Subtitle file `index` of the video opened as `seq`, read.
+    SubtitleSearch(Box<subtitle_search::Job>),
+    /// A subtitle file read for a particular playback and selection.
     Subtitles {
         seq: u64,
-        index: usize,
+        selection: u64,
+        search: Option<u64>,
+        location: String,
         result: Result<Vec<fp_media::Cue>, String>,
     },
 }
@@ -475,23 +478,14 @@ impl App {
             Job::Deleted { target, result } => self.on_deleted(target, result),
             Job::Toast(t) => self.ui.toast(t),
             Job::Done | Job::WebPageOpened(Ok(())) => {}
-            Job::Subtitles { seq, index, result } => {
-                // Only for the same video, and the file still picked.
-                let Some(p) = self.playback.as_mut().filter(|_| seq == self.open_seq) else {
-                    return;
-                };
-                if p.active_subtitle_file != Some(index) {
-                    return;
-                }
-                match result {
-                    Ok(cues) => p.player.set_external_subtitles(cues),
-                    Err(e) => {
-                        p.active_subtitle_file = None;
-                        self.ui.toast(tr!("toast-subtitles", title = e.to_string()));
-                    }
-                }
-                self.ui.invalidate();
-            }
+            Job::SubtitleSearch(job) => self.subtitle_search_finished(*job),
+            Job::Subtitles {
+                seq,
+                selection,
+                search,
+                location,
+                result,
+            } => self.subtitle_file_finished(seq, selection, search, location, result),
             Job::Dlna(r) => {
                 self.ui.dlna_searching = false;
                 match r {
@@ -739,7 +733,7 @@ impl App {
                 }
                 self.ui.open_error = None;
                 self.ui.adjust_open = false;
-                self.ui.tracks_open = false;
+                self.ui.tracks_open = self.reopen_tracks;
                 // An earlier open or autoplay can complete during a scan.
                 // Keep the scan controls visible.
                 self.show_browser = self
@@ -998,6 +992,7 @@ impl App {
                 .and_then(|t| t.index);
         }
         if let Some(subtitle) = &subtitle {
+            self.subtitle_search.selection += 1;
             p.picked.subtitles =
                 playback::picked_source_subtitles(subtitle.as_deref(), &p.source_tracks);
         }
@@ -1026,6 +1021,8 @@ impl App {
             self.ask_pin(&source);
             return;
         }
+        self.close_subtitle_search();
+        self.reopen_tracks = false;
         // Close the current video first: it holds a hardware decoder session,
         // and with Steam holding others the new video could not get one, fell
         // back to software and stuttered ("Hardware decoder busy"). It

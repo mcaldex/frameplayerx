@@ -17,13 +17,15 @@
 use crate::cache::{CacheOptions, CacheStats, CachedSource, RangeBody, RangeFetch};
 use crate::config::Credentials;
 use crate::error::{Error, Result};
+use crate::media_identity::REGION;
 use crate::urlutil::{basic_auth_value, redact, same_origin, split_credentials};
 use fp_core::ByteSource;
 use fp_core::sync::lock;
 use std::io::{self, Read};
 use std::net::SocketAddr;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 use ureq::http;
 use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
 use ureq::unversioned::transport::{
@@ -477,6 +479,12 @@ impl HttpClient {
         }
     }
 
+    /// Leaves redirects for the caller to validate before following them.
+    pub(crate) fn without_redirects(mut self) -> Self {
+        self.agent = agent_redirects(&self.opts, false);
+        self
+    }
+
     /// Sends the configured credentials only to `url`'s origin (scheme,
     /// host and port).
     pub fn scoped_to(mut self, url: &str) -> HttpClient {
@@ -601,7 +609,7 @@ impl HttpClient {
         body: Option<&[u8]>,
         unbounded_body: bool,
     ) -> std::result::Result<Response, Failure> {
-        self.send_redirects(method, url, headers, body, unbounded_body, 0)
+        self.send_redirects(method, url, headers, body, unbounded_body, None, 0)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -612,6 +620,7 @@ impl HttpClient {
         headers: &[(&str, &str)],
         body: Option<&[u8]>,
         unbounded_body: bool,
+        deadline: Option<Instant>,
         redirects: u8,
     ) -> std::result::Result<Response, Failure> {
         let (clean_url, url_creds) = split_credentials(url)?;
@@ -654,7 +663,18 @@ impl HttpClient {
             }
             None => {
                 let req = builder.body(()).map_err(build_err)?;
-                if unbounded_body {
+                if let Some(deadline) = deadline {
+                    let timeout = deadline.saturating_duration_since(Instant::now());
+                    if timeout.is_zero() {
+                        return Err(Error::Io(io::ErrorKind::TimedOut.into()).into());
+                    }
+                    let req = self
+                        .agent
+                        .configure_request(req)
+                        .timeout_global(Some(timeout))
+                        .build();
+                    self.agent.run(req)
+                } else if unbounded_body {
                     let req = self
                         .agent
                         .configure_request(req)
@@ -722,6 +742,7 @@ impl HttpClient {
                 headers,
                 body,
                 unbounded_body,
+                deadline,
                 redirects + 1,
             );
         }
@@ -847,6 +868,177 @@ impl HttpClient {
     /// Opens a URL for random access.
     pub fn open(&self, url: &str) -> Result<HttpFile> {
         HttpFile::open(self, url)
+    }
+
+    /// Reads a bounded metadata response without retrying or renewing an
+    /// authenticated session, for the original-file identification path.
+    pub(crate) fn get_before(
+        &self,
+        url: &str,
+        deadline: Instant,
+        limit: u64,
+    ) -> Result<Option<Vec<u8>>> {
+        let response = self.get_with_deadline(url, &[("Accept", "application/json")], deadline)?;
+        if !response.status().is_success() {
+            return Ok(None);
+        }
+        let mut bytes = Vec::new();
+        response
+            .into_body()
+            .into_reader()
+            .take(limit + 1)
+            .read_to_end(&mut bytes)?;
+        Ok((bytes.len() as u64 <= limit).then_some(bytes))
+    }
+
+    fn get_with_deadline(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        deadline: Instant,
+    ) -> Result<Response> {
+        self.send_redirects("GET", url, headers, None, false, Some(deadline), 0)
+            .map_err(|e| match e {
+                Failure::Retry(e, _) | Failure::Fatal(e) => e,
+            })
+    }
+
+    /// Opens an already identified original file for bounded fingerprinting.
+    /// The first range is kept for reuse. No sequential fallback, read-ahead
+    /// or retry may turn a fingerprint into a video download.
+    pub(crate) fn open_original(
+        &self,
+        url: &str,
+        deadline: Instant,
+    ) -> Result<Option<std::sync::Arc<dyn ByteSource>>> {
+        let Some(first) = self.original_range(url, deadline, 0, REGION)? else {
+            return Ok(None);
+        };
+        Ok(Some(std::sync::Arc::new(OriginalHttpFile {
+            client: self.clone(),
+            url: url.to_owned(),
+            deadline,
+            first,
+            requests_left: AtomicUsize::new(7),
+        })))
+    }
+
+    fn original_range(
+        &self,
+        url: &str,
+        deadline: Instant,
+        start: u64,
+        len: usize,
+    ) -> Result<Option<OriginalRange>> {
+        let end = start + len as u64 - 1;
+        let range = format!("bytes={start}-{end}");
+        let response = self.get_with_deadline(
+            url,
+            &[("Range", &range), ("Accept-Encoding", "identity")],
+            deadline,
+        )?;
+        if response.status().as_u16() != 206 {
+            return Ok(None);
+        }
+        let header = |key: &str| {
+            response
+                .headers()
+                .get(key)
+                .and_then(|value| value.to_str().ok())
+        };
+        let Some(ContentRange {
+            range: Some((from, to)),
+            total: Some(size),
+        }) = header("content-range").and_then(parse_content_range)
+        else {
+            return Ok(None);
+        };
+        if from != start
+            || to > end
+            || to >= size
+            || size < 2 * REGION as u64
+            || header("content-encoding").is_some_and(|v| !v.eq_ignore_ascii_case("identity"))
+        {
+            return Ok(None);
+        }
+        let modified = header("last-modified").and_then(crate::timeutil::parse_http_date);
+        let etag = header("etag").map(str::to_owned);
+        let mut bytes = vec![0; (to - from + 1) as usize];
+        response.into_body().into_reader().read_exact(&mut bytes)?;
+        Ok(Some(OriginalRange {
+            size,
+            modified,
+            etag,
+            bytes,
+        }))
+    }
+}
+
+struct OriginalRange {
+    size: u64,
+    modified: Option<i64>,
+    etag: Option<String>,
+    bytes: Vec<u8>,
+}
+
+struct OriginalHttpFile {
+    client: HttpClient,
+    url: String,
+    deadline: Instant,
+    first: OriginalRange,
+    requests_left: AtomicUsize,
+}
+
+impl ByteSource for OriginalHttpFile {
+    fn size(&self) -> Option<u64> {
+        Some(self.first.size)
+    }
+
+    fn modified(&self) -> Option<i64> {
+        self.first.modified
+    }
+
+    fn efficient_random_access(&self) -> bool {
+        true
+    }
+
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
+        if offset >= self.first.size || buf.is_empty() {
+            return Ok(0);
+        }
+        if offset < self.first.bytes.len() as u64 {
+            let cached = &self.first.bytes[offset as usize..];
+            let len = cached.len().min(buf.len());
+            buf[..len].copy_from_slice(&cached[..len]);
+            return Ok(len);
+        }
+        self.requests_left
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |left| {
+                left.checked_sub(1)
+            })
+            .map_err(|_| io::Error::other("fingerprint range request budget exhausted"))?;
+        let len = buf
+            .len()
+            .min(REGION)
+            .min((self.first.size - offset).try_into().unwrap_or(usize::MAX));
+        let range = self
+            .client
+            .original_range(&self.url, self.deadline, offset, len)?
+            .filter(|range| {
+                (range.size, range.modified, &range.etag)
+                    == (self.first.size, self.first.modified, &self.first.etag)
+            })
+            .ok_or(io::ErrorKind::InvalidData)?;
+        buf[..range.bytes.len()].copy_from_slice(&range.bytes);
+        Ok(range.bytes.len())
+    }
+
+    fn describe(&self) -> String {
+        redact(&self.url)
+    }
+
+    fn remote(&self) -> bool {
+        true
     }
 }
 
@@ -1383,6 +1575,10 @@ impl ByteSource for HttpFile {
         true
     }
 
+    fn efficient_random_access(&self) -> bool {
+        self.supports_ranges()
+    }
+
     fn net(&self) -> Option<std::sync::Arc<fp_core::NetCounters>> {
         self.src.net()
     }
@@ -1413,9 +1609,37 @@ impl std::fmt::Debug for HttpFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::media_identity::movie_hash;
+    use crate::test_server::{TestServer, serve_bytes};
     use std::collections::VecDeque;
     use std::sync::Arc;
     use std::time::Instant;
+
+    #[test]
+    fn fingerprints_only_two_ranges_and_skips_sequential_http() {
+        let server = TestServer::start(|request| {
+            serve_bytes(request, &vec![0; 200_000], request.path() == "/ranged")
+        });
+        let client = HttpClient::new(HttpOptions::default(), None);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let ranged = client
+            .open_original(&server.url("/ranged"), deadline)
+            .unwrap()
+            .unwrap();
+        let hash = movie_hash(&*ranged, deadline, || false).unwrap().unwrap();
+        assert_eq!(hash.hash, "0000000000030d40");
+        assert!(
+            client
+                .open_original(&server.url("/sequential"), deadline)
+                .unwrap()
+                .is_none()
+        );
+        let requests = server.requests();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[0].header("Range"), Some("bytes=0-65535"));
+        assert_eq!(requests[1].header("Range"), Some("bytes=134464-199999"));
+        assert_eq!(requests[2].header("Range"), Some("bytes=0-65535"));
+    }
 
     #[derive(Debug)]
     struct ConnectAttempt {

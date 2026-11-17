@@ -34,6 +34,7 @@
 //! | `screen NAME [TAB]` | show a browser screen (`home`, `library`, `sources`, `settings` and its tab) |
 //! | `adjust [TAB]` | open the adjustments panel (at tab TAB) |
 //! | `tracks` | open the audio and subtitles picker |
+//! | `subtitle-preview [results|empty|unavailable|allowance|account]` | show a fixture for the OpenSubtitles panel |
 //! | `filters` | open the Filters drawer of the source page shown (a Jellyfin grid, a feed) |
 //! | `chroma` | turn chroma key on for the open video |
 //! | `bookmark` | press Bookmark, as on the control bar |
@@ -376,6 +377,11 @@ impl Sim {
             }
             Some("tracks") => {
                 self.app.ui.tracks_open = true;
+                self.app.repaint_all();
+                self.run_frames(3)?;
+            }
+            Some("subtitle-preview") => {
+                subtitle_preview(&mut self.app, parts.get(1).copied().unwrap_or("results"))?;
                 self.app.repaint_all();
                 self.run_frames(3)?;
             }
@@ -908,6 +914,99 @@ impl Sim {
         }
         Ok(false)
     }
+}
+
+// Fixture rows exercise the same panel as a real search without an API key.
+fn subtitle_preview(app: &mut App, state: &str) -> Result<(), Error> {
+    use crate::ui::subtitle_search::Search;
+    use fp_sources::opensubtitles::{
+        Error as SubtitleError, Language, MatchKind, Subtitle, SubtitleFile,
+    };
+    if app.playback.is_none() {
+        return Err("subtitle-preview needs a playing video".into());
+    }
+    let mut search = Search::new("The Last Crossing".into(), "en".into());
+    search.submitted = Some(search.query.clone());
+    search.languages = [
+        ("en", "English"),
+        ("pt-br", "Brazilian Portuguese"),
+        ("pt-pt", "Portuguese"),
+    ]
+    .into_iter()
+    .map(|(code, name)| Language {
+        code: code.into(),
+        name: name.into(),
+    })
+    .collect();
+    app.ui.subtitle_account.available = true;
+    app.ui.subtitle_account.quota = Default::default();
+    match state {
+        "results" | "allowance" => {
+            let file = |id, name: &str, part| SubtitleFile {
+                id,
+                name: name.into(),
+                part,
+            };
+            search.set_results(vec![
+                Subtitle {
+                    language: "en".into(),
+                    release: "The Last Crossing 2024 1080p BluRay".into(),
+                    fps: Some(23.976),
+                    sdh: true,
+                    forced: false,
+                    machine_translated: false,
+                    ai_translated: false,
+                    match_kind: MatchKind::File,
+                    files: vec![
+                        file(
+                            1,
+                            "The.Last.Crossing.2024.1080p.BluRay.H264.Example.CD1.srt",
+                            Some(1),
+                        ),
+                        file(
+                            2,
+                            "The.Last.Crossing.2024.1080p.BluRay.H264.Example.CD2.srt",
+                            Some(2),
+                        ),
+                    ],
+                },
+                Subtitle {
+                    language: "en".into(),
+                    release: "The Last Crossing 2024 WEB-DL".into(),
+                    fps: Some(25.0),
+                    sdh: false,
+                    forced: false,
+                    machine_translated: false,
+                    ai_translated: false,
+                    match_kind: MatchKind::Identity,
+                    files: vec![file(3, "The.Last.Crossing.2024.WEB-DL.srt", None)],
+                },
+            ]);
+            search.selected = Some(1);
+            if state == "allowance" {
+                search.error = Some(SubtitleError::AllowanceExhausted);
+                app.ui.subtitle_account.quota.remaining = Some(0);
+                let reset = fp_sources::timeutil::system_time_to_unix(std::time::SystemTime::now())
+                    + 5 * 3600
+                    + 20 * 60;
+                let (year, month, day) = fp_sources::timeutil::civil_from_days(reset / 86_400);
+                let secs = reset % 86_400;
+                app.ui.subtitle_account.quota.reset_time_utc = Some(format!(
+                    "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+                    secs / 3600,
+                    secs / 60 % 60,
+                    secs % 60
+                ));
+            }
+        }
+        "empty" => search.query.year = Some(2024),
+        "unavailable" => search.error = Some(SubtitleError::Unavailable),
+        "account" => search.account_open = true,
+        _ => return Err(format!("unknown subtitle preview state {state:?}").into()),
+    }
+    app.ui.tracks_open = true;
+    app.ui.subtitle_search = Some(search);
+    Ok(())
 }
 
 pub fn run(args: &Args, out: &Path) -> Result<(), Error> {

@@ -1208,6 +1208,7 @@ name = "fp-library"
 version = "0.1.0"
 dependencies = [
  "fp-core",
+ "getrandom 0.4.3",
  "jpeg-encoder",
  "percent-encoding",
  "rusqlite",

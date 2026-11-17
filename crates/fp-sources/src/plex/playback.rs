@@ -1,14 +1,105 @@
 //! Resolves Plex media versions, authenticated parts/subtitles and timelines.
 
-use super::{PlexSource, resource_url};
+use super::{PlexSource, container, resource_url};
 use crate::error::{Error, Result};
-use crate::json::{array, boolean, num, text};
+use crate::json::{array, boolean, num, text, uint};
+use crate::media_identity::{
+    MediaIdentity, MediaKind, display_title, external_id, release_basename,
+};
+use crate::urlutil::encode_form_value;
 use crate::watch::{WatchEvent, WatchKind, WatchSession};
 use fp_core::source::{ByteSource, Entry, SubtitleFile};
 use fp_core::sync::lock;
+use serde_json::Value;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+fn parse_guid(value: &str, provider: &str) -> Option<u64> {
+    let (scheme, value) = value.split_once("://")?;
+    let legacy_provider = scheme.strip_prefix("com.plexapp.agents.");
+    if scheme != provider && legacy_provider != Some(provider) {
+        return None;
+    }
+    external_id(value.split('?').next()?)
+}
+
+fn guid(item: &Value, provider: &str) -> Option<u64> {
+    array(item, "Guid")
+        .iter()
+        .filter_map(|guid| text(guid, "id"))
+        .chain(text(item, "guid"))
+        .find_map(|value| parse_guid(&value, provider))
+}
+
+fn item_identity(item: &Value, version: Option<&Value>) -> MediaIdentity {
+    let kind = match text(item, "type").as_deref() {
+        Some("movie") => Some(MediaKind::Movie),
+        Some("episode") => Some(MediaKind::Episode),
+        _ => None,
+    };
+    let coordinate = |key| {
+        text(item, key)
+            .filter(|_| kind == Some(MediaKind::Episode))?
+            .parse()
+            .ok()
+    };
+    MediaIdentity {
+        title: text(item, "title").and_then(|v| display_title(&v)),
+        year: uint(item, "year"),
+        kind,
+        series_title: text(item, "grandparentTitle").and_then(|v| display_title(&v)),
+        season: coordinate("parentIndex"),
+        episode: coordinate("index"),
+        imdb_id: guid(item, "imdb"),
+        tmdb_id: guid(item, "tmdb"),
+        release_basename: version
+            .and_then(|media| array(media, "Part").first())
+            .and_then(|part| text(part, "file"))
+            .and_then(|path| release_basename(&path)),
+        ..Default::default()
+    }
+}
 
 impl PlexSource {
+    pub(super) fn matching_identity(&self, video: &Entry) -> Result<Option<MediaIdentity>> {
+        let location = self.parse_location(&video.location)?;
+        if location.kind != "item" {
+            return Ok(None);
+        }
+        let Some(endpoint) = lock(&self.endpoint).clone() else {
+            return Ok(None);
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let item_metadata = |id: &str| -> Result<Option<Value>> {
+            let path = format!("/library/metadata/{}?includeGuids=1", encode_form_value(id));
+            let url = resource_url(&endpoint.base, &path)?;
+            let Some(bytes) = endpoint.client.get_before(&url, deadline, 2 << 20)? else {
+                return Ok(None);
+            };
+            let response = serde_json::from_slice(&bytes)?;
+            Ok(array(container(&response), "Metadata").first().cloned())
+        };
+        let Some(item) = item_metadata(&location.id)? else {
+            return Ok(None);
+        };
+        let selected = location
+            .media
+            .or_else(|| lock(&self.versions).get(&location.id).cloned());
+        let version = self.choose_media(&item, selected.as_deref()).ok();
+        let mut identity = item_identity(&item, version);
+        if identity.season.is_some()
+            && identity.episode.is_some()
+            && identity.imdb_id.is_none()
+            && identity.tmdb_id.is_none()
+            && let Some(key) = text(&item, "grandparentRatingKey")
+            && let Ok(Some(series)) = item_metadata(&key)
+        {
+            identity.series_imdb_id = guid(&series, "imdb");
+            identity.series_tmdb_id = guid(&series, "tmdb");
+        }
+        Ok(Some(identity))
+    }
+
     pub(super) fn source_tracks(&self, video: &Entry) -> Result<Vec<crate::PlaybackTrack>> {
         let location = self.parse_location(&video.location)?;
         let raw = self.raw_item(&location.id)?;
@@ -85,6 +176,8 @@ impl PlexSource {
                         ),
                         location,
                         language: text(s, "languageTag").or_else(|| text(s, "languageCode")),
+                        language_name: None,
+                        flags: Default::default(),
                     })
                 })
                 .collect();
@@ -202,7 +295,7 @@ impl PlexSource {
                 "/video/:/transcode/universal/decision?{}",
                 decision.finish()
             ))?;
-            let decision = super::container(&decision);
+            let decision = container(&decision);
             let denial = if num(decision, "generalDecisionCode").is_some_and(|n| n >= 2000.0) {
                 Some("generalDecisionText")
             } else if num(decision, "mdeDecisionCode").is_some_and(|n| n != 1000.0) {
@@ -257,5 +350,37 @@ impl PlexSource {
         lock(&self.metadata).remove(&session.item);
         reported?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn subtitle_matching_never_uses_plex_keys_as_external_ids() {
+        let version = json!({"Part":[{"file":"/private/media/Show.S01E04.Release.mkv"}]});
+        let item = json!({
+            "type":"episode", "title":"Episode title", "grandparentTitle":"Show",
+            "parentIndex":1, "index":4, "grandparentGuid":"imdb://tt11111",
+            "guid":"plex://episode/109", "ratingKey":"9001",
+            "Guid":[{"id":"tmdb://102030"}]
+        });
+        let identity = item_identity(&item, Some(&version));
+        assert_eq!(identity.kind, Some(MediaKind::Episode));
+        assert_eq!(identity.imdb_id, None);
+        assert_eq!(identity.tmdb_id, Some(102030));
+        assert_eq!(identity.series_imdb_id, None);
+        assert_eq!((identity.season, identity.episode), (Some(1), Some(4)));
+        assert_eq!(
+            identity.release_basename.as_deref(),
+            Some("Show.S01E04.Release.mkv")
+        );
+
+        let movie = json!({"type":"movie", "guid":"com.plexapp.agents.imdb://tt0046889?lang=en"});
+        let identity = item_identity(&movie, None);
+        assert_eq!(identity.kind, Some(MediaKind::Movie));
+        assert_eq!(identity.imdb_id, Some(46889));
     }
 }

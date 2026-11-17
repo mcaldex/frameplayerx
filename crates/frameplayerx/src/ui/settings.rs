@@ -589,6 +589,7 @@ fn sound(ui: &mut egui::Ui, v: &mut View) {
         );
     });
     subtitles(ui, s, &mut v.state.languages_open);
+    super::subtitle_search::settings(ui, v);
 }
 
 /// Which subtitles videos start with, in which language, and how far away.
