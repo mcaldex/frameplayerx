@@ -618,15 +618,20 @@ impl FeedView {
             return (false, forgotten);
         }
         self.order.retain(|u| !urls.contains(u));
+        let picked = self
+            .group
+            .and_then(|g| self.groups.get(g))
+            .map(|(name, _)| name.clone());
         for (_, group_urls) in &mut self.groups {
             group_urls.retain(|u| !urls.contains(u));
         }
         self.groups.retain(|(_, group_urls)| !group_urls.is_empty());
-        if self.groups.len() == 1 {
-            self.group = Some(0);
-        } else if self.group.is_some_and(|g| g >= self.groups.len()) {
-            self.group = None;
-        }
+        // The group picked, wherever it is now; all of them once it emptied.
+        self.group = if self.groups.len() == 1 {
+            Some(0)
+        } else {
+            picked.and_then(|name| self.groups.iter().position(|(n, _)| *n == name))
+        };
         for u in urls {
             self.requested.remove(u);
         }
@@ -1670,5 +1675,39 @@ mod tests {
         assert_eq!(f.order, vec!["a", "b"]);
         assert_eq!(f.groups.len(), 1);
         assert_eq!(f.group, Some(0));
+    }
+
+    #[test]
+    fn removing_scenes_keeps_the_group_picked_or_shows_all() {
+        let three = || {
+            let mut f = FeedView::new(SourceKind::DeoVr);
+            f.loaded(
+                Ok(FeedLibrary {
+                    groups: vec![
+                        ("A".into(), vec!["a".into()]),
+                        ("B".into(), vec!["b".into()]),
+                        ("C".into(), vec!["c".into()]),
+                    ],
+                    scenes: vec![
+                        scene("a", "Beach", 60.0),
+                        scene("b", "Alps", 60.0),
+                        scene("c", "Canyon", 60.0),
+                    ],
+                }),
+                false,
+            );
+            f
+        };
+        // The group picked empties: all groups, not the one after it.
+        let mut f = three();
+        f.group = Some(1);
+        f.remove_scene(&["b".into()]);
+        assert_eq!(f.group, None);
+        // Another group empties: the one picked moves up with its scenes.
+        let mut f = three();
+        f.group = Some(2);
+        f.remove_scene(&["a".into()]);
+        assert_eq!(f.group, Some(1));
+        assert_eq!(f.groups[1].0, "C");
     }
 }

@@ -644,7 +644,12 @@ impl FeedSource {
                 return Err(Error::Auth(format!("{} kept the file", redact(scene_url))));
             }
             Ok(_) | Err(Error::NotFound(_)) => {}
-            Err(e) => log::warn!("{}: couldn't check the delete: {e}", redact(scene_url)),
+            // A server that doesn't let players delete answers as usual, so
+            // only this says the file went.
+            Err(e) => {
+                log::warn!("{}: couldn't check the delete: {e}", redact(scene_url));
+                return Err(e);
+            }
         }
         lock(&self.event_servers).remove(scene_url);
         let mut links = lock(&self.scene_links);
@@ -1069,6 +1074,8 @@ mod tests {
                 ("POST", "/heresphere/kept", false) => json(
                     r#"{"title":"Clip","media":[{"name":"h264","sources":[{"resolution":1080,"url":"http://x/clip.mp4"}]}]}"#,
                 ),
+                // The check fails: nothing says the file went.
+                ("POST", "/heresphere/unsure", false) => test_server::resp(500, Vec::new(), &[]),
                 _ => test_server::resp(404, Vec::new(), &[]),
             }
         });
@@ -1117,6 +1124,7 @@ mod tests {
         // Two requests for each of the three deletes, one refused at once.
         assert_eq!(posted.len(), 7, "{posted:?}");
         drop(posted);
+        assert!(hs.delete(&server.url("/heresphere/unsure")).is_err());
 
         let deo = FeedSource::deovr(&FeedConfig {
             id: "deo".into(),

@@ -428,10 +428,10 @@ impl App {
         let opener = self.services.opener.clone();
         self.jobs.spawn("delete-check", move || {
             let allowed = match opener.ask_delete_allowed_in(source_id.as_deref(), &location) {
-                Ok(v) => v,
+                Ok(v) => Some(v),
                 Err(e) => {
                     log::warn!("checking delete permission for {location}: {e}");
-                    false
+                    None
                 }
             };
             Job::DeleteCheck {
