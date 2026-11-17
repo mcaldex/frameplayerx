@@ -166,6 +166,19 @@ as bytes, so this pipeline takes all its descriptors from descriptor
 buffers, the scene's parameters included. HDR 10-bit frames are still
 converted, as their scenes are measured in the converted planes.
 
+Comfort focus (`fp-render/src/focus.rs`) measures how close what the
+viewer looks at is, 20 times a second. After the eye passes, the scene
+shader's `fs_focus` draws strips of both eyes' luma round the aim into a
+small float target with the eye passes' own pipeline layout and bindings,
+so it reads every frame they read, one in the decoder's buffer included;
+`shaders/focus.wgsl` then matches the strips in a compute pass, and the
+scores are read back once the slot's fence has signalled. The eye passes
+start each eye's rays at its offset from its camera, taken from the
+headset's eye poses, and intersect them with a sphere of the measured
+radius round that camera (`Params.focus.w` and `eyes`), and turn the eyes'
+pictures apart about the head's up to ease close things (`focus.z` and
+`relief`); the measurement leaves both out, reading the video as filmed.
+
 **Sources and browsing.** Every source implements one `Source` trait
 (`list`, `open`, `details`). Each kind gets its own browser in `ui/`:
 `local.rs`, `folders.rs`, `catalog.rs` and `feeds.rs`, built from the

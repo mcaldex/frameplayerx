@@ -591,14 +591,21 @@ pub fn chip_icon(ui: &mut Ui, icon: Option<&str>, label: &str, selected: bool) -
 
 pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
     let size = Vec2::new(56.0, 32.0);
-    let (rect, mut resp) = ui.allocate_exact_size(size, Sense::click());
-    if resp.clicked() {
+    let enabled = ui.is_enabled();
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, mut resp) = ui.allocate_exact_size(size, sense);
+    if enabled && resp.clicked() {
         *on = !*on;
         resp.mark_changed();
     }
+    let dim = if enabled { 1.0 } else { 0.45 };
     if ui.is_rect_visible(rect) && dimensional(ui) {
         // A sunken slot that fills with the accent, a raised knob in it.
-        let h = anim(ui, resp.id, resp.hovered());
+        let h = anim(ui, resp.id, enabled && resp.hovered());
         let t = anim(ui, resp.id.with("on"), *on);
         let p = ui.painter();
         super::depth::sunken(p, rect, 16.0, WELL);
@@ -607,14 +614,14 @@ pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
             p.rect_filled(
                 fill,
                 CornerRadius::same(15),
-                theme::ACCENT.gamma_multiply(t),
+                theme::ACCENT.gamma_multiply(t * dim),
             );
             super::depth::fill_vgradient(
                 p,
                 fill,
                 15.0,
-                Color32::from_rgb(98, 196, 255).gamma_multiply(t),
-                Color32::from_rgb(22, 132, 226).gamma_multiply(t),
+                Color32::from_rgb(98, 196, 255).gamma_multiply(t * dim),
+                Color32::from_rgb(22, 132, 226).gamma_multiply(t * dim),
             );
             super::depth::edge(
                 p,
@@ -628,15 +635,19 @@ pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
         }
         let x = egui::lerp((rect.left() + 16.0)..=(rect.right() - 16.0), t);
         knob(p, Pos2::new(x, rect.center().y - h), 12.0 + h);
+        if !enabled {
+            p.rect_filled(rect, CornerRadius::same(16), Color32::from_black_alpha(110));
+        }
     } else if ui.is_rect_visible(rect) {
-        let h = anim(ui, resp.id, resp.hovered());
+        let h = anim(ui, resp.id, enabled && resp.hovered());
         let t = anim(ui, resp.id.with("on"), *on);
         let p = ui.painter();
         let track = mix(
             mix(theme::SURFACE_3, Color32::from_rgb(58, 68, 82), h),
             theme::ACCENT,
             t,
-        );
+        )
+        .gamma_multiply(dim);
         p.rect_filled(rect, CornerRadius::same(16), track);
         let r = 12.0 + h;
         let x = egui::lerp((rect.left() + 16.0)..=(rect.right() - 16.0), t);
@@ -645,7 +656,11 @@ pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
             r,
             Color32::from_black_alpha(60),
         );
-        p.circle_filled(Pos2::new(x, rect.center().y), r, Color32::WHITE);
+        p.circle_filled(
+            Pos2::new(x, rect.center().y),
+            r,
+            Color32::WHITE.gamma_multiply(dim),
+        );
     }
     resp
 }

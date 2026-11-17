@@ -305,10 +305,11 @@ impl Settings {
     }
 
     /// Adjustments for a video that has none saved: the defaults, following
-    /// the global chroma key.
+    /// the global chroma key and comfort focus.
     pub fn new_video_view(&self) -> ViewSettings {
         ViewSettings {
             key_own: Some(false),
+            focus_own: Some(false),
             ..self.default_view
         }
     }

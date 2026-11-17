@@ -607,6 +607,22 @@ out. The same panel has position, size, IPD/depth, stereo alignment,
 picture controls, subtitle depth and keyframes (adjustments that change
 smoothly along the video).
 
+**Comfort focus**, on the Stereo tab for stereo 180° and fisheye videos,
+is about the thing you're looking at. Without it, rolling your head sideways
+or watching lying down makes close things double, because the two pictures
+stay side by side while your eyes are now one above the other. With it on,
+FramePlayerX measures how far away that thing is and adjusts each eye's
+picture to your eyes' actual positions at that distance, so it fuses at
+its real depth; things much nearer or farther than it may still look a
+little doubled. When it is closer than about 85 cm, it also eases the
+depth so your eyes don't have to cross as far. It measures where your eyes
+look while foveated rendering is on, otherwise the middle of your view,
+and catches up about half a second after you look somewhere else. It
+assumes the camera's lenses were 63 mm apart, the average eye spacing.
+Settings › Picture › **3D videos** turns it on for every video; turning it
+on or off for one video keeps that video's choice, and the button beside
+it goes back to the setting.
+
 Codecs: H.264, HEVC (8/10-bit, HDR10/HLG tone-mapped), AV1, VP9, VP8,
 VC-1, MPEG-4, MPEG-2, ProRes. Audio: AAC, AC-3/E-AC-3, Opus, Vorbis, FLAC,
 MP3, DTS, TrueHD, PCM (Blu-ray and DVD LPCM too), and spatial (ambisonic)

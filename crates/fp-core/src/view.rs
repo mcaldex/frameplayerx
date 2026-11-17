@@ -38,6 +38,13 @@ pub struct ViewSettings {
     pub lens_centre: [[f32; 2]; 2],
     /// Swap left and right eyes.
     pub swap_eyes: bool,
+    /// Comfort focus for stereo 180° and fisheye videos: softens close-up
+    /// stereo depth when something in the scene is very near.
+    pub comfort_focus: bool,
+    /// Whether this video keeps its own comfort focus setting rather than
+    /// following the global one (Settings > Picture > 3D videos).
+    #[serde(default)]
+    pub focus_own: Option<bool>,
     /// Picture: brightness and contrast around 0 and 1, saturation 1,
     /// gamma 1, sharpen 0..1.
     pub brightness: f32,
@@ -88,6 +95,8 @@ impl Default for ViewSettings {
             lens_k2: 0.0,
             lens_centre: [[0.0; 2]; 2],
             swap_eyes: false,
+            comfort_focus: false,
+            focus_own: Some(false),
             brightness: 0.0,
             contrast: 1.0,
             saturation: 1.0,
@@ -132,6 +141,16 @@ impl ViewSettings {
             } else {
                 other.swap_eyes
             },
+            comfort_focus: if t < 0.5 {
+                self.comfort_focus
+            } else {
+                other.comfort_focus
+            },
+            focus_own: if t < 0.5 {
+                self.focus_own
+            } else {
+                other.focus_own
+            },
             brightness: l(self.brightness, other.brightness),
             contrast: l(self.contrast, other.contrast),
             saturation: l(self.saturation, other.saturation),
@@ -164,6 +183,11 @@ impl ViewSettings {
         self.key_own.unwrap_or(self.chroma_key)
     }
 
+    /// Whether the comfort focus setting is this video's own (see [`Self::focus_own`]).
+    pub fn own_focus(&self) -> bool {
+        self.focus_own.unwrap_or(false)
+    }
+
     /// The chroma key settings: on, colour, similarity, smoothness, spill.
     pub fn key(&self) -> (bool, [f32; 3], f32, f32, f32) {
         (
@@ -186,10 +210,14 @@ impl ViewSettings {
         ) = from.key();
     }
 
-    /// These settings with `global`'s chroma key, unless the video has its own.
+    /// These settings with `global`'s chroma key and comfort focus, unless the
+    /// video has its own.
     pub fn with_global_key(mut self, global: &ViewSettings) -> ViewSettings {
         if !self.own_key() {
             self.set_key(global);
+        }
+        if !self.own_focus() {
+            self.comfort_focus = global.comfort_focus;
         }
         self
     }
@@ -373,5 +401,33 @@ mod tests {
         assert_eq!(old.with_global_key(&global).key_color, [1.0, 0.0, 1.0]);
         let old: ViewSettings = serde_json::from_str(r#"{"zoom":1.2}"#).unwrap();
         assert!(old.with_global_key(&global).chroma_key);
+    }
+
+    #[test]
+    fn videos_follow_global_comfort_focus_unless_overridden() {
+        let global = ViewSettings {
+            comfort_focus: true,
+            ..Default::default()
+        };
+        let video = ViewSettings::default();
+        assert!(video.with_global_key(&global).comfort_focus);
+
+        let forced_off = ViewSettings {
+            comfort_focus: false,
+            focus_own: Some(true),
+            ..video
+        };
+        assert!(!forced_off.with_global_key(&global).comfort_focus);
+
+        let global_off = ViewSettings::default();
+        let forced_on = ViewSettings {
+            comfort_focus: true,
+            focus_own: Some(true),
+            ..video
+        };
+        assert!(forced_on.with_global_key(&global_off).comfort_focus);
+
+        let old: ViewSettings = serde_json::from_str(r#"{"zoom":1.2}"#).unwrap();
+        assert!(old.with_global_key(&global).comfort_focus);
     }
 }

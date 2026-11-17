@@ -6,6 +6,8 @@ use ash::vk;
 
 pub(crate) struct PipelineDesc<'a> {
     pub spv: &'a [u8],
+    /// The fragment entry point, `vs_main` being the vertex one.
+    pub fragment: &'a std::ffi::CStr,
     pub layout: vk::PipelineLayout,
     pub color_format: vk::Format,
     pub vertex_stride: u32,
@@ -39,7 +41,7 @@ pub(crate) fn create(gpu: &Gpu, d: &PipelineDesc) -> Result<vk::Pipeline> {
         vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::FRAGMENT)
             .module(module)
-            .name(c"fs_main"),
+            .name(d.fragment),
     ];
     let bindings = [vk::VertexInputBindingDescription::default()
         .binding(0)

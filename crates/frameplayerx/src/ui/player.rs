@@ -1180,7 +1180,13 @@ pub fn adjust_panel(ctx: &egui::Context, v: &mut View) {
                             || (flat && (pb.settings.yaw, pb.settings.pitch) != (0.0, 0.0));
                         position_tab(ui, &mut pb.settings, flat, moved, v.actions);
                     }
-                    2 => stereo_tab(ui, &mut pb.settings, true),
+                    2 => stereo_tab(
+                        ui,
+                        &mut pb.settings,
+                        Some(&v.settings.default_view),
+                        pb.format.can_comfort_focus(),
+                        true,
+                    ),
                     3 => picture_tab(ui, &mut pb.settings),
                     4 => {
                         widgets::section_label(ui, tr!("settings-passthrough-videos"));
@@ -1597,11 +1603,41 @@ fn position_tab(
     background_controls(ui, &mut s.background);
 }
 
-/// Depth and eye alignment, with subtitle depth unless `subtitles` is off
-/// (Settings has it with the subtitles).
-pub(super) fn stereo_tab(ui: &mut egui::Ui, s: &mut ViewSettings, subtitles: bool) {
+/// Depth, comfort focus and eye alignment, with subtitle depth unless
+/// `subtitles` is off (Settings has it with the subtitles).
+pub(super) fn stereo_tab(
+    ui: &mut egui::Ui,
+    s: &mut ViewSettings,
+    global: Option<&ViewSettings>,
+    can_focus: bool,
+    subtitles: bool,
+) {
     let d = ViewSettings::default();
     widgets::rows(ui, |r| {
+        if can_focus {
+            let desc = tr!("adjust-comfort-focus-desc");
+            r.row(tr!("adjust-comfort-focus"), Some(desc), |ui| {
+                let mut on = if s.own_focus() {
+                    s.comfort_focus
+                } else {
+                    global.map_or(s.comfort_focus, |g| g.comfort_focus)
+                };
+                if let Some(g) = global
+                    && s.own_focus()
+                    && widgets::icon_button(ui, icons::ARROW_COUNTER_CLOCKWISE, 40.0, false)
+                        .tip(tr!("adjust-reset"))
+                        .clicked()
+                {
+                    s.focus_own = Some(false);
+                    s.comfort_focus = g.comfort_focus;
+                }
+                let sw = widgets::switch(ui, &mut on);
+                if sw.changed() {
+                    s.comfort_focus = on;
+                    s.focus_own = Some(global.is_some());
+                }
+            });
+        }
         r.slider(
             tr!("adjust-depth"),
             Some(tr!("adjust-depth-desc")),

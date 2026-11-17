@@ -58,6 +58,15 @@ struct Params {
     // chroma: x first-row step, y rows, z the plane's rows, w count
     tp10: vec4<f32>,
     tp10_uv: vec4<f32>,
+    // Comfort focus (src/focus.rs): x, y the aim's longitude and latitude in
+    // the room frame; z the eyes' turn apart about the head's up, which
+    // fs_focus leaves out; w the distance in focus, metres (0: none)
+    focus: vec4<f32>,
+    // Each eye's offset from its camera, in the video's frame, for
+    // re-projecting at the distance in focus
+    eyes: array<vec4<f32>, 2>,
+    // Each eye's turn apart about the head's up, as a quaternion
+    relief: array<vec4<f32>, 2>,
 };
 
 struct PushConstants {
@@ -99,6 +108,11 @@ fn rot_x(a: f32) -> mat3x3<f32> {
 fn rot_z(a: f32) -> mat3x3<f32> {
     let c = cos(a); let s = sin(a);
     return mat3x3<f32>(vec3<f32>(c, s, 0.0), vec3<f32>(-s, c, 0.0), vec3<f32>(0.0, 0.0, 1.0));
+}
+// `v` turned by the unit quaternion `q` (xyz, w).
+fn quat_rotate(q: vec4<f32>, v: vec3<f32>) -> vec3<f32> {
+    let t = 2.0 * cross(q.xyz, v);
+    return v + q.w * t + cross(q.xyz, t);
 }
 
 // Angle-preserving zoom: scales the angle from the forward axis.
@@ -249,6 +263,45 @@ fn stored_uv(uv: vec2<f32>) -> vec2<f32> {
     }
 }
 
+// Where `eye` sees the spherical video along `dir`, a ray in the room frame
+// the video was centred in: the projection's coordinates, or INVALID. In
+// that frame, so per-eye stereo corrections stay the eyes' own; then the
+// picture's rotation. `comfort` is the eye passes' view with comfort focus;
+// fs_focus and the eye passes without it read the video as filmed. Callers
+// pass it as a constant, so each pipeline compiles only its own case.
+fn video_uv(dir: vec3<f32>, eye: u32, comfort: bool) -> vec2<f32> {
+    let s = select(-0.5, 0.5, eye == 1u);
+    var d = rot_y(params.proj.w * s) * dir;
+    // Comfort focus eases along the eyes' baseline, whichever way the head is.
+    if (comfort) {
+        d = quat_rotate(params.relief[eye], d);
+    }
+    d = rot_x(params.lens.z * s) * d;
+    d = rot_z(params.lens.w * s) * d;
+    d = normalize((params.correction * vec4<f32>(d, 0.0)).xyz);
+    // Comfort focus: the ray starts at this eye's offset from its camera
+    // (params.eyes) and meets a sphere of radius focus.w round the camera;
+    // the hit is looked up from the camera. Points at that radius line up
+    // for any head pose, and zero offsets leave the picture unchanged.
+    if (comfort) {
+        d = off_centre(d, params.eyes[eye].xyz, params.focus.w);
+    }
+    d = off_centre(d, (params.correction * vec4<f32>(params.viewer.xyz, 0.0)).xyz,
+                   params.viewer.w);
+    d = zoom_dir(d, params.proj.z);
+    let kind = params.mode.x;
+    if (kind == 1u) {
+        return equirect_uv(d, params.proj.x, params.proj.y);
+    }
+    if (kind == 2u) {
+        // The centres belong to the images, so they follow a swap.
+        let slot = select(0u, eye ^ params.mode.z, params.mode.y != 0u);
+        let centre = 0.5 + select(params.centres.xy, params.centres.zw, slot == 1u);
+        return fisheye_uv(d, params.proj.x, params.lens.x, params.lens.y, params.circle.xy, centre);
+    }
+    return eac_uv(d, params.proj.x);
+}
+
 // BT.2390's EETF on PQ code `e`, for a source peaking at PQ `src` and a
 // display peaking at PQ `dst`: unchanged below the knee, a Hermite spline
 // above it.
@@ -308,6 +361,16 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    return shade(in, false);
+}
+
+// The eye passes with comfort focus (src/focus.rs).
+@fragment
+fn fs_main_comfort(in: VsOut) -> @location(0) vec4<f32> {
+    return shade(in, true);
+}
+
+fn shade(in: VsOut, comfort: bool) -> vec4<f32> {
     let eye = pc.eye;
     let near = params.inv_view_proj[eye] * vec4<f32>(in.ndc, 0.0, 1.0);
     let far = params.inv_view_proj[eye] * vec4<f32>(in.ndc, 1.0, 1.0);
@@ -319,31 +382,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
 
     var uv: vec2<f32>;
-    let kind = params.mode.x;
-    if (kind == 0u) {
+    if (params.mode.x == 0u) {
         uv = flat_uv(origin, world_dir);
     } else {
-        // In the room frame the video was centred in, so per-eye stereo
-        // corrections stay the eyes' own; then the picture's rotation.
-        let s = select(-0.5, 0.5, eye == 1u);
-        var d = (params.anchor_inv * vec4<f32>(world_dir, 0.0)).xyz;
-        d = rot_y(params.proj.w * s) * d;
-        d = rot_x(params.lens.z * s) * d;
-        d = rot_z(params.lens.w * s) * d;
-        d = normalize((params.correction * vec4<f32>(d, 0.0)).xyz);
-        d = off_centre(d, (params.correction * vec4<f32>(params.viewer.xyz, 0.0)).xyz,
-                       params.viewer.w);
-        d = zoom_dir(d, params.proj.z);
-        if (kind == 1u) {
-            uv = equirect_uv(d, params.proj.x, params.proj.y);
-        } else if (kind == 2u) {
-            // The centres belong to the images, so they follow a swap.
-            let slot = select(0u, eye ^ params.mode.z, params.mode.y != 0u);
-            let centre = 0.5 + select(params.centres.xy, params.centres.zw, slot == 1u);
-            uv = fisheye_uv(d, params.proj.x, params.lens.x, params.lens.y, params.circle.xy, centre);
-        } else {
-            uv = eac_uv(d, params.proj.x);
-        }
+        let dir = (params.anchor_inv * vec4<f32>(world_dir, 0.0)).xyz;
+        uv = video_uv(dir, eye, comfort);
     }
     if (uv.x < 0.0) {
         return params.bg_color;
@@ -410,4 +453,52 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let col = srgb_to_linear(clamp(g, vec3<f32>(0.0), vec3<f32>(1.0)));
     // Over the (premultiplied) background: keyed-out pixels show it.
     return vec4<f32>(col * alpha + params.bg_color.rgb * (1.0 - alpha), alpha + params.bg_color.a * (1.0 - alpha));
+}
+
+// Comfort focus's samples (src/focus.rs, matched by focus.wgsl), drawn into a
+// small float target with the eye passes' own bindings, so any frame they
+// can read is measured too. For each patch of a 3 x 3 cluster round the aim,
+// a strip of each eye's luma on a lattice of room-frame longitude and
+// latitude FOCUS_STEP apart: turning a ray about the room's vertical, as the
+// depth setting does, moves it along a row, so a disparity is a shift along
+// the rows. Each sample is the mean of 2 x 2 taps over its cell, a box
+// filter so the comparison sees the same detail in both pictures. Rows: patch
+// after patch, FOCUS_ROWS each; columns: the left eye's strip, then the
+// right's, FOCUS_COLS each. A sample off the picture is -1.
+const FOCUS_STEP: f32 = 0.0035;
+const FOCUS_COLS: u32 = 53u;
+const FOCUS_ROWS: u32 = 19u;
+// The lattice column each strip starts at: its shifts reach these.
+const FOCUS_LEFT0: i32 = -12;
+const FOCUS_RIGHT0: i32 = -39;
+const FOCUS_GRID_X: f32 = 0.06;
+const FOCUS_GRID_Y: f32 = 0.05;
+
+fn lattice(lon: f32, lat: f32) -> vec3<f32> {
+    return vec3<f32>(cos(lat) * sin(lon), sin(lat), -cos(lat) * cos(lon));
+}
+
+@fragment
+fn fs_focus(in: VsOut) -> @location(0) vec4<f32> {
+    let px = vec2<u32>(in.pos.xy);
+    let eye = px.x / FOCUS_COLS;
+    let cell = px.y / FOCUS_ROWS;
+    if (eye > 1u || cell > 8u) {
+        return vec4<f32>(-1.0, 0.0, 0.0, 0.0);
+    }
+    let col = i32(px.x % FOCUS_COLS) + select(FOCUS_LEFT0, FOCUS_RIGHT0, eye == 1u);
+    let row = i32(px.y % FOCUS_ROWS) - i32(FOCUS_ROWS / 2u);
+    // Row 0 of the cluster is on top.
+    let lon = params.focus.x + (f32(cell % 3u) - 1.0) * FOCUS_GRID_X + f32(col) * FOCUS_STEP;
+    let lat = params.focus.y + (1.0 - f32(cell / 3u)) * FOCUS_GRID_Y - f32(row) * FOCUS_STEP;
+    var sum = 0.0;
+    for (var t = 0u; t < 4u; t++) {
+        let o = (vec2<f32>(f32(t % 2u), f32(t / 2u)) - 0.5) * (0.5 * FOCUS_STEP);
+        let uv = video_uv(lattice(lon + o.x, lat - o.y), eye, false);
+        if (uv.x < 0.0) {
+            return vec4<f32>(-1.0, 0.0, 0.0, 0.0);
+        }
+        sum += luma_at(stored_uv(to_eye_rect(uv, eye)));
+    }
+    return vec4<f32>(0.25 * sum, 0.0, 0.0, 0.0);
 }

@@ -5,7 +5,7 @@ use fp_core::view::ViewSettings;
 use fp_media::PixelLayout;
 use fp_media::frame::{ColorInfo, Matrix};
 use fp_media::info::Transfer;
-use glam::{EulerRot, Mat4, Quat, Vec4};
+use glam::{EulerRot, Mat4, Quat, Vec3, Vec4};
 
 /// Matches `struct Params` in shaders/scene.wgsl (std140-compatible: every
 /// member is 16-byte aligned).
@@ -37,6 +37,14 @@ pub(crate) struct SceneParams {
     pub hdr: Vec4,
     pub tp10: Vec4,
     pub tp10_uv: Vec4,
+    /// Comfort focus (`focus.rs`): x, y the aim's longitude and latitude in
+    /// the room frame; z the eyes' turn apart about the head's up, which its
+    /// measurement leaves out; w the distance in focus, metres (0: none).
+    pub focus: Vec4,
+    /// Each eye's offset from its camera, in the video's frame.
+    pub eyes: [Vec4; 2],
+    /// Each eye's turn apart about the head's up, as a quaternion.
+    pub relief: [Vec4; 2],
 }
 
 /// Sets `p` up for a Q10C picture of `height` rows sampled where it lies
@@ -164,6 +172,35 @@ pub(crate) fn yuv_matrix(color: &ColorInfo, layout: PixelLayout) -> ([Vec4; 3], 
 /// moves off its centre (height, forward). Rays from the centre ignore it.
 const SPHERE_RADIUS: f32 = 3.0;
 
+/// Maximum per-eye vergence relief in radians (~2.75° per eye, 5.5° total).
+pub(crate) const MAX_COMFORT_CORR_RAD: f32 = 0.048;
+
+/// Comfort focus's view for the eye passes. Each eye's rays start at its
+/// offset from its camera, `eyes` being their offsets from the point between
+/// them and `up` the head's up (room frame), and meet a sphere `distance`
+/// metres round the camera; and the eyes' pictures turn apart by
+/// `relief_rad` each about the head's up, so close objects ask for less
+/// convergence while the cyclopean scene stays where it is.
+pub(crate) fn set_comfort_focus(
+    p: &mut SceneParams,
+    relief_rad: f32,
+    distance: f32,
+    eyes: [Vec3; 2],
+    up: Vec3,
+) {
+    let relief = relief_rad.clamp(0.0, MAX_COMFORT_CORR_RAD);
+    p.focus.z = 2.0 * relief;
+    p.focus.w = distance.max(0.0);
+    let up = up.normalize_or(Vec3::Y);
+    // The left eye's camera is half the lens spacing to the left, the right's
+    // to the right; the left eye turns by -relief, the right by +relief.
+    for (e, side) in [-1.0f32, 1.0].into_iter().enumerate() {
+        let camera = Vec3::X * (side * 0.5 * crate::focus::LENS_SPACING);
+        p.eyes[e] = (p.correction.transform_vector3(eyes[e]) - camera).extend(0.0);
+        p.relief[e] = Vec4::from(Quat::from_axis_angle(up, side * relief));
+    }
+}
+
 pub(crate) fn build(
     video: &VideoParams,
     frame: Option<&FrameDesc>,
@@ -284,6 +321,9 @@ pub(crate) fn build(
         hdr: hdr_levels(crate::hdr::DEFAULT_PEAK),
         tp10: Vec4::ZERO,
         tp10_uv: Vec4::ZERO,
+        focus: Vec4::ZERO,
+        eyes: [Vec4::ZERO; 2],
+        relief: [Vec4::W; 2],
     }
 }
 
@@ -302,7 +342,7 @@ mod tests {
     use super::*;
 
     fn apply(rows: &[Vec4; 3], off: Vec4, yuv: [f32; 3]) -> [f32; 3] {
-        let v = glam::Vec3::new(yuv[0], yuv[1], yuv[2]) * off.w - off.truncate();
+        let v = Vec3::new(yuv[0], yuv[1], yuv[2]) * off.w - off.truncate();
         [
             rows[0].truncate().dot(v),
             rows[1].truncate().dot(v),
@@ -477,5 +517,37 @@ mod tests {
             960.0 * 32.0 / 27.0 / 480.0
         ));
         assert!(near(eye(1920, 800, StereoLayout::Mono, 0.5), 1.2));
+    }
+
+    #[test]
+    fn comfort_focus_adds_symmetric_vergence_relief_without_moving_sphere() {
+        let video = VideoParams {
+            format: VideoFormat::new(Projection::EQUIRECT_180, StereoLayout::SideBySide),
+            ..Default::default()
+        };
+        let mut p = build(&video, None, [Mat4::IDENTITY; 2]);
+        let viewer_before = p.viewer;
+        assert_eq!(p.focus.z, 0.0);
+
+        let eyes = [Vec3::new(-0.032, 0.0, 0.0), Vec3::new(0.032, 0.0, 0.0)];
+
+        // Far objects (0.0 correction) leave the depth untouched.
+        set_comfort_focus(&mut p, 0.0, 3.0, eyes, Vec3::Y);
+        assert_eq!(p.focus.z, 0.0);
+        assert_eq!(p.focus.w, 3.0);
+
+        // Near objects add symmetric vergence relief beside the depth setting
+        // (`proj.w`), which the measurement keeps reading unchanged, and leave
+        // `viewer` (height/forward sphere) as it was.
+        set_comfort_focus(&mut p, 0.025, 0.4, eyes, Vec3::Y * 2.0);
+        assert!((p.focus.z - 0.050).abs() < 1e-6);
+        assert_eq!(p.proj.w, 0.0);
+        assert_eq!(p.viewer, viewer_before);
+        // Each eye's offset from its camera: 0.5 mm wider than the lenses.
+        assert!((p.eyes[1].x - 0.0005).abs() < 1e-6, "{:?}", p.eyes[1]);
+        assert!((p.eyes[0].x + 0.0005).abs() < 1e-6, "{:?}", p.eyes[0]);
+        // Turned apart about the head's up, the right eye's way positive.
+        let right = Quat::from_vec4(p.relief[1]) * Vec3::NEG_Z;
+        assert!((right.x + 0.025f32.sin()).abs() < 1e-5, "{right}");
     }
 }

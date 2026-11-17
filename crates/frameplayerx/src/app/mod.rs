@@ -514,6 +514,9 @@ impl App {
         {
             self.services.set_worker_options(&self.settings);
         }
+        if self.settings.default_view.comfort_focus != self.saved.default_view.comfort_focus {
+            self.panels[ADJUST].request_repaint();
+        }
         self.saved = self.settings.clone();
         self.save_settings();
     }
