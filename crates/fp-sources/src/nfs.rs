@@ -816,6 +816,26 @@ mod imp {
         handles: HashMap<String, nfs_fh3>,
         /// Largest READ the server takes.
         rtmax: u32,
+        /// Set when a request failed in transit: one cut off by [`TIMEOUT`]
+        /// can leave half a reply on the connection, so no other is sent.
+        broken: Arc<AtomicBool>,
+    }
+
+    /// Runs `work` on a session's connection unless it is `broken`, which a
+    /// failure in transit makes it.
+    fn run_on<T>(
+        broken: &AtomicBool,
+        what: &str,
+        work: impl Future<Output = Result<T>>,
+    ) -> Result<T> {
+        if broken.load(Ordering::Acquire) {
+            return Err(Error::Nfs(format!("{what}: the connection was lost")));
+        }
+        let r = run(what, work);
+        if matches!(r, Err(Error::Nfs(_))) {
+            broken.store(true, Ordering::Release);
+        }
+        r
     }
 
     impl Session {
@@ -1016,11 +1036,12 @@ mod imp {
                 .map_err(|e| rpc_err(e, url))?;
             match reply {
                 Nfs3Result::Ok(ok) => {
-                    let target = String::from_utf8_lossy(ok.data.0.as_ref()).into_owned();
+                    let target = std::str::from_utf8(ok.data.0.as_ref())
+                        .map_err(|_| Error::invalid(url, "a link to a name that isn't UTF-8"))?;
                     if target.is_empty() || target.contains('\0') {
                         return Err(Error::invalid(url, "a link with no target"));
                     }
-                    Ok(target)
+                    Ok(target.to_owned())
                 }
                 Nfs3Result::Err((stat, _)) => Err(status_err(stat, url)),
             }
@@ -1066,7 +1087,13 @@ mod imp {
                 let empty = entries.is_empty();
                 for entry in entries {
                     cookie = entry.cookie;
-                    let name = String::from_utf8_lossy(entry.name.as_ref()).into_owned();
+                    // A name that isn't UTF-8 would be asked for, and
+                    // deleted, as another one.
+                    let Ok(name) = std::str::from_utf8(entry.name.as_ref()) else {
+                        log::debug!("{url}: skipping a name that isn't UTF-8");
+                        continue;
+                    };
+                    let name = name.to_owned();
                     if name == "." || name == ".." || name.contains(['/', '\0']) {
                         continue;
                     }
@@ -1321,6 +1348,7 @@ mod imp {
                 roots: HashMap::new(),
                 handles: HashMap::new(),
                 rtmax: 64 * 1024,
+                broken: Arc::default(),
             }));
             *current = Some((session.clone(), Instant::now()));
             Ok((session, false))
@@ -1497,16 +1525,25 @@ mod imp {
             let (export, rest) = self.split(loc)?;
             self.client.with_session(|session| {
                 let mut s = lock(session);
-                run(&url, s.list(&export, rest, &url))
+                let broken = s.broken.clone();
+                run_on(&broken, &url, s.list(&export, rest, &url))
             })
         }
 
         pub(super) fn remove_file(&self, loc: &NfsLocation) -> Result<()> {
             let url = loc.to_url();
             let (export, rest) = self.split(loc)?;
+            let tries = std::cell::Cell::new(0);
             self.client.with_session(|session| {
+                tries.set(tries.get() + 1);
                 let mut s = lock(session);
-                run(&url, s.remove(&export, rest, &url))
+                let broken = s.broken.clone();
+                match run_on(&broken, &url, s.remove(&export, rest, &url)) {
+                    // Gone when tried again: the first REMOVE's answer was
+                    // lost, not the REMOVE.
+                    Err(Error::NotFound(_)) if tries.get() > 1 => Ok(()),
+                    r => r,
+                }
             })
         }
 
@@ -1552,7 +1589,8 @@ mod imp {
         ) -> Result<OpenFile> {
             client.with_session(|session| {
                 let mut s = lock(session);
-                let (fh, size) = run(url, async {
+                let broken = s.broken.clone();
+                let (fh, size) = run_on(&broken, url, async {
                     let fh = s.handle(export, rest, url).await?;
                     let size = s.file_size(&fh, url).await?;
                     Ok((fh, size))
@@ -1574,7 +1612,8 @@ mod imp {
                 let want = u32::try_from(len - out.len()).unwrap_or(u32::MAX);
                 let (data, eof) = {
                     let mut s = lock(&self.session);
-                    run(url, s.read(&self.fh, at, want, url))?
+                    let broken = s.broken.clone();
+                    run_on(&broken, url, s.read(&self.fh, at, want, url))?
                 };
                 let short = data.is_empty();
                 out.extend_from_slice(&data);
