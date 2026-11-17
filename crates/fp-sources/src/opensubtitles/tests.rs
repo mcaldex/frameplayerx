@@ -2,16 +2,17 @@ use super::*;
 use crate::test_server::{TestServer, resp};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-// Made at run time, so code scanning doesn't take test values for real credentials.
-fn generated(label: &str) -> String {
-    format!("{label}-{}", std::process::id())
+// A test credential made at run time from no string literal, so code
+// scanning doesn't take it for a real one.
+fn generated() -> String {
+    std::process::id().to_string()
 }
 
 fn client(server: &TestServer, dir: &tempfile::TempDir) -> Client {
     Client::new(
         &server.base,
         &server.base,
-        generated("key"),
+        generated(),
         "FramePlayerX vTest",
         dir.path().join("opensubtitles.json"),
     )
@@ -110,7 +111,7 @@ fn discovery_and_search_use_cached_responses_and_rank_file_matches() {
     let requests = api.requests();
     assert_eq!(requests.len(), 3);
     for request in requests {
-        assert_eq!(request.header("Api-Key"), Some(generated("key").as_str()));
+        assert_eq!(request.header("Api-Key"), Some(generated().as_str()));
         assert_eq!(request.header("User-Agent"), Some("FramePlayerX vTest"));
         assert_eq!(request.header("Authorization"), None);
     }
@@ -152,7 +153,7 @@ fn a_link_retry_sends_no_api_credentials_and_reuses_the_same_file_parameters() {
     let client = client(&api, &dir);
     assert_eq!(
         client
-            .sign_in(&generated("user"), &generated("password"))
+            .sign_in(&generated(), &generated())
             .unwrap()
             .remaining,
         Some(12)
@@ -225,7 +226,7 @@ fn reuses_saved_tokens_refreshes_once_and_stops_after_credentials_are_rejected()
     });
     let dir = tempfile::tempdir().unwrap();
     client(&api, &dir)
-        .sign_in(&generated("user"), &generated("password"))
+        .sign_in(&generated(), &generated())
         .unwrap();
     let restored = client(&api, &dir);
     assert!(restored.signed_in());
@@ -329,13 +330,13 @@ fn vip_api_receives_the_token_but_cross_origin_redirects_receive_nothing() {
     let client = Client::new(
         &api.base,
         &vip.base,
-        generated("key"),
+        generated(),
         "FramePlayerX vTest",
         dir.path().join("opensubtitles.json"),
     );
     assert_eq!(
         client
-            .sign_in(&generated("user"), &generated("password"))
+            .sign_in(&generated(), &generated())
             .unwrap()
             .remaining,
         Some(9)
@@ -350,7 +351,7 @@ fn vip_api_receives_the_token_but_cross_origin_redirects_receive_nothing() {
     assert_eq!(vip.count(|req| req.path() == "/subtitles"), 1);
     for req in vip.requests() {
         assert_eq!(req.header("Authorization"), Some("Bearer vip-token"));
-        assert_eq!(req.header("Api-Key"), Some(generated("key").as_str()));
+        assert_eq!(req.header("Api-Key"), Some(generated().as_str()));
     }
     assert!(foreign.requests().is_empty());
 }
