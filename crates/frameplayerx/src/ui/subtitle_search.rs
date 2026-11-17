@@ -46,6 +46,9 @@ pub struct Search {
     pub error: Option<Error>,
     refine_open: bool,
     pub(crate) account_open: bool,
+    /// Whether the selected file is already on the headset, for that file
+    /// and that many of the video's subtitles: found once, not each frame.
+    kept: Option<(u64, usize, bool)>,
 }
 
 impl Search {
@@ -67,6 +70,7 @@ impl Search {
             error: None,
             refine_open: false,
             account_open: false,
+            kept: None,
         }
     }
 
@@ -164,7 +168,10 @@ pub fn panel(ctx: &egui::Context, v: &mut View) {
                     });
                 return;
             }
-            ui.add_enabled_ui(account.available && !search.busy, |ui| {
+            // Not while a search runs or a file downloads, whose answers
+            // would be for what was asked before.
+            let editable = account.available && !search.busy && search.downloading.is_none();
+            ui.add_enabled_ui(editable, |ui| {
                 ui.horizontal(|ui| {
                     let edited = page::search_field(
                         ui,
@@ -181,7 +188,7 @@ pub fn panel(ctx: &egui::Context, v: &mut View) {
                 });
             });
             ui.horizontal_wrapped(|ui| {
-                ui.add_enabled_ui(account.available && !search.busy, |ui| {
+                ui.add_enabled_ui(editable, |ui| {
                     if widgets::button(ui, None, tr!("subtitle-refine"), Kind::Ghost).clicked() {
                         search.refine_open = !search.refine_open;
                     }
@@ -190,7 +197,7 @@ pub fn panel(ctx: &egui::Context, v: &mut View) {
                     ui.label(RichText::new(quota_text(&account.quota)).color(theme::TEXT_3));
                 }
             });
-            ui.add_enabled_ui(account.available && !search.busy, |ui| {
+            ui.add_enabled_ui(editable, |ui| {
                 if search.refine_open {
                     refine(ui, search);
                     if search.manual
@@ -250,12 +257,21 @@ pub fn panel(ctx: &egui::Context, v: &mut View) {
                     }
                 });
             if let Some(id) = search.selected {
-                let cached = attachments.iter().any(|s| {
-                    is_download(s, id)
-                        && fp_library::SubtitleStore::default()
-                            .open(&s.location())
-                            .is_ok()
-                });
+                let cached = match search.kept {
+                    Some((kept, count, cached)) if kept == id && count == attachments.len() => {
+                        cached
+                    }
+                    _ => {
+                        let cached = attachments.iter().any(|s| {
+                            is_download(s, id)
+                                && fp_library::SubtitleStore::default()
+                                    .open(&s.location())
+                                    .is_ok()
+                        });
+                        search.kept = Some((id, attachments.len(), cached));
+                        cached
+                    }
+                };
                 let label = if search.downloading == Some(id) {
                     tr!("subtitle-downloading")
                 } else if cached {

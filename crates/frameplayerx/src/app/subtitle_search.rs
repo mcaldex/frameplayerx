@@ -530,6 +530,12 @@ impl App {
             })
             || self.locked_source_of(&p.request).is_some()
         {
+            // A download the search has moved on from still ends.
+            if search.is_some()
+                && let Some(s) = &mut self.ui.subtitle_search
+            {
+                s.downloading = None;
+            }
             return;
         }
         let Some(index) = p.subtitle_files.iter().position(|s| s.location == location) else {

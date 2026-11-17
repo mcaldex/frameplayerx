@@ -27,6 +27,15 @@ const MAX_PAGES: u32 = 10;
 const FILE_LINK_TTL: Duration = Duration::from_secs(5 * 60);
 const MAX_RETRY_WAIT: Duration = Duration::from_secs(2);
 const REQUEST_SPACING: Duration = Duration::from_millis(250);
+
+/// Why a download link gave no file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LinkFailed {
+    /// The server says it has run out.
+    Expired,
+    /// Refused or not found.
+    Refused,
+}
 const SUB_FORMAT: &str = "srt";
 
 /// Identity of the conversion parameters saved with an attachment.
@@ -407,24 +416,33 @@ impl Client {
         }
         let mut requests = lock(&self.requests);
         requests.links.retain(|_, link| link.until > Instant::now());
-        let link = match requests.links.get(&file_id) {
-            Some(link) => link.url.clone(),
+        let cached = requests.links.get(&file_id).map(|link| link.url.clone());
+        let from_cache = cached.is_some();
+        let link = match cached {
+            Some(url) => url,
             None => self.request_file(&mut requests, file_id)?,
         };
         let bytes = match self.fetch_file(&mut requests, link)? {
-            Some(body) => body,
-            None => {
-                // Expired or invalidated link; request the exact same file and
-                // parameters once more. Retryable GET failures keep the link.
+            Ok(body) => body,
+            // A link kept from before may have run out, or the server says
+            // this one has: request the exact same file and parameters once
+            // more. A new link refused otherwise won't do better asked for
+            // again, and each one counts against the day's downloads.
+            // Retryable GET failures keep the link.
+            Err(why) if from_cache || why == LinkFailed::Expired => {
                 requests.links.remove(&file_id);
                 let link = self.request_file(&mut requests, file_id)?;
                 match self.fetch_file(&mut requests, link)? {
-                    Some(bytes) => bytes,
-                    None => {
+                    Ok(bytes) => bytes,
+                    Err(_) => {
                         requests.links.remove(&file_id);
                         return Err(Error::Unavailable);
                     }
                 }
+            }
+            Err(_) => {
+                requests.links.remove(&file_id);
+                return Err(Error::Unavailable);
             }
         };
         Ok(Download {
@@ -485,7 +503,11 @@ impl Client {
         status.quota.update_reset_time(reset_time_utc);
     }
 
-    fn fetch_file(&self, requests: &mut Requests, mut url: url::Url) -> Result<Option<Vec<u8>>> {
+    fn fetch_file(
+        &self,
+        requests: &mut Requests,
+        mut url: url::Url,
+    ) -> Result<std::result::Result<Vec<u8>, LinkFailed>> {
         let mut retried = false;
         for _ in 0..10 {
             self.check_file_url(&url)?;
@@ -509,13 +531,14 @@ impl Client {
                     {
                         return Err(Error::InvalidSubtitle);
                     }
-                    return Ok(Some(reply.body));
+                    return Ok(Ok(reply.body));
                 }
                 301 | 302 | 303 | 307 | 308 => {
                     let location = reply.header("location").ok_or(Error::InvalidResponse)?;
                     url = url.join(location).map_err(|_| Error::InvalidResponse)?;
                 }
-                401 | 403 | 404 | 410 => return Ok(None),
+                410 => return Ok(Err(LinkFailed::Expired)),
+                401 | 403 | 404 => return Ok(Err(LinkFailed::Refused)),
                 408 | 429 | 500 | 502 | 503 | 504 if !retried && delay <= MAX_RETRY_WAIT => {
                     retried = true;
                 }
