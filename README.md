@@ -1,6 +1,6 @@
-<p align="center">
-  <img src="assets/logo.svg" alt="FramePlayerX Logo" width="160" />
-</p>
+<div align="center">
+
+<img src="assets/logo.svg" alt="FramePlayerX Logo" width="160" />
 
 # FramePlayerX
 
@@ -11,8 +11,10 @@
 
 A VR video player for the Valve Steam Frame. It plays flat, 180°, 360° and fisheye videos, in 2D or 3D, from the headset, a microSD card, a USB drive or a media server. It runs natively on the headset and plays 8K video smoothly with the display at 120 Hz.
 
-<a href="https://frameplayerx.org.uk/"><img src="assets/website-icon.svg" alt="Website" title="Website" width="32" /></a>&nbsp;
-<a href="https://discord.gg/tDZRuZDY7d"><img src="assets/discord-icon.svg" alt="Discord" title="Discord" width="32" /></a>
+<a href="https://frameplayerx.org.uk/"><img src="assets/website-button.svg" alt="Website: frameplayerx.org.uk" width="220" /></a>&nbsp;&nbsp;
+<a href="https://discord.gg/tDZRuZDY7d"><img src="assets/discord-button.svg" alt="Discord: join the server" width="220" /></a>
+
+</div>
 
 ---
 
