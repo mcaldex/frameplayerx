@@ -1035,11 +1035,16 @@ fn demux_thread(
                     let skipped = skip.time.map_or(0.0, |from| (t_good - from).max(0.0));
                     sh.damaged_skipped
                         .store(skipped.to_bits(), Ordering::Release);
+                    sh.damaged_jumps.fetch_add(1, Ordering::AcqRel);
                     log::info!(
                         "video: resuming at {t_good:.2} s after {skipped:.2} s of damaged video"
                     );
                 }
-                JumpResult::EndOfFile => log::info!("video: nothing readable after the damage"),
+                JumpResult::EndOfFile => {
+                    sh.damaged_jumps.fetch_add(1, Ordering::AcqRel);
+                    log::info!("video: nothing readable after the damage");
+                }
+                // A seek took over: nothing was skipped.
                 JumpResult::Aborted => {}
             }
             match jump {
@@ -1053,8 +1058,8 @@ fn demux_thread(
                     }
                     sh.demux_eof.store(eof, Ordering::Release);
                     sh.video_done.store(false, Ordering::Release);
-                    sh.audio_done
-                        .store(!sh.has_audio.load(Ordering::Acquire), Ordering::Release);
+                    // Audio goes on from its own queue, and an end it has
+                    // reached won't come again.
                     sh.ended.store(false, Ordering::Release);
                     first_video_ts = Some(t_good);
                     last_video_ts = last_ts;
@@ -1262,6 +1267,11 @@ fn jump_aborted(sh: &Shared) -> bool {
     sh.quit.load(Ordering::Acquire) || sh.ctl().seek.is_some()
 }
 
+/// Video packets a probe reads for a keyframe, and packets of every stream
+/// it reads at most.
+const PROBE_VIDEO_PACKETS: usize = 128;
+const PROBE_PACKETS: usize = 8192;
+
 struct DamageProbe<'a> {
     sh: &'a Shared,
     input: &'a mut Input,
@@ -1280,7 +1290,10 @@ impl DamageProbe<'_> {
     /// `dts >= target_dts` without a usable keyframe fails immediately instead
     /// of reading further through a hole.
     fn keyframe(&mut self, target_dts: Option<i64>) -> Probe {
-        for _ in 0..128 {
+        // Video packets, as other streams' can be many more: a disc's
+        // audio tracks between two keyframes.
+        let mut video = 0;
+        for _ in 0..PROBE_PACKETS {
             if jump_aborted(self.sh) {
                 self.pkt.unref();
                 return Probe::Aborted;
@@ -1290,6 +1303,11 @@ impl DamageProbe<'_> {
                     if self.pkt.stream_index() != self.video_index {
                         self.pkt.unref();
                         continue;
+                    }
+                    video += 1;
+                    if video > PROBE_VIDEO_PACKETS {
+                        self.pkt.unref();
+                        return Probe::Bad(None);
                     }
                     let ptr = self.pkt.as_ptr() as *const ff::AVPacket;
                     let is_key = packet_is_key(ptr);
@@ -1705,7 +1723,6 @@ fn video_thread(sh: Arc<Shared>, mut dec: Decoder, cap: usize) {
                             frames.clear();
                             sh.buffering.store(true, Ordering::Release);
                             sh.skipping_damaged.store(true, Ordering::Release);
-                            sh.damaged_jumps.fetch_add(1, Ordering::AcqRel);
                             sh.damaged_skipped.store(0, Ordering::Release);
                             sh.clock.pause();
                             c.skip_damaged = Some(DamageSkip {

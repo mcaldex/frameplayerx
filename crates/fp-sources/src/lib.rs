@@ -108,6 +108,14 @@ pub trait Source: Send + Sync {
         None
     }
 
+    /// Where the folder at `location` (`None`: the root) really is, for a
+    /// source whose listings follow links: a walk through subfolders visits
+    /// each folder once, however many links lead to it. May ask the server;
+    /// `None` when the location says where it is.
+    fn folder_identity(&self, _location: Option<&str>) -> Option<String> {
+        None
+    }
+
     /// Lists a folder. `None` lists the root of the source.
     fn list(&self, location: Option<&str>) -> Result<Vec<Entry>>;
 

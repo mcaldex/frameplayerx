@@ -113,9 +113,74 @@ impl std::fmt::Debug for Library {
     }
 }
 
-/// Default database file: `$XDG_DATA_HOME/frameplayerx/library.sqlite3`.
+/// Default database file: `$XDG_DATA_HOME/frameplayerx/library-<schema>.sqlite3`.
 pub fn default_db_path() -> PathBuf {
-    fp_core::dirs::data_dir().join("library.sqlite3")
+    db_path_in(&fp_core::dirs::data_dir())
+}
+
+/// The file of this build's schema in `dir`. A build that changes the
+/// schema keeps the library in a file of its own, so going back to the
+/// version before leaves it its own file, as it was.
+fn db_path_in(dir: &Path) -> PathBuf {
+    dir.join(format!("library-{}.sqlite3", schema::SCHEMA_VERSION))
+}
+
+/// Earlier schemas' files in `dir`, newest first: `library.sqlite3` held
+/// every schema up to 4, and the first beta of 5.
+fn older_db_paths(dir: &Path) -> Vec<PathBuf> {
+    (1..schema::SCHEMA_VERSION)
+        .rev()
+        .map(|v| dir.join(format!("library-{v}.sqlite3")))
+        .chain([dir.join("library.sqlite3")])
+        .collect()
+}
+
+/// Makes `path` from the newest earlier file in `dir`, if there is one: a
+/// copy, which the open then migrates while the earlier version keeps its
+/// own. A file already of this schema, as betas wrote `library.sqlite3`,
+/// moves instead, so that version doesn't find a schema it refuses.
+fn carry_forward(dir: &Path, path: &Path) -> Result<()> {
+    let Some(older) = older_db_paths(dir).into_iter().find(|p| p.exists()) else {
+        return Ok(());
+    };
+    let conn = Connection::open(&older)?;
+    if schema::version(&conn)? >= schema::SCHEMA_VERSION {
+        drop(conn);
+        for suffix in DB_FILES {
+            let from = with_suffix(&older, suffix);
+            if from.exists() {
+                let to = with_suffix(path, suffix);
+                std::fs::rename(&from, &to).map_err(|e| Error::io(&from, e))?;
+            }
+        }
+        return Ok(());
+    }
+    let staged = path.with_extension("sqlite3.part");
+    let _ = std::fs::remove_file(&staged);
+    conn.execute("VACUUM INTO ?1", [staged.to_string_lossy()])?;
+    std::fs::rename(&staged, path).map_err(|e| Error::io(&staged, e))
+}
+
+/// Deletes the earlier files in `dir` but the newest, which the version
+/// before opens: only that one can be gone back to, and the rest would pile
+/// up.
+fn prune_older(dir: &Path) {
+    for older in older_db_paths(dir)
+        .into_iter()
+        .filter(|p| p.exists())
+        .skip(1)
+    {
+        for suffix in DB_FILES {
+            let _ = std::fs::remove_file(with_suffix(&older, suffix));
+        }
+    }
+}
+
+/// A database's own file and those SQLite keeps beside it in WAL mode.
+const DB_FILES: [&str; 3] = ["", "-wal", "-shm"];
+
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    PathBuf::from(format!("{}{suffix}", path.display()))
 }
 
 /// What to write when indexing one video, from a folder scan or a remote
@@ -693,9 +758,22 @@ impl Library {
         Library::init(Connection::open(path)?)
     }
 
-    /// Opens the database at [`default_db_path`].
+    /// Opens the database at [`default_db_path`], made from an earlier
+    /// version's file the first time.
     pub fn open_default() -> Result<Library> {
-        Library::open(default_db_path())
+        Library::open_in(&fp_core::dirs::data_dir())
+    }
+
+    /// Opens this schema's database in `dir`, made from an earlier
+    /// version's file the first time.
+    pub fn open_in(dir: &Path) -> Result<Library> {
+        let path = db_path_in(dir);
+        if !path.exists() {
+            std::fs::create_dir_all(dir).map_err(|e| Error::io(dir, e))?;
+            carry_forward(dir, &path)?;
+        }
+        prune_older(dir);
+        Library::open(path)
     }
 
     /// A private in-memory database, for tests and previews.
@@ -1489,6 +1567,90 @@ mod tests {
 
     fn add(lib: &Library, loc: &str) -> MediaId {
         lib.upsert(&MediaUpsert::new(loc, "local")).unwrap().id
+    }
+
+    #[test]
+    fn only_the_version_befores_library_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        drop(Library::open(db_path_in(dir.path())).unwrap());
+        let file = |name: &str| dir.path().join(name);
+        for name in [
+            "library-4.sqlite3",
+            "library-4.sqlite3-wal",
+            "library.sqlite3",
+            "library.sqlite3-wal",
+            "library.sqlite3-shm",
+        ] {
+            std::fs::write(file(name), b"").unwrap();
+        }
+        drop(Library::open_in(dir.path()).unwrap());
+        assert!(file("library-4.sqlite3").exists());
+        assert!(file("library-4.sqlite3-wal").exists());
+        for gone in [
+            "library.sqlite3",
+            "library.sqlite3-wal",
+            "library.sqlite3-shm",
+        ] {
+            assert!(!file(gone).exists(), "{gone}");
+        }
+    }
+
+    #[test]
+    fn an_earlier_versions_library_is_copied_and_left_as_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("library.sqlite3");
+        {
+            let mut conn = Connection::open(&old).unwrap();
+            schema::configure(&conn).unwrap();
+            schema::migrate(&mut conn, &schema::MIGRATIONS[..4]).unwrap();
+            conn.execute(
+                "INSERT INTO media (location, source_id, title, detected_format,
+                 detected_evidence, projection_kind, stereo, added_at, rating)
+                 VALUES ('/v/a.mp4', 'local', 'A', '{}', '{}', 'flat', 'mono', 0, 4)",
+                [],
+            )
+            .unwrap();
+        }
+        let rating = |lib: &Library| {
+            lib.with(|c| {
+                Ok(c.query_row(
+                    "SELECT rating FROM media WHERE location = '/v/a.mp4'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )?)
+            })
+            .unwrap()
+        };
+        let lib = Library::open_in(dir.path()).unwrap();
+        assert_eq!(lib.schema_version().unwrap(), schema::SCHEMA_VERSION);
+        assert_eq!(rating(&lib), 4);
+        drop(lib);
+        // The earlier version still opens its own, as it was.
+        let conn = Connection::open(&old).unwrap();
+        assert_eq!(schema::version(&conn).unwrap(), 4);
+        drop(conn);
+        // And the next start keeps this version's own.
+        let lib = Library::open_in(dir.path()).unwrap();
+        lib.with(|c| Ok(c.execute("UPDATE media SET rating = 2", [])?))
+            .unwrap();
+        drop(lib);
+        assert_eq!(rating(&Library::open_in(dir.path()).unwrap()), 2);
+    }
+
+    #[test]
+    fn a_beta_library_of_this_schema_moves_to_its_own_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("library.sqlite3");
+        let id = {
+            let lib = Library::open(&old).unwrap();
+            let id = add(&lib, "/v/b.mp4");
+            lib.set_rating(id, 3).unwrap();
+            id
+        };
+        let lib = Library::open_in(dir.path()).unwrap();
+        assert_eq!(lib.get(id).unwrap().unwrap().rating, 3);
+        assert!(!old.exists(), "the earlier version would refuse it");
+        assert!(db_path_in(dir.path()).exists());
     }
 
     #[test]

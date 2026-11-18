@@ -1,6 +1,6 @@
-<p align="center">
-  <img src="assets/logo.svg" alt="FramePlayerX Logo" width="160" />
-</p>
+<div align="center">
+
+<img src="assets/logo.svg" alt="FramePlayerX Logo" width="160" />
 
 # FramePlayerX
 
@@ -11,18 +11,20 @@
 
 A VR video player for the Valve Steam Frame. It plays flat, 180°, 360° and fisheye videos, in 2D or 3D, from the headset, a microSD card, a USB drive or a media server. It runs natively on the headset and plays 8K video smoothly with the display at 120 Hz.
 
-<a href="https://frameplayerx.org.uk/"><img src="assets/website-icon.svg" alt="Website" title="Website" width="32" /></a>&nbsp;
-<a href="https://discord.gg/tDZRuZDY7d"><img src="assets/discord-icon.svg" alt="Discord" title="Discord" width="32" /></a>
+<a href="https://frameplayerx.org.uk/"><img src="assets/website-button.svg" alt="Website: frameplayerx.org.uk" width="220" /></a>&nbsp;&nbsp;
+<a href="https://discord.gg/tDZRuZDY7d"><img src="assets/discord-button.svg" alt="Discord: join the server" width="220" /></a>
+
+</div>
 
 ---
 
 ## Features
 
 - **Video formats**: 180°, 360°, fisheye, flat and interlaced (1080i, DVD) videos, in 2D or 3D: side by side or top/bottom at full or half size, frame sequential, and 3D Blu-ray (disc images, MKV rips and `.ssif` files) in full 3D. The format is detected automatically, and you can change it for any video
-- **Hardware decoding**: HEVC (H.265) in 8 and 10 bits and H.264, up to 8K, play on the Frame's own video decoder; AV1, VP9, interlaced video and anything else play with software decoding
+- **Hardware decoding**: HEVC (H.265) in 8 and 10 bits and H.264, up to 8K, play on the Frame's own video decoder, even past a damaged stretch of a file; AV1, VP9, interlaced video and anything else play with software decoding
 - **Performance**: out of the box, 8K 60 fps video, 10-bit included, plays at full frame rate with the display at 120 Hz and 3744 pixels per eye, and the CPU stays almost idle: the decoder's pictures are drawn without being copied, and foveated rendering that follows your eyes keeps full detail where you look. Refresh rate, resolution and foveation can be changed in Settings, even while a video plays
 - **HDR**: HDR10 and HLG videos are fitted to the Frame's screen scene by scene, and colours it can't show are toned down instead of cut off
-- **Adjustments**: position, zoom, depth that keeps what you look at whole as you tilt your head or lie down and eases it up close, picture settings and fisheye lens calibration, kept for each video or saved as presets to use on any video, and a screen that follows your head for watching lying down
+- **Adjustments**: position, zoom, depth, comfort focus to keep what you look at whole as you tilt your head or lie down and ease its depth up close, picture settings and fisheye lens calibration, kept for each video or saved as presets to use on any video, and a screen that follows your head for watching lying down
 - **Passthrough videos**: see your room around the people in passthrough videos, and behind green or blue screens
 - **Subtitles and spatial audio**: subtitles from a file, inside the video or found on OpenSubtitles from the player and kept on your headset with their timing set for each video, picked in your language and shown in any script, and 360° audio that follows your head
 - **Videos on the headset**: browse any folder on the headset, a microSD card or a USB drive, including cards formatted on Windows or a Mac, and make libraries of your folders, with thumbnails, filters and sorting
@@ -80,7 +82,7 @@ To update later, open **Settings › Updates** and press **Download and install*
 
 | Guide | What's in it |
 |---|---|
-| [User guide](docs/USER-GUIDE.md), also [on the website](https://frameplayerx.org.uk/guide) | Installing, updating and uninstalling, sources, browsing, PIN locks, video formats, display settings, controls, passthrough, haptics, remote control and troubleshooting |
+| [User guide](docs/USER-GUIDE.md), also [on the website](https://frameplayerx.org.uk/guide) | Installing, updating and uninstalling, sources, browsing and playlists, video formats and adjustments, subtitles, hardware decoding, display settings, controls, passthrough, haptics, remote control and troubleshooting |
 | [Development](docs/DEVELOPMENT.md) | Building and testing, how the code is organised, running without a headset (Monado and the preview harness), and releasing |
 | [Contributing](CONTRIBUTING.md) | What to do before opening a pull request, what it has to say and how to test it |
 

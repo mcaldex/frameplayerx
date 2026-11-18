@@ -390,16 +390,29 @@ fn comfort_shift(
     yaw: f32,
     gaze: Option<Vec3>,
 ) -> (f32, f32) {
+    comfort_shift_pitched(rig, frame, yaw, 0.0, gaze)
+}
+
+/// [`comfort_shift`] with the video pitched `pitch` degrees by its Position
+/// setting, and the head pitched as much to look at it.
+fn comfort_shift_pitched(
+    rig: &mut Rig,
+    frame: &Arc<fp_media::VideoFrame>,
+    yaw: f32,
+    pitch: f32,
+    gaze: Option<Vec3>,
+) -> (f32, f32) {
     let mut p = params(Projection::EQUIRECT_180, StereoLayout::SideBySide);
+    p.settings.pitch = pitch;
     rig.r.set_gaze(gaze);
     rig.r.set_foveation(if gaze.is_some() {
         fp_render::Foveation::High
     } else {
         fp_render::Foveation::Off
     });
-    let off = render(rig, frame, &p, yaw, 0.0, 0);
+    let off = render(rig, frame, &p, yaw, pitch, 0);
     p.settings.comfort_focus = true;
-    let on = settle(|| render(rig, frame, &p, yaw, 0.0, 0));
+    let on = settle(|| render(rig, frame, &p, yaw, pitch, 0));
     let c_off = disc_centroid(&off);
     (c_off - disc_centroid(&on), c_off)
 }
@@ -423,13 +436,20 @@ fn comfort_focus_eases_what_is_looked_at_only_when_it_is_close() {
     let (turned, _) = comfort_shift(&mut rig, &near, 35.0, None);
     // The head on the disc but the eyes on the wall: left alone.
     let (glance, _) = comfort_shift(&mut rig, &near, 0.0, Some(aside));
+    // The video pitched 40° up and looked at there: measured in its own
+    // frame, eased as much as level.
+    let (pitched, _) = comfort_shift_pitched(&mut rig, &near, 0.0, 40.0, None);
     rig.eyes.destroy(&rig.r);
 
     // 90° across 192 pixels: ~2.1 px per degree near the centre, and 0.4 m
     // is eased by 1.7° per eye.
     eprintln!(
         "disc at {at:.2} px; shifts: far {far:.2}, room {room:.2}, sky {sky:.2}, \
-         turned {turned:.2}, glance {glance:.2} px"
+         turned {turned:.2}, glance {glance:.2}, pitched {pitched:.2} px"
+    );
+    assert!(
+        (pitched - room).abs() < 0.5,
+        "pitched shift {pitched} px, room {room} px"
     );
     assert!(at > 5.0, "disc should start right of centre: {at}");
     assert!(far.abs() < 0.2, "far scene moved {far} px");

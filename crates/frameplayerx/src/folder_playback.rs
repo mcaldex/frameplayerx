@@ -6,17 +6,23 @@ use fp_sources::{EntrySort, Source, SourceKind};
 use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Incomplete {
-    /// A subfolder couldn't be listed.
-    Unavailable,
-    /// More videos were found than the limit takes.
-    LimitReached(usize),
+/// Folders listed at most in one walk, so links on a server that this can't
+/// see through (SMB, WebDAV) can't keep it going.
+const MAX_FOLDERS: usize = 10_000;
+
+/// What a walk left out; nothing when it is the default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Incomplete {
+    /// Some subfolders weren't listed: one couldn't be, or there were more
+    /// than [`MAX_FOLDERS`].
+    pub unavailable: bool,
+    /// More videos were found than this limit takes.
+    pub limit_reached: Option<usize>,
 }
 
 pub struct Scan {
     pub videos: Vec<Entry>,
-    pub incomplete: Option<Incomplete>,
+    pub incomplete: Incomplete,
 }
 
 pub struct ScanOptions<'a> {
@@ -30,9 +36,20 @@ pub struct ScanOptions<'a> {
 enum Location {
     Local(PathBuf),
     Source(String),
+    /// Where a source says a folder really is.
+    Real(String),
 }
 
 impl Location {
+    /// A folder's: where it really is when the source can tell, as NFS and
+    /// SFTP listings follow links; `None` for a root that can't.
+    fn of_folder(source: &dyn Source, location: Option<&str>) -> Option<Self> {
+        if let Some(real) = source.folder_identity(location) {
+            return Some(Self::Real(real));
+        }
+        location.map(|l| Self::of(source, l))
+    }
+
     fn of(source: &dyn Source, location: &str) -> Self {
         // Local listings follow symlinks. Compare their filesystem targets
         // to keep a link to an ancestor from starting the walk again.
@@ -114,7 +131,7 @@ pub fn collect(
     let mut seen_videos = HashSet::new();
     let mut scan = Scan {
         videos: Vec::new(),
-        incomplete: None,
+        incomplete: Incomplete::default(),
     };
     let mut root_entries = Some(root_entries);
     let webdav = source.kind() == SourceKind::WebDav;
@@ -122,10 +139,14 @@ pub fn collect(
         if cancelled() {
             return Err(std::io::Error::from(std::io::ErrorKind::Interrupted).into());
         }
-        if let Some(location) = &folder
-            && !folders.insert(Location::of(source, location))
+        if let Some(key) = Location::of_folder(source, folder.as_deref())
+            && !folders.insert(key)
         {
             continue;
+        }
+        if folders.len() > MAX_FOLDERS {
+            scan.incomplete.unavailable = true;
+            break;
         }
         let dav_folder = webdav
             .then(|| dav_folder_key(source, folder.as_deref()))
@@ -136,7 +157,7 @@ pub fn collect(
             match source.list(folder.as_deref()) {
                 Ok(entries) => entries,
                 Err(_) => {
-                    scan.incomplete = Some(Incomplete::Unavailable);
+                    scan.incomplete.unavailable = true;
                     continue;
                 }
             }
@@ -162,7 +183,7 @@ pub fn collect(
                     if let Some(limit) = options.max_videos
                         && scan.videos.len() == limit
                     {
-                        scan.incomplete = Some(Incomplete::LimitReached(limit));
+                        scan.incomplete.limit_reached = Some(limit);
                         break 'walk;
                     }
                     if options.max_videos.is_none() && scan.videos.len() == DEFAULT_PLAY_ALL_LIMIT {
@@ -319,7 +340,7 @@ mod tests {
         )
         .unwrap();
         server.join().unwrap();
-        assert_eq!(scan.incomplete, None);
+        assert_eq!(scan.incomplete, Incomplete::default());
         let videos = scan.videos;
         assert_eq!(videos.len(), 2);
         assert_eq!(videos[0].name, "Clip Root_180_LR.mkv");
@@ -356,9 +377,40 @@ mod tests {
         let entries = source.list(None).unwrap();
         let scan = collect(&source, None, entries, options(Some(3)), || false, || {}).unwrap();
         server.join().unwrap();
-        assert_eq!(scan.incomplete, Some(Incomplete::Unavailable));
+        assert!(scan.incomplete.unavailable);
         let names: Vec<_> = scan.videos.into_iter().map(|entry| entry.name).collect();
         assert_eq!(names, ["child.mp4", "clip.mp4"]);
+    }
+
+    #[test]
+    fn reaching_the_limit_still_reports_a_folder_that_couldnt_be_listed() {
+        let (source, server) = dav(vec![
+            (
+                "/videos/",
+                "207 Multi-Status",
+                dav_list(&[
+                    ("/videos/clip.mp4", false, 1),
+                    ("/videos/gone/", true, 0),
+                    ("/videos/good/", true, 0),
+                ]),
+            ),
+            ("/videos/gone/", "403 Forbidden", String::new()),
+            (
+                "/videos/good/",
+                "207 Multi-Status",
+                dav_list(&[("/videos/good/child.mp4", false, 1)]),
+            ),
+        ]);
+        let entries = source.list(None).unwrap();
+        let scan = collect(&source, None, entries, options(Some(1)), || false, || {}).unwrap();
+        server.join().unwrap();
+        assert_eq!(
+            scan.incomplete,
+            Incomplete {
+                unavailable: true,
+                limit_reached: Some(1),
+            }
+        );
     }
 
     #[test]
@@ -393,7 +445,7 @@ mod tests {
         )
         .unwrap();
         server.join().unwrap();
-        assert_eq!(scan.incomplete, Some(Incomplete::LimitReached(2)));
+        assert_eq!(scan.incomplete.limit_reached, Some(2));
         let names: Vec<_> = scan.videos.into_iter().map(|entry| entry.name).collect();
         assert_eq!(names, ["a1.mp4", "root.mp4"]);
     }
@@ -431,7 +483,7 @@ mod tests {
             || warnings.set(warnings.get() + 1),
         )
         .unwrap();
-        assert_eq!(scan.incomplete, None);
+        assert_eq!(scan.incomplete, Incomplete::default());
         assert_eq!(warnings.get(), 1);
         assert_eq!(scan.videos.len(), 3 * per_folder);
         server.join().unwrap();
@@ -506,7 +558,7 @@ mod tests {
         );
         std::fs::remove_dir_all(root).unwrap();
         let scan = scan.unwrap();
-        assert_eq!(scan.incomplete, None);
+        assert_eq!(scan.incomplete, Incomplete::default());
         let names: Vec<_> = scan.videos.into_iter().map(|e| e.name).collect();
         assert_eq!(names, ["nested.mp4", "root.mp4"]);
     }

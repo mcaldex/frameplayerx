@@ -890,9 +890,8 @@ pub struct UiState {
     pub delete_file_armed: Option<(String, std::time::Instant)>,
     /// The file being deleted.
     pub deleting: Option<String>,
-    /// Whether files may be deleted, as their servers answered; `None` while
-    /// a server is being asked.
-    pub delete_checks: std::collections::HashMap<(Option<String>, String), Option<bool>>,
+    /// Whether files may be deleted, as their servers answered.
+    pub delete_checks: std::collections::HashMap<(Option<String>, String), DeleteCheck>,
     pub open_error: Option<String>,
     pub opening: Option<String>,
     /// A jump over a damaged stretch of video has held the picture long
@@ -1076,6 +1075,20 @@ pub struct View<'a> {
     pub devices: &'a [fp_haptics::DeviceStatus],
 }
 
+/// What a server said about deleting a file.
+#[derive(Clone, Copy, Debug)]
+pub enum DeleteCheck {
+    Asking,
+    Answered(bool),
+    /// It couldn't be asked, at this time: it is asked again after
+    /// [`DELETE_CHECK_RETRY`].
+    Failed(std::time::Instant),
+}
+
+/// How long a delete check that couldn't reach its server waits before it
+/// asks again.
+const DELETE_CHECK_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Returns whether `location` in `source_id` can be deleted right now, queueing
 /// a single background check when the source must ask its server first.
 pub(super) fn can_delete_entry(v: &mut View<'_>, source_id: Option<&str>, location: &str) -> bool {
@@ -1084,10 +1097,11 @@ pub(super) fn can_delete_entry(v: &mut View<'_>, source_id: Option<&str>, locati
     }
     let key = (source_id.map(str::to_owned), location.to_string());
     match v.state.delete_checks.get(&key) {
-        Some(Some(allowed)) => *allowed,
-        Some(None) => false,
-        None => {
-            v.state.delete_checks.insert(key, None);
+        Some(DeleteCheck::Answered(allowed)) => *allowed,
+        Some(DeleteCheck::Asking) => false,
+        Some(DeleteCheck::Failed(at)) if at.elapsed() < DELETE_CHECK_RETRY => false,
+        _ => {
+            v.state.delete_checks.insert(key, DeleteCheck::Asking);
             v.actions.push(Action::CheckDelete {
                 source_id: source_id.map(str::to_owned),
                 location: location.to_string(),

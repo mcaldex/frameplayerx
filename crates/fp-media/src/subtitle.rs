@@ -189,17 +189,24 @@ pub fn load_file(src: Arc<dyn ByteSource>, name: &str) -> Result<Vec<Cue>> {
         .best_stream(ff::AVMEDIA_TYPE_SUBTITLE)
         .ok_or(crate::Error::NoStream("subtitle"))?;
     let mut dec = Decoder::open(&input, idx, HwDecode::Off)?;
-    let mut cues = Vec::new();
+    let mut decoded = Vec::new();
     let mut pkt = Packet::new();
     while input.read(pkt.as_ptr())? {
         if pkt.stream_index() == idx
             && let Some(c) = decode_packet(&mut dec, &pkt)
         {
-            add(&mut cues, c);
+            decoded.push(c);
         }
         pkt.unref();
     }
     check(0, "")?;
+    // In order first, so each goes on the end: a file out of order would
+    // have each one moving all those after it.
+    decoded.sort_by(|a, b| a.start.total_cmp(&b.start));
+    let mut cues = Vec::with_capacity(decoded.len());
+    for c in decoded {
+        add(&mut cues, c);
+    }
     Ok(cues)
 }
 
@@ -208,26 +215,42 @@ pub fn load_file(src: Arc<dyn ByteSource>, name: &str) -> Result<Vec<Cue>> {
 /// clears the screen, or until the next picture replaces it.
 pub(crate) fn add(cues: &mut Vec<Cue>, cue: Cue) {
     let clear = cue.text.is_empty() && cue.bitmaps.is_empty();
-    for c in cues.iter_mut() {
-        let replaced = !cue.bitmaps.is_empty() && !c.bitmaps.is_empty();
-        if (clear || replaced) && c.start < cue.start && cue.start < c.end {
-            c.end = cue.start;
+    if clear || !cue.bitmaps.is_empty() {
+        let before = cues.partition_point(|c| c.start < cue.start);
+        for c in &mut cues[..before] {
+            let replaced = !cue.bitmaps.is_empty() && !c.bitmaps.is_empty();
+            if (clear || replaced) && cue.start < c.end {
+                c.end = cue.start;
+            }
         }
     }
+    if clear {
+        return;
+    }
     // A seek reads cues again.
-    let known = cues
+    let near = cues.partition_point(|c| c.start < cue.start - 1e-3)
+        ..cues.partition_point(|c| c.start <= cue.start + 1e-3);
+    if cues[near]
         .iter()
-        .any(|c| (c.start - cue.start).abs() < 1e-3 && c.text == cue.text);
-    if clear || known {
+        .any(|c| (c.start - cue.start).abs() < 1e-3 && c.text == cue.text)
+    {
         return;
     }
     let at = cues.partition_point(|c| c.start <= cue.start);
     cues.insert(at, cue);
 }
 
+/// Cues shown at once at most, however many a file has overlap.
+const MAX_ACTIVE: usize = 64;
+
 /// Cues visible at time `t`.
 pub fn active(cues: &[Cue], t: f64) -> Vec<&Cue> {
-    cues.iter().filter(|c| c.start <= t && t < c.end).collect()
+    let started = cues.partition_point(|c| c.start <= t);
+    cues[..started]
+        .iter()
+        .filter(|c| t < c.end)
+        .take(MAX_ACTIVE)
+        .collect()
 }
 
 #[cfg(test)]
@@ -279,19 +302,47 @@ mod tests {
         assert_eq!(active(&cues, 2.5).len(), 1);
     }
 
-    #[test]
-    fn text_cues_may_overlap() {
-        let cue = |start: f64, end: f64, text: &str| Cue {
+    fn cue(start: f64, end: f64, text: &str) -> Cue {
+        Cue {
             start,
             end,
             text: text.into(),
             bitmaps: Vec::new(),
-        };
+        }
+    }
+
+    #[test]
+    fn text_cues_may_overlap() {
         let mut cues = Vec::new();
         add(&mut cues, cue(1.0, 4.0, "Over there"));
         add(&mut cues, cue(2.0, 3.0, "Sign"));
         add(&mut cues, cue(1.0, 4.0, "Over there"));
         assert_eq!(cues, [cue(1.0, 4.0, "Over there"), cue(2.0, 3.0, "Sign")]);
+    }
+
+    #[test]
+    fn a_file_of_many_cues_loads_without_rescanning_them() {
+        let mut cues = Vec::new();
+        for i in 0..100_000 {
+            add(&mut cues, cue(f64::from(i), f64::from(i) + 0.5, "Line"));
+        }
+        assert_eq!(cues.len(), 100_000);
+        // A seek reading one again adds nothing.
+        add(&mut cues, cue(500.0, 500.5, "Line"));
+        assert_eq!(cues.len(), 100_000);
+        assert_eq!(active(&cues, 500.2).len(), 1);
+    }
+
+    #[test]
+    fn only_so_many_cues_show_at_once() {
+        let mut cues = Vec::new();
+        for i in 0..200 {
+            add(
+                &mut cues,
+                cue(f64::from(i) * 0.01, 10.0, &format!("Line {i}")),
+            );
+        }
+        assert_eq!(active(&cues, 5.0).len(), MAX_ACTIVE);
     }
 
     #[test]

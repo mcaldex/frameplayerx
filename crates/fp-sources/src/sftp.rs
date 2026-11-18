@@ -364,6 +364,10 @@ impl Source for SftpSource {
         Some(self.location(&segments, value.ends_with('/')))
     }
 
+    fn folder_identity(&self, location: Option<&str>) -> Option<String> {
+        self.real_path(&self.segments(location).ok()?).ok()
+    }
+
     fn list(&self, location: Option<&str>) -> Result<Vec<Entry>> {
         let segments = self.segments(location)?;
         let mut out = Vec::new();
@@ -454,6 +458,12 @@ impl SftpSource {
     }
 
     fn remove_file(&self, _segments: &[String]) -> Result<()> {
+        Err(Error::SftpUnavailable(
+            "compiled without SFTP support".into(),
+        ))
+    }
+
+    fn real_path(&self, _segments: &[String]) -> Result<String> {
         Err(Error::SftpUnavailable(
             "compiled without SFTP support".into(),
         ))
@@ -868,6 +878,25 @@ mod imp {
             })
         }
 
+        /// The path the server resolves `segments` to, links followed.
+        fn real_path(&self, segments: &[String]) -> Result<String> {
+            self.with_session(|s| {
+                let path = s.path(segments);
+                run(async {
+                    let name = s
+                        .sftp
+                        .realpath(path.clone())
+                        .await
+                        .map_err(|e| map_err(e, &path))?;
+                    name.files
+                        .into_iter()
+                        .next()
+                        .map(|f| f.filename)
+                        .ok_or_else(|| Error::Sftp(format!("{path}: no real path")))
+                })
+            })
+        }
+
         /// Deletes a file on the current session.
         fn remove_file(&self, segments: &[String]) -> Result<()> {
             self.with_session(|s| {
@@ -890,6 +919,10 @@ mod imp {
 
         pub(super) fn remove_file(&self, segments: &[String]) -> Result<()> {
             self.sessions.remove_file(segments)
+        }
+
+        pub(super) fn real_path(&self, segments: &[String]) -> Result<String> {
+            self.sessions.real_path(segments)
         }
 
         pub(super) fn open_file(&self, segments: &[String]) -> Result<Arc<dyn ByteSource>> {
@@ -1572,6 +1605,14 @@ mod server_tests {
         }
 
         let linked = entries.iter().find(|e| e.name == "Linked").unwrap();
+        let shows = entries.iter().find(|e| e.name == "Shows").unwrap();
+        // A walk through subfolders visits the folder once, not again
+        // through the link.
+        assert_eq!(
+            source.folder_identity(Some(&linked.location)),
+            source.folder_identity(Some(&shows.location))
+        );
+        assert!(source.folder_identity(Some(&shows.location)).is_some());
         let inside = source.list(Some(&linked.location)).unwrap();
         assert_eq!(inside[0].name, "Episode.mkv");
         assert_eq!(

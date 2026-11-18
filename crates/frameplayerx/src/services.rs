@@ -200,7 +200,19 @@ impl Opener {
             || location.starts_with("file://")
             || is_local_path(location)
         {
-            return DeleteRoute::Local;
+            // Only the headset's own sources name its files: a server that
+            // lists one doesn't get it deleted.
+            let elsewhere = source_id.and_then(|id| self.source(id)).is_some_and(|s| {
+                !matches!(
+                    s.kind(),
+                    fp_sources::SourceKind::Local | fp_sources::SourceKind::Library
+                )
+            });
+            return if elsewhere {
+                DeleteRoute::None
+            } else {
+                DeleteRoute::Local
+            };
         }
         source_id
             .and_then(|id| self.source(id))
@@ -1008,6 +1020,12 @@ mod tests {
         let file = dir.join("local.mp4");
         std::fs::write(&file, b"abc").unwrap();
         let path = file.to_string_lossy().into_owned();
+        // A server naming one of the headset's files doesn't get it deleted.
+        for named in [path.clone(), format!("file://{path}")] {
+            assert_eq!(opener.delete_allowed_in(Some("dav"), &named), Some(false));
+            assert!(opener.delete_in(Some("dav"), &named).is_err());
+        }
+        assert!(file.exists());
         assert_eq!(opener.delete_allowed_in(None, &path), Some(true));
         opener.delete_in(None, &path).unwrap();
         assert!(!file.exists());

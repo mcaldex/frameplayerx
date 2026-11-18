@@ -362,6 +362,18 @@ impl FeedLibrary {
             .ok()
     }
 
+    /// Leaves out the scenes at `urls` and the groups left empty; whether
+    /// any of them was here.
+    pub fn remove(&mut self, urls: &[String]) -> bool {
+        let before = self.scenes.len();
+        self.scenes.retain(|s| !urls.contains(&s.url));
+        for (_, group) in &mut self.groups {
+            group.retain(|u| !urls.contains(u));
+        }
+        self.groups.retain(|(_, group)| !group.is_empty());
+        self.scenes.len() != before
+    }
+
     /// Saves the listing readable only by the user: its poster and scene
     /// URLs can carry the server's API key.
     pub fn save(&self, path: &Path) -> Result<()> {

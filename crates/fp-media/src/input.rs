@@ -746,7 +746,11 @@ impl Input {
                 if e.flags() & INDEX_KEYFRAME == 0 {
                     continue;
                 }
-                if after_pos >= 0 && e.pos == after_pos {
+                // With no timestamp, the damaged packet's place in the file
+                // says what comes after it.
+                if after_pos >= 0
+                    && (e.pos == after_pos || after_dts == ff::AV_NOPTS_VALUE && e.pos < after_pos)
+                {
                     continue;
                 }
                 if after_dts != ff::AV_NOPTS_VALUE && e.timestamp <= after_dts {
@@ -1087,6 +1091,7 @@ mod tests {
         // sliding back to keyframe 0 (even with B-frame PTS > DTS).
         input.seek_video_timestamp(vi, all[1]).unwrap();
         let mut pkt = Packet::new();
+        let mut second = -1;
         while input.read(pkt.as_ptr()).unwrap() {
             if pkt.stream_index() == vi {
                 // SAFETY: valid packet read from `input`.
@@ -1096,6 +1101,7 @@ mod tests {
                 };
                 assert_ne!(flags & ff::AV_PKT_FLAG_KEY as i32, 0);
                 assert_eq!(dts, all[1], "pos={pos}");
+                second = pos;
                 break;
             }
             pkt.unref();
@@ -1104,5 +1110,11 @@ mod tests {
         // Excluding the first keyframe starts from the second.
         let tail = input.video_keyframes_after(vi, all[0], i64::MAX);
         assert_eq!(tail.first().copied(), Some(all[1]));
+        // With no timestamp, by place in the file: none before it.
+        let after = input.video_keyframes_after(vi, ff::AV_NOPTS_VALUE, second);
+        assert!(
+            !after.contains(&all[0]) && !after.contains(&all[1]),
+            "{after:?}"
+        );
     }
 }

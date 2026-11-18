@@ -655,12 +655,20 @@ impl CatalogView {
                 true
             }
             Body::Grid(g) => {
+                // A shuffle pages through its order by the items shown, so
+                // whatever leaves those leaves the order too.
+                let gone: Vec<String> = g
+                    .items
+                    .iter()
+                    .filter(|i| matches(i))
+                    .map(|i| i.id.clone())
+                    .collect();
                 let before = g.items.len();
                 drop_from(&mut g.items, id, locations, &mut forgotten);
                 let removed = before.saturating_sub(g.items.len());
                 g.total = g.total.saturating_sub(removed);
                 if let Some(order) = &mut g.order {
-                    order.retain(|oid| id != Some(oid.as_str()));
+                    order.retain(|oid| id != Some(oid.as_str()) && !gone.contains(oid));
                 }
                 true
             }
@@ -2464,5 +2472,33 @@ mod tests {
         assert_eq!(g.items[0].id, "m2");
         assert_eq!(g.total, 1);
         assert_eq!(g.order.as_deref(), Some(&["m2".into()][..]));
+    }
+
+    #[test]
+    fn a_video_deleted_by_location_leaves_a_shuffles_order() {
+        let mut m1 = item("m1", CatalogKind::Movie);
+        m1.location = "fp-source://jf/mediabrowser/m1".into();
+        let mut m2 = item("m2", CatalogKind::Movie);
+        m2.location = "fp-source://jf/mediabrowser/m2".into();
+        let mut j = CatalogView::new(1);
+        let mut grid = Grid::new("Movies".into(), CatalogQuery::default());
+        grid.items = vec![m1, m2];
+        grid.total = 3;
+        grid.order = Some(vec!["m1".into(), "m2".into(), "m3".into()]);
+        j.pages.push(Page {
+            seq: 2,
+            request_seq: None,
+            loading: false,
+            error: None,
+            body: Body::Grid(Box::new(grid)),
+        });
+        // From history: the location alone.
+        j.remove_item(None, &["fp-source://jf/mediabrowser/m1".into()]);
+        let Body::Grid(g) = &j.pages[1].body else {
+            panic!()
+        };
+        assert_eq!(g.order.as_deref(), Some(&["m2".into(), "m3".into()][..]));
+        // The next page starts after what is shown.
+        assert_eq!(g.next_page().ids, ["m3"]);
     }
 }

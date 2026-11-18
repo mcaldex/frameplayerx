@@ -2034,6 +2034,30 @@ const TRACK_ROW: f32 = 56.0;
 const TRACK_PAD: f32 = 20.0;
 const LIST_GAP: f32 = 10.0;
 
+/// The subtitle tracks the panel lists, besides Off and Find subtitles:
+/// with a server's own tracks, those and the files that aren't its own.
+fn subtitle_rows(
+    pb: &crate::playback::Playback,
+    rows: &[crate::subtitles::Row],
+    server_tracks: bool,
+) -> usize {
+    if !server_tracks {
+        return rows.len();
+    }
+    let files = rows
+        .iter()
+        .filter(|row| match row.pick {
+            Pick::File(i) => pb.subtitle_files.get(i).is_some_and(|f| {
+                !pb.source_tracks
+                    .iter()
+                    .any(|t| t.subtitle && t.location.as_ref() == Some(&f.location))
+            }),
+            _ => false,
+        })
+        .count();
+    pb.source_tracks.iter().filter(|s| s.subtitle).count() + files
+}
+
 /// The audio and subtitles picker over the control bar: the two lists side
 /// by side, each scrolling when long, and a row plays its track at once.
 /// Its body is as tall as the longer list needs, standing on the panel's
@@ -2061,7 +2085,7 @@ pub fn tracks_panel(ctx: &egui::Context, v: &mut View) {
         })
         .max(1)
         .max(
-            subtitles.len()
+            subtitle_rows(pb, &subtitles, server_tracks)
                 + 2
                 + if pb.active_managed_subtitle().is_some() {
                     3
@@ -2153,14 +2177,20 @@ pub fn tracks_panel(ctx: &egui::Context, v: &mut View) {
                         super::subtitle_search::timing(ui, attachment.delay_ms, actions);
                     }
                     if server_tracks {
-                        let off = pb.active_subtitle_file.is_none()
-                            && pb
-                                .request
-                                .source_subtitle
-                                .as_deref()
-                                .is_none_or(|id| id == "0");
+                        let server_off = pb
+                            .request
+                            .source_subtitle
+                            .as_deref()
+                            .is_none_or(|id| id == "0");
+                        let off = pb.active_subtitle_file.is_none() && server_off;
                         if track_row(ui, tr!("tracks-off"), "", off).clicked() && !off {
-                            actions.push(Action::SelectSourceSubtitles(None));
+                            // Only a file is on, which goes off here: asking
+                            // the server would start its stream again.
+                            actions.push(if server_off {
+                                Action::SelectSubtitles(Pick::Off)
+                            } else {
+                                Action::SelectSourceSubtitles(None)
+                            });
                         }
                         for s in pb.source_tracks.iter().filter(|s| s.subtitle) {
                             let on = pb.request.source_subtitle.as_deref() == Some(s.id.as_str());

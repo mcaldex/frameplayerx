@@ -25,8 +25,17 @@ import glob, http.server, json, os, random, sqlite3, sys, urllib.parse
 
 home, port_file = sys.argv[1], sys.argv[2]
 
+def library_db():
+    # The app's library is in a file named for its schema.
+    base = os.path.join(home, ".local/share/frameplayerx")
+    named = sorted(
+        glob.glob(os.path.join(base, "library-*.sqlite3")),
+        key=lambda p: int(os.path.basename(p)[len("library-"):-len(".sqlite3")]),
+    )
+    return named[-1] if named else os.path.join(base, "library.sqlite3")
+
 def thumb_for(title_prefix):
-    db_path = os.path.join(home, ".local/share/frameplayerx/library.sqlite3")
+    db_path = library_db()
     thumb_dir = os.path.join(home, ".cache/frameplayerx/thumbnails")
     if os.path.exists(db_path):
         with sqlite3.connect(db_path) as db:

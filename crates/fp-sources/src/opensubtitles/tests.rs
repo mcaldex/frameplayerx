@@ -199,6 +199,34 @@ fn a_link_retry_sends_no_api_credentials_and_reuses_the_same_file_parameters() {
 }
 
 #[test]
+fn a_new_link_that_isnt_found_costs_no_second_download() {
+    let files = TestServer::start(|_| resp(404, "", &[]));
+    let missing = files.url("/missing");
+    let api = TestServer::start(move |req| {
+        match req.path() {
+        "/login" => resp(
+            200,
+            r#"{"user":{"allowed_downloads":20},"base_url":"api.opensubtitles.com","token":"fixture-token"}"#,
+            &[],
+        ),
+        "/infos/user" => resp(200, r#"{"data":{"remaining_downloads":12}}"#, &[]),
+        "/download" => resp(
+            200,
+            serde_json::json!({"link":missing,"remaining":11,"reset_time_utc":"2099-01-01T00:00:00Z"})
+                .to_string(),
+            &[],
+        ),
+        _ => resp(404, "", &[]),
+    }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let client = client(&api, &dir);
+    client.sign_in(&generated(), &generated()).unwrap();
+    assert!(matches!(client.download(45), Err(Error::Unavailable)));
+    assert_eq!(api.count(|req| req.path() == "/download"), 1);
+}
+
+#[test]
 fn reuses_saved_tokens_refreshes_once_and_stops_after_credentials_are_rejected() {
     let logins = AtomicUsize::new(0);
     let api = TestServer::start(move |req| match req.path() {
