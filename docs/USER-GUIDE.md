@@ -850,9 +850,12 @@ With it on, FramePlayerX measures how far away that thing is and adjusts
 each eye's picture to your eyes' actual positions at that distance, so it
 fuses at its real depth; things much nearer or farther than it may still
 look a little doubled. When it is closer than about 85 cm, it also eases
-the depth so your eyes don't have to cross as far. It measures where your
-eyes look while foveated rendering is on, otherwise the middle of your
-view, and catches up about half a second after you look somewhere else.
+the depth so your eyes don't have to cross as far, which makes it look
+bigger. It measures where your eyes look when the headset
+tracks them, otherwise the middle of your view. The easing builds up
+gently over about a second, lets go about half a second after you look at
+something farther, and holds still while your eyes move over the same
+thing or glance away and back.
 It assumes the camera's lenses were 63 mm apart, the average eye spacing.
 Settings › Picture › **3D videos** turns it on for every video; turning it
 on or off for one video keeps that video's choice, and the button beside

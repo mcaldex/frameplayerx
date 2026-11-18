@@ -170,10 +170,23 @@ Comfort focus (`fp-render/src/focus.rs`) measures how close what the
 viewer looks at is, 20 times a second. After the eye passes, the scene
 shader's `fs_focus` draws strips of both eyes' luma round the aim into a
 small float target with the eye passes' own pipeline layout and bindings,
-so it reads every frame they read, one in the decoder's buffer included;
-`shaders/focus.wgsl` then matches the strips in a compute pass, and the
-scores are read back once the slot's fence has signalled. The eye passes
-start each eye's rays at its offset from its camera, taken from the
+so it reads every frame they read, one in the decoder's buffer included.
+The strips lie on a lattice of angles about the cameras' baseline, whose
+rows are the lines both cameras see a point on, so a disparity is a shift
+along a row wherever the aim is; `shaders/focus.wgsl` then matches the
+strips in a compute pass, the scores are read back once the slot's fence
+has signalled, and the disparity found is triangulated into a distance
+(`focus::nearness`). The aim is the gaze smoothed in head axes
+(`focus::AimFilter`), measured on every new video frame and after every
+eye movement of a degree or more. The distance in focus moves once two
+readings in a row agree on another distance, not when the eyes move, and
+the easing follows it only for a change of a fifth or more, more to the
+side where readings are less precise (`focus::ComfortFocus`). It glides in
+over about a second, and out only once something farther has stayed in
+focus for a quarter of a second. The re-projection follows the distance
+only once keeping its own would misalign what is looked at by more than
+0.15° (`focus::redraw_lever`): never with the head level and facing the
+video's front, closely lying down. The eye passes start each eye's rays at its offset from its camera, taken from the
 headset's eye poses, and intersect them with a sphere of the measured
 radius round that camera (`Params.focus.w` and `eyes`), and turn the eyes'
 pictures apart about the head's up to ease close things (`focus.z` and

@@ -38,9 +38,10 @@ pub(crate) struct SceneParams {
     pub hdr: Vec4,
     pub tp10: Vec4,
     pub tp10_uv: Vec4,
-    /// Comfort focus (`focus.rs`): x, y the aim's longitude and latitude in
-    /// the room frame; z the eyes' turn apart about the head's up, which its
-    /// measurement leaves out; w the distance in focus, metres (0: none).
+    /// Comfort focus (`focus.rs`): x, y the aim's angles about the cameras'
+    /// baseline (`focus::aim_angles`); z the eyes' turn apart about the
+    /// head's up, which its measurement leaves out; w the distance in focus,
+    /// metres (0: none).
     pub focus: Vec4,
     /// Each eye's offset from its camera, in the video's frame.
     pub eyes: [Vec4; 2],

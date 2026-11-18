@@ -58,9 +58,10 @@ struct Params {
     // chroma: x first-row step, y rows, z the plane's rows, w count
     tp10: vec4<f32>,
     tp10_uv: vec4<f32>,
-    // Comfort focus (src/focus.rs): x, y the aim's longitude and latitude in
-    // the room frame; z the eyes' turn apart about the head's up, which
-    // fs_focus leaves out; w the distance in focus, metres (0: none)
+    // Comfort focus (src/focus.rs): x, y the aim's angles about the cameras'
+    // baseline, as fs_focus lays its lattice out; z the eyes' turn apart
+    // about the head's up, which fs_focus leaves out; w the distance in
+    // focus, metres (0: none)
     focus: vec4<f32>,
     // Each eye's offset from its camera, in the video's frame, for
     // re-projecting at the distance in focus
@@ -665,11 +666,11 @@ fn fs_glow_colours(in: VsOut) -> @location(0) vec4<f32> {
 // Comfort focus's samples (src/focus.rs, matched by focus.wgsl), drawn into a
 // small float target with the eye passes' own bindings, so any frame they
 // can read is measured too. For each patch of a 3 x 3 cluster round the aim,
-// a strip of each eye's luma on a lattice of the video's own longitude and
-// latitude FOCUS_STEP apart, its Position corrections undone: the cameras
-// sit side by side there, so a disparity is a shift along the rows, of
-// cos(lat) of its angle (`ComfortFocus::ingest`). Each sample is the mean of 2 x 2 taps over its cell, a box
-// filter so the comparison sees the same detail in both pictures. Rows: patch
+// a strip of each eye's luma on a lattice of angles about the cameras'
+// baseline FOCUS_STEP apart (`lattice`): along a row, a disparity is a
+// shift by its own angle, wherever the aim is. Each sample is the mean of
+// 2 x 2 taps over its cell, a box filter so the comparison sees the same
+// detail in both pictures. Rows: patch
 // after patch, FOCUS_ROWS each; columns: the left eye's strip, then the
 // right's, FOCUS_COLS each. A sample off the picture is -1.
 const FOCUS_STEP: f32 = 0.0035;
@@ -681,11 +682,17 @@ const FOCUS_RIGHT0: i32 = -39;
 const FOCUS_GRID_X: f32 = 0.06;
 const FOCUS_GRID_Y: f32 = 0.05;
 
-// A lattice direction in the video's own frame, where its cameras sit side
-// by side, turned back by its Position corrections into the frame
-// `video_uv` takes: the rows run along the video's disparity.
-fn lattice(lon: f32, lat: f32) -> vec3<f32> {
-    let v = vec3<f32>(cos(lat) * sin(lon), sin(lat), -cos(lat) * cos(lon));
+// A lattice direction in the video's own frame, where its cameras sit on
+// the x axis, turned back by its Position corrections into the frame
+// `video_uv` takes. A point and the two cameras span a plane through that
+// axis: `tilt` is the plane's turn about it (0 straight ahead, up
+// positive) and `along` the angle within the plane from straight ahead
+// towards +x. Both cameras see a point at the same tilt, so each row is
+// the line both pictures show it on, and they differ only along it, by
+// the angle the cameras' baseline spans at the point
+// (`focus::nearness`).
+fn lattice(along: f32, tilt: f32) -> vec3<f32> {
+    let v = vec3<f32>(sin(along), cos(along) * sin(tilt), -cos(along) * cos(tilt));
     let c = params.correction;
     return transpose(mat3x3<f32>(c[0].xyz, c[1].xyz, c[2].xyz)) * v;
 }
@@ -701,12 +708,12 @@ fn fs_focus(in: VsOut) -> @location(0) vec4<f32> {
     let col = i32(px.x % FOCUS_COLS) + select(FOCUS_LEFT0, FOCUS_RIGHT0, eye == 1u);
     let row = i32(px.y % FOCUS_ROWS) - i32(FOCUS_ROWS / 2u);
     // Row 0 of the cluster is on top.
-    let lon = params.focus.x + (f32(cell % 3u) - 1.0) * FOCUS_GRID_X + f32(col) * FOCUS_STEP;
-    let lat = params.focus.y + (1.0 - f32(cell / 3u)) * FOCUS_GRID_Y - f32(row) * FOCUS_STEP;
+    let along = params.focus.x + (f32(cell % 3u) - 1.0) * FOCUS_GRID_X + f32(col) * FOCUS_STEP;
+    let tilt = params.focus.y + (1.0 - f32(cell / 3u)) * FOCUS_GRID_Y - f32(row) * FOCUS_STEP;
     var sum = 0.0;
     for (var t = 0u; t < 4u; t++) {
         let o = (vec2<f32>(f32(t % 2u), f32(t / 2u)) - 0.5) * (0.5 * FOCUS_STEP);
-        let uv = video_uv(lattice(lon + o.x, lat - o.y), eye, false);
+        let uv = video_uv(lattice(along + o.x, tilt - o.y), eye, false);
         if (uv.x < 0.0) {
             return vec4<f32>(-1.0, 0.0, 0.0, 0.0);
         }

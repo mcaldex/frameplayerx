@@ -8,7 +8,7 @@
 
 use crate::cinema::Cinema;
 use crate::cinema_mesh::RoomData;
-use crate::focus::{AimFilter, ComfortFocus, FocusPass, MEASURE_EVERY};
+use crate::focus::{AimFilter, ComfortFocus, FocusPass, MEASURE_EVERY, REMEASURE_RAD};
 use crate::foveation::{Foveation, RateMaps};
 use crate::gpu::Gpu;
 use crate::hdr::PeakDetector;
@@ -220,8 +220,11 @@ pub struct Renderer {
     focus: Option<FocusPass>,
     focus_aim: AimFilter,
     comfort_focus: ComfortFocus,
-    /// When comfort focus last measured.
-    focus_measured_at: Option<std::time::Instant>,
+    /// When comfort focus last measured, where it aimed (play space) and the
+    /// video frame it read.
+    focus_measured: Option<(std::time::Instant, Vec3, Option<u64>)>,
+    /// The video frame shown ([`fp_media::VideoFrame::id`]).
+    shown_frame: Option<u64>,
     glow: crate::glow::Glow,
     /// Times each frame's parts on the GPU, where it has timestamps.
     timer: Option<FrameTimer>,
@@ -455,7 +458,8 @@ impl Renderer {
                     .ok(),
                 focus_aim: AimFilter::default(),
                 comfort_focus: ComfortFocus::default(),
-                focus_measured_at: None,
+                focus_measured: None,
+                shown_frame: None,
                 glow: Default::default(),
                 timer: FrameTimer::new(&gpu, SLOTS),
                 gpu_times: None,
@@ -924,8 +928,8 @@ impl Renderer {
         if let Some(hist) = self.peak.as_mut().and_then(|p| p.take(self.current)) {
             self.hdr_peak.add(&hist);
         }
-        if let Some((scores, aim, lat)) = self.focus.as_mut().and_then(|f| f.take(self.current)) {
-            self.comfort_focus.ingest(&scores, aim, lat);
+        if let Some((scores, along)) = self.focus.as_mut().and_then(|f| f.take(self.current)) {
+            self.comfort_focus.ingest(&scores, along);
         }
         self.glow.read(self.current);
         if let Some(t) = self.timer.as_mut() {
@@ -968,6 +972,7 @@ impl Renderer {
     }
 
     fn show_video(&mut self, frame: Option<&Arc<VideoFrame>>) -> Result<()> {
+        self.shown_frame = frame.map(|f| f.id);
         let Some(f) = frame else {
             let slot = &mut self.slots[self.current];
             if slot.has_video {
@@ -1761,30 +1766,40 @@ impl Renderer {
         let mut measure = None;
         if want_focus {
             let now = std::time::Instant::now();
-            // Where the head points: between the two eyes' views.
+            // The head's turn: between the two eyes' views.
             let to_world = eyes.map(|e| e.view.inverse());
-            let head = -(to_world[0].z_axis + to_world[1].z_axis).truncate();
-            // The gaze is on hand while foveated rendering follows it.
-            let gaze = self.gaze.filter(|_| self.foveation != Foveation::Off);
-            let aim = self.focus_aim.aim(now, gaze, head);
-            let focus = self.comfort_focus.step(now, aim);
+            let head = crate::focus::head_turn(
+                (to_world[0].z_axis + to_world[1].z_axis).truncate(),
+                (to_world[0].y_axis + to_world[1].y_axis).truncate(),
+            );
+            // Where the eyes look whenever the headset tracks them, foveated
+            // rendering on or not.
+            let aim = self.focus_aim.aim(now, self.gaze, head);
             // Each eye's offset from the point between them, and the head's
             // up, in the room frame, to draw each eye from where it is.
             let room = |v: Vec3| p.anchor_inv.transform_vector3(v);
             let at = to_world.map(|m| m.w_axis.truncate());
             let mid = (at[0] + at[1]) * 0.5;
             let offsets = at.map(|e| room(e - mid));
+            let lever = crate::focus::redraw_lever(&p, aim, offsets);
+            let focus = self.comfort_focus.step(now, lever);
             let up = room((to_world[0].y_axis + to_world[1].y_axis).truncate());
-            if let Some([lon, lat]) = crate::focus::aim_angles(&p, aim)
+            if let Some([along, tilt]) = crate::focus::aim_angles(&p, aim)
                 && self.focus.is_some()
-                && self
-                    .focus_measured_at
-                    .is_none_or(|t| now.saturating_duration_since(t) >= MEASURE_EVERY)
+                // Not while the aim sweeps across a jump of the eyes.
+                && self.focus_aim.settled()
+                // Something new to read: another frame, the eyes elsewhere, or
+                // a still picture not read for a while.
+                && self.focus_measured.is_none_or(|(t, at, frame)| {
+                    frame != self.shown_frame
+                        || at.angle_between(aim) > REMEASURE_RAD
+                        || now.saturating_duration_since(t) >= MEASURE_EVERY
+                })
             {
-                p.focus.x = lon;
-                p.focus.y = lat;
-                self.focus_measured_at = Some(now);
-                measure = Some((aim, lat));
+                p.focus.x = along;
+                p.focus.y = tilt;
+                self.focus_measured = Some((now, aim, self.shown_frame));
+                measure = Some(along);
             }
             // The measurement reads the video as filmed, without it.
             params::set_comfort_focus(&mut p, focus.relief, focus.distance, offsets, up);
@@ -2030,8 +2045,8 @@ impl Renderer {
                 );
             }
         }
-        if let Some((aim, lat)) = measure {
-            self.record_focus(slot_idx, tp10, aim, lat);
+        if let Some(along) = measure {
+            self.record_focus(slot_idx, tp10, along);
         }
         if measure_glow {
             self.record_glow(slot_idx, tp10, now);
@@ -2067,10 +2082,11 @@ impl Renderer {
             });
     }
 
-    /// Draws comfort focus's samples round `aim` (`fs_focus`) with the eye
+    /// Draws comfort focus's samples round the aim, at lattice angle `along`
+    /// (`fs_focus`, which takes it from the scene's parameters), with the eye
     /// passes' own pipeline layout and bindings, so they read the frame as
     /// the eye passes just did, then matches them.
-    fn record_focus(&mut self, slot_idx: usize, tp10: bool, aim: Vec3, lat: f32) {
+    fn record_focus(&mut self, slot_idx: usize, tp10: bool, along: f32) {
         let cmd = self.slots[slot_idx].cmd;
         let Some(focus) = self.focus.as_mut() else {
             return;
@@ -2129,7 +2145,7 @@ impl Renderer {
             d.cmd_draw(cmd, 3, 1, 0, 0);
             d.cmd_end_rendering(cmd);
         }
-        focus.record(&self.gpu, cmd, slot_idx, aim, lat);
+        focus.record(&self.gpu, cmd, slot_idx, along);
     }
 
     /// Ends recording and submits the frame.

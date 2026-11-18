@@ -2,9 +2,9 @@
 // scene.wgsl sampled round the aim, matched for each patch of the 3 x 3
 // cluster by one workgroup of 64 threads, one per candidate disparity.
 //
-// The strips lie on a lattice of the video's own longitude and latitude,
-// where its cameras sit side by side, so a disparity is a shift along the
-// rows: candidate `m` compares the left
+// The strips lie on a lattice of angles about the cameras' baseline, whose
+// rows are the lines both cameras see a point on, so a disparity is a
+// shift along the rows: candidate `m` compares the left
 // strip at column `i + off_l` with the right at `i + off_r`, `off_l - off_r = m`, the
 // window moving apart symmetrically about the aim, and is a per-eye
 // disparity of half `m` lattice steps (`kappa_at` in focus.rs). The first
