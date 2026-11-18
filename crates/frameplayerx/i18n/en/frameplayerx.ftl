@@ -250,12 +250,14 @@ settings-about-headset = This headset
 settings-about-settings-file = Settings file
 settings-about-log = Log
 settings-about-links = Help and support
+settings-about-website = FramePlayerX website
+settings-about-guide = User guide
+settings-about-discord = FramePlayerX on Discord
 settings-about-github = FramePlayerX on GitHub
-settings-about-github-desc = News, releases and the source code.
 settings-about-issue = Report a problem
-settings-about-issue-desc = Open an issue on GitHub, choose Bug report and attach the log named above.
 settings-about-sponsor = Sponsor FramePlayerX
-settings-about-sponsor-desc = If FramePlayerX is useful to you, you can support its development on GitHub Sponsors.
+# Under the links.
+settings-about-issue-note = To report a problem, choose Bug report on GitHub's form and attach the log named below.
 settings-about-licences = Video decoding uses FFmpeg (LGPL 2.1+) and dav1d (BSD), shipped as separate libraries in lib/. Text is set in Inter (OFL) with Phosphor icons (MIT). Licences and the source offer are in the licenses/ folder.
 
 ## Language names, as subtitles and audio tracks name them

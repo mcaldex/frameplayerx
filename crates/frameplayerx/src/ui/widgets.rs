@@ -718,18 +718,145 @@ pub fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
         .inner
 }
 
+/// Tiles two to a row, each an icon, a title and a web address under it,
+/// the whole tile one target; returns the index of the one clicked.
+pub fn link_tiles(ui: &mut Ui, tiles: &[(&str, &str, &str)]) -> Option<usize> {
+    const GAP: f32 = 12.0;
+    const PAD: Vec2 = Vec2::new(16.0, 10.0);
+    const ICON: f32 = 44.0;
+    const ICON_GAP: f32 = 14.0;
+    let w = ((ui.available_width() - GAP) / 2.0).floor();
+    let text_w = w - 2.0 * PAD.x - ICON - ICON_GAP;
+    let mut clicked = None;
+    for (r, pair) in tiles.chunks(2).enumerate() {
+        let laid: Vec<_> = pair
+            .iter()
+            .map(|&(_, title, address)| {
+                let p = ui.painter();
+                (
+                    p.layout(
+                        title.to_string(),
+                        theme::font(Weight::Medium, 18.0),
+                        theme::TEXT,
+                        text_w,
+                    ),
+                    p.layout(
+                        address.to_string(),
+                        theme::font(Weight::Medium, 15.0),
+                        theme::ACCENT_HOVER,
+                        text_w,
+                    ),
+                )
+            })
+            .collect();
+        // Both tiles in a row as tall as the taller one's text.
+        let text_h = laid
+            .iter()
+            .map(|(t, a)| t.size().y + 2.0 + a.size().y)
+            .fold(ICON, f32::max);
+        let (row, _) = ui.allocate_exact_size(
+            Vec2::new(ui.available_width(), text_h + 2.0 * PAD.y),
+            Sense::hover(),
+        );
+        for (i, (&(icon, _, _), (title_g, address_g))) in pair.iter().zip(laid).enumerate() {
+            let rect = Rect::from_min_size(
+                row.min + Vec2::new(i as f32 * (w + GAP), 0.0),
+                Vec2::new(w, row.height()),
+            );
+            let resp = ui.interact(rect, ui.id().with(("link-tile", r * 2 + i)), Sense::click());
+            if resp.clicked() {
+                clicked = Some(r * 2 + i);
+            }
+            if !ui.is_rect_visible(rect) {
+                continue;
+            }
+            let t = anim(ui, resp.id, resp.hovered());
+            let down = resp.is_pointer_button_down_on();
+            let face = if dimensional(ui) {
+                let face = rect.translate(Vec2::new(0.0, if down { 0.5 } else { -1.5 * t }));
+                let look = super::depth::Raised {
+                    top: mix(
+                        Color32::from_rgb(30, 37, 47),
+                        Color32::from_rgb(42, 51, 63),
+                        t,
+                    ),
+                    bottom: mix(
+                        Color32::from_rgb(21, 26, 33),
+                        Color32::from_rgb(29, 36, 45),
+                        t,
+                    ),
+                    light: Color32::from_white_alpha((26.0 + 34.0 * t) as u8),
+                    lift: if down { 0.2 } else { 0.5 + 0.5 * t },
+                    glow: None,
+                };
+                super::depth::raised(ui.painter(), face, 14.0, look);
+                face
+            } else {
+                let fill = mix(theme::SURFACE, theme::SURFACE_2, t);
+                ui.painter().rect(
+                    rect,
+                    CornerRadius::same(14),
+                    fill,
+                    Stroke::new(1.0_f32, theme::STROKE),
+                    StrokeKind::Inside,
+                );
+                rect
+            };
+            let p = ui.painter();
+            let icon_rect = Rect::from_min_size(
+                Pos2::new(face.left() + PAD.x, face.center().y - ICON / 2.0),
+                Vec2::splat(ICON),
+            );
+            p.rect_filled(icon_rect, CornerRadius::same(12), theme::SURFACE_3);
+            p.text(
+                icon_rect.center(),
+                Align2::CENTER_CENTER,
+                icon,
+                theme::icon(ICON * 0.5),
+                theme::ACCENT_HOVER,
+            );
+            let x = icon_rect.right() + ICON_GAP;
+            let h = title_g.size().y + 2.0 + address_g.size().y;
+            let y = face.center().y - h / 2.0;
+            let title_h = title_g.size().y;
+            p.galley_with_override_text_color(
+                Pos2::new(x, y),
+                title_g,
+                mix(theme::TEXT, Color32::WHITE, t),
+            );
+            p.galley(
+                Pos2::new(x, y + title_h + 2.0),
+                address_g,
+                theme::ACCENT_HOVER,
+            );
+        }
+        if r * 2 + 2 < tiles.len() {
+            // The same gap between rows as between columns.
+            ui.add_space((GAP - ui.spacing().item_spacing.y).max(0.0));
+        }
+    }
+    clicked
+}
+
 /// Rows inside a [`card`]: a title, an optional description and a control
 /// on the right, with hairlines between rows.
 pub struct Rows<'a> {
     ui: &'a mut Ui,
     n: usize,
+    compact: bool,
 }
 
 pub fn rows(ui: &mut Ui, add: impl FnOnce(&mut Rows)) {
-    card(ui, |ui| add(&mut Rows { ui, n: 0 }));
+    card(ui, |ui| add(&mut Rows::new(ui, false)));
+}
+
+/// [`rows`] packed tighter, for read-only facts with nothing to point at.
+pub fn rows_compact(ui: &mut Ui, add: impl FnOnce(&mut Rows)) {
+    card(ui, |ui| add(&mut Rows::new(ui, true)));
 }
 
 const ROW_MARGIN: egui::Margin = egui::Margin::symmetric(16, 12);
+const COMPACT_ROW_MARGIN: egui::Margin = egui::Margin::symmetric(16, 6);
 const ROW_MIN_HEIGHT: f32 = 48.0;
 const CONTROL_GAP: f32 = 12.0;
 
@@ -738,15 +865,24 @@ fn text_column(row_width: f32) -> f32 {
     (row_width - 420.0).max(row_width * 0.4)
 }
 
-impl Rows<'_> {
+impl<'a> Rows<'a> {
+    fn new(ui: &'a mut Ui, compact: bool) -> Self {
+        Self { ui, n: 0, compact }
+    }
+
     /// The next row's frame, after a separator from the previous one.
     fn next_row<R>(&mut self, add: impl FnOnce(&mut Ui) -> R) -> R {
         if self.n > 0 {
             separator(self.ui);
         }
         self.n += 1;
+        let margin = if self.compact {
+            COMPACT_ROW_MARGIN
+        } else {
+            ROW_MARGIN
+        };
         egui::Frame::new()
-            .inner_margin(ROW_MARGIN)
+            .inner_margin(margin)
             .show(self.ui, add)
             .inner
     }
@@ -859,6 +995,7 @@ impl Rows<'_> {
 
     /// [`Rows::info`] with the value in `color`.
     pub fn info_colored(&mut self, title: &str, value: &str, color: Color32) {
+        let min_h = if self.compact { 0.0 } else { ROW_MIN_HEIGHT };
         self.next_row(|ui| {
             let w = ui.available_width();
             let title_g = ui.painter().layout(
@@ -879,7 +1016,7 @@ impl Rows<'_> {
             job.halign = Align::RIGHT;
             let value_g = ui.painter().layout_job(job);
             let (title_h, value_h) = (title_g.size().y, value_g.size().y);
-            let h = title_h.max(value_h).max(ROW_MIN_HEIGHT);
+            let h = title_h.max(value_h).max(min_h);
             let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover());
             let p = ui.painter();
             let mid = rect.center().y;

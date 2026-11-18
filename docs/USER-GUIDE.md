@@ -1331,10 +1331,11 @@ issue with the language, where it shows and the wording you'd expect.
   your servers' addresses and any password replaced by placeholders such as
   `<video 1>`. **Show the report** shows exactly what would be sent;
   nothing is sent unless you choose **Send report**.
-- To report a problem yourself, **Settings › About** links to FramePlayerX's
+- For help, or to report a problem yourself, **Settings › About** starts
+  with links to FramePlayerX's website, this guide, its Discord server, its
   GitHub page, its issue form (choose Bug report and attach the log below)
   and its GitHub Sponsors page. A link opens in Steam's browser; the
-  address beside it works on a phone or a computer too.
+  address on it works on a phone or a computer too.
 - Log: `~/.local/share/frameplayerx/frameplayerx.log`; the run before is kept
   as `frameplayerx.log.old` (the one to send after a freeze or crash, once
   FramePlayerX has been started again)
