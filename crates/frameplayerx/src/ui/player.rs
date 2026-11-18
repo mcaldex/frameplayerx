@@ -1489,7 +1489,7 @@ fn position_tab(
     widgets::rows(ui, |r| {
         r.row(
             tr!("adjust-placement"),
-            Some(tr!("adjust-placement-desc")),
+            Some(tr!("adjust-placement-start-desc")),
             |ui| {
                 let button = ui.add_enabled_ui(moved, |ui| {
                     widgets::button(
