@@ -82,7 +82,7 @@ To update later, open **Settings › Updates** and press **Download and install*
 
 | Guide | What's in it |
 |---|---|
-| [User guide](docs/USER-GUIDE.md), also [on the website](https://frameplayerx.org.uk/guide) | Installing, updating and uninstalling, sources, browsing, PIN locks, video formats, display settings, controls, passthrough, haptics, remote control and troubleshooting |
+| [User guide](docs/USER-GUIDE.md), also [on the website](https://frameplayerx.org.uk/guide) | Installing, updating and uninstalling, sources, browsing and playlists, video formats and adjustments, subtitles, hardware decoding, display settings, controls, passthrough, haptics, remote control and troubleshooting |
 | [Development](docs/DEVELOPMENT.md) | Building and testing, how the code is organised, running without a headset (Monado and the preview harness), and releasing |
 | [Contributing](CONTRIBUTING.md) | What to do before opening a pull request, what it has to say and how to test it |
 
