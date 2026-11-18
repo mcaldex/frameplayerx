@@ -403,7 +403,7 @@ adjust-curvature = Curvature
 adjust-decoder = Decoder
 adjust-resolution = Resolution
 adjust-placement = Screen and panels
-adjust-placement-desc = Where a flat screen, the control bar, this panel, the browse panel and the performance overlay start.
+adjust-placement-start-desc = Where a flat screen, the control bar, this panel, the browse panel and the performance overlay start.
 adjust-put-back = Put back
 # Turning left or right.
 adjust-yaw = Yaw
