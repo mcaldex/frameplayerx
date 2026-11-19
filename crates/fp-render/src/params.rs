@@ -6,6 +6,7 @@ use fp_media::PixelLayout;
 use fp_media::frame::{ColorInfo, Matrix};
 use fp_media::info::Transfer;
 use glam::{EulerRot, Mat4, Quat, Vec2, Vec3, Vec4};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Matches `struct Params` in shaders/scene.wgsl (std140-compatible: every
 /// member is 16-byte aligned).
@@ -46,7 +47,8 @@ pub(crate) struct SceneParams {
     /// Each eye's turn apart about the head's up, as a quaternion.
     pub relief: [Vec4; 2],
     /// x, y: the picture's share of the screen's width and height; black
-    /// fills the rest (a cinema's screen).
+    /// fills the rest (a cinema's screen). z, w: in a cinema, the depth
+    /// each eye draws it at ([`crate::cinema::screen_depth`]).
     pub fill: Vec4,
 }
 
@@ -133,6 +135,10 @@ pub struct CinemaParams {
     pub curvature: f32,
 }
 
+/// Rooms that failed to load or draw in this run, by [`CinemaRoom::slot`].
+static FAILED: [AtomicBool; CinemaRoom::ALL.len()] =
+    [const { AtomicBool::new(false) }; CinemaRoom::ALL.len()];
+
 /// A cinema room, built into the player when its files are in
 /// `crates/fp-render/rooms` (see docs/DEVELOPMENT.md). Its metres have the
 /// eyes of one seat at the origin, looking along -Z. Everything but
@@ -150,8 +156,14 @@ impl CinemaRoom {
         self as usize
     }
 
-    pub const fn is_available(self) -> bool {
-        crate::cinema_mesh::asset(self).is_some()
+    /// Whether this build has the room and it hasn't failed to load.
+    pub fn is_available(self) -> bool {
+        crate::cinema_mesh::asset(self).is_some() && !FAILED[self.slot()].load(Ordering::Relaxed)
+    }
+
+    /// Leaves the room out from now on: it couldn't be loaded or drawn.
+    pub(crate) fn fail(self) {
+        FAILED[self.slot()].store(true, Ordering::Relaxed);
     }
 
     /// Whether this build has any room: without one the cinema is left out.
@@ -369,14 +381,14 @@ pub(crate) fn build(
     let cinema = video
         .cinema
         .filter(|cinema| cinema.room.is_available() && video.format.projection == Projection::Flat);
-    let mut fill = Vec4::ONE;
+    let mut fill = Vec4::new(1.0, 1.0, 0.0, 0.0);
     let (screen_w, screen_h, arc) = if let Some(cinema) = cinema {
         // The whole screen, bent round the same circle as the room's: black
         // where the picture doesn't reach, like a television's bars, so the
         // room's own screen never shows round it.
         let screen = cinema.room.screen_size();
         let picture = cinema.room.picture(ew / eh.max(1e-3));
-        fill = (picture / screen).extend(1.0).extend(1.0);
+        fill = (picture / screen).extend(0.0).extend(0.0);
         (screen.x, screen.y, screen.x * cinema.curvature)
     } else {
         // The floating screen's width setting names its longer side.

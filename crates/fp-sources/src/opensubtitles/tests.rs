@@ -56,11 +56,19 @@ fn canonical_query_preserves_the_full_language_and_episode_scope() {
 }
 
 #[test]
+fn app_languages_map_to_the_services_codes_and_back() {
+    for (app, service) in [("pt", "pt-pt"), ("zh", "zh-cn"), ("de", "de")] {
+        assert_eq!(language_code(app), service);
+        assert_eq!(app_language(service), app);
+    }
+}
+
+#[test]
 fn discovery_and_search_use_cached_responses_and_rank_file_matches() {
     let api = TestServer::start(|req| match req.path() {
         "/infos/languages" => resp(
             200,
-            r#"{"data":[{"language_code":"pt-br","language_name":"Portuguese (Brazilian)"}]}"#,
+            r#"{"data":[{"language_code":"pt-BR","language_name":"Portuguese (Brazilian)"}]}"#,
             &[],
         ),
         "/subtitles" if req.url.contains("page=2") => resp(

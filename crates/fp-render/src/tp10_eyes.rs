@@ -211,7 +211,8 @@ impl Tp10Eyes {
                     fragment: c"fs_main",
                     layout: self.layout,
                     color_format,
-                    depth: Depth::Attached,
+                    // Behind the seats in front, at `cinema::screen_depth`.
+                    depth: Depth::Tested,
                     vertex_stride: 0,
                     instance_stride: 0,
                     attributes: &[],

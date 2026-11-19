@@ -137,6 +137,7 @@ settings-height = Height
 settings-height-desc = Raise or lower yourself in videos without their own.
 settings-background = Background
 settings-background-desc = Around flat videos and the menus. Your room replaces it while it shows.
+settings-background-menus-desc = Around the menus and videos that aren't flat. Your room replaces it while it shows.
 # Short: a chip. The video follows Settings › Video position.
 background-use-global = Use global
 # Short: a chip.
@@ -1212,6 +1213,7 @@ source-added = Added { $name }
 source-saved = Saved { $name }
 source-added-unsaved = Added { $name } until you quit: the sources couldn't be saved ({ $error })
 source-added-nfs-server = Added { $name } as { $address }, the server's list of exports: it has no / export
+source-saved-nfs-server = Saved { $name } as { $address }, the server's list of exports: it has no / export
 source-changed-unsaved = Changed { $name } until you quit: the sources couldn't be saved ({ $error })
 source-removed-unsaved = Removed until you quit: the sources couldn't be saved ({ $error })
 source-locked-toast = Locked { $name }

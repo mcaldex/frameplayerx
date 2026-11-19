@@ -471,8 +471,10 @@ impl AnnexbFilter {
 
     /// Sends `pkt` (or null for EOF) into the filter, flushing the filter if
     /// it refuses invalid packet data so subsequent packets remain clean. A
-    /// packet that starts with an empty NAL unit is refused the same way:
-    /// `h264_mp4toannexb` passes a run of zeros on as nothing at all.
+    /// packet that starts with an empty NAL unit, or holds a hole's run of
+    /// zeros further on, is refused the same way: `h264_mp4toannexb` passes
+    /// zeros where a length belongs on as nothing at all, and zeros inside a
+    /// unit on to the decoder.
     pub(crate) fn send(&mut self, pkt: *const fp_ffmpeg_sys::AVPacket) -> crate::Result<()> {
         if pkt.is_null() {
             // SAFETY: null packet signals EOF to our valid BSF context.
@@ -481,11 +483,14 @@ impl AnnexbFilter {
         }
         // SAFETY: `pkt` is a valid packet for the duration of the call.
         let data = unsafe { packet_data(pkt) };
-        if self.length_size.is_some_and(|n| starts_empty(data, n)) {
+        if self
+            .length_size
+            .is_some_and(|n| starts_empty(data, n) || holds_hole(data))
+        {
             return Err(crate::Error::Ffmpeg {
                 context: "bsf send",
                 code: fp_ffmpeg_sys::AVERROR_INVALIDDATA_,
-                message: "packet starts with an empty NAL unit".into(),
+                message: "packet holds a run of zeros".into(),
             });
         }
         let copy = crate::decode::Packet::new();
@@ -593,6 +598,18 @@ fn starts_empty(data: &[u8], length_size: usize) -> bool {
 /// Zero bytes where a NAL unit's length belongs that mark a hole, not the
 /// odd byte of padding at a packet's end.
 const ZERO_HOLE: usize = 16;
+
+/// Whether a length-prefixed packet holds [`ZERO_HOLE`] zero bytes at a
+/// multiple of that from its start, as any run of twice as many does: more
+/// than a length field's, and no NAL unit holds three (H.264 7.4.1, H.265
+/// 7.4.2), so they are a hole in the file. Cheap enough for every packet,
+/// unlike [`holds_zero_run`].
+fn holds_hole(data: &[u8]) -> bool {
+    data.as_chunks::<ZERO_HOLE>()
+        .0
+        .iter()
+        .any(|&c| u128::from_ne_bytes(c) == 0)
+}
 
 /// Whether any NAL unit of a length-prefixed packet holds three zero bytes
 /// in a row, which H.264 7.4.1 and H.265 7.4.2 rule out, or zeros stand
@@ -3580,6 +3597,16 @@ mod tests {
             &[0, 0, 0, 3, 0x09, 0x10, 0xf0, 0, 0, 0, 0],
             4
         ));
+
+        // A hole after a good first unit, or inside one, as playback sees it.
+        assert!(holds_hole(&hole));
+        let mut inside = vec![0, 0, 0x10, 0, 0x65, 0x88];
+        inside.extend([0; 40]);
+        assert!(holds_hole(&inside));
+        assert!(!holds_hole(&good));
+        let mut padded = vec![0, 0, 0, 3, 0x09, 0x10, 0xf0];
+        padded.extend([0; 15]);
+        assert!(!holds_hole(&padded));
     }
 
     #[test]

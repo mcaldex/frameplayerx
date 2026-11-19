@@ -1219,14 +1219,11 @@ impl Playback {
     /// is told, and whether a jump finished since the last poll, which
     /// [`Self::damage_notice`] then counts.
     pub fn poll_damage_skip(&mut self) -> (bool, bool) {
-        let st = self.player.stats();
-        let (skipping, done) = damage_skip_step(
-            &mut self.damaged_jumps,
-            st.skipping_damaged,
-            st.damaged_jumps,
-        );
+        let skipping_now = self.player.is_skipping_damaged();
+        let (jumps, skipped) = self.player.damaged();
+        let (skipping, done) = damage_skip_step(&mut self.damaged_jumps, skipping_now, jumps);
         if done {
-            self.damaged_skipped += st.damaged_skipped;
+            self.damaged_skipped += skipped;
         }
         let held = held_long(&mut self.skipping_since, skipping, Instant::now());
         (held, done)
@@ -1243,10 +1240,11 @@ impl Playback {
         self.keyframes.at(self.player.position(), &self.settings)
     }
 
-    /// The cinema room chosen for this flat video, if this build has it.
+    /// The cinema room chosen for this flat video at this point of it, if
+    /// this build has it.
     pub fn wanted_room(&self, settings: &Settings) -> Option<fp_render::CinemaRoom> {
         use BackgroundEnvironment::*;
-        let environment = match self.settings.environment {
+        let environment = match self.current_settings().environment {
             UseGlobal => settings.environment(),
             choice => choice,
         };
@@ -1255,33 +1253,57 @@ impl Playback {
 
     /// The cinema row this video sits in, its own or the global one.
     pub fn cinema_row(&self, settings: &Settings) -> u8 {
-        self.settings
+        self.current_settings()
             .cinema_row
             .unwrap_or_else(|| settings.cinema_row())
     }
 
     /// How much the cinema's screen curves for this video, its own or the
-    /// global curve.
+    /// global curve, blended between keyframes either way.
     pub fn cinema_curvature(&self, settings: &Settings) -> f32 {
-        self.settings
-            .cinema_curvature
-            .unwrap_or_else(|| settings.cinema_curvature())
+        let global = settings.cinema_curvature();
+        self.keyframes
+            .value_at(self.player.position(), &self.settings, |s| {
+                s.cinema_curvature.unwrap_or(global)
+            })
     }
 
-    /// The cinema room round this video, when it shows: not while
-    /// passthrough shows your room, or for a video whose own background is
-    /// see-through.
+    /// Whether a cinema room can be round this video: not while passthrough
+    /// shows your room, or for a video whose own background is see-through.
+    fn room_allowed(&self, settings: &Settings, passthrough_available: bool) -> bool {
+        !(settings.passthrough && passthrough_available)
+            && !self.shown_settings(&settings.default_view).chroma_key
+            && self.format.alpha_pack_scale().is_none()
+    }
+
+    /// The room to have ready for this video: the one chosen, while it can
+    /// show.
+    pub fn room_to_load(
+        &self,
+        settings: &Settings,
+        passthrough_available: bool,
+    ) -> Option<fp_render::CinemaRoom> {
+        self.wanted_room(settings)
+            .filter(|_| self.room_allowed(settings, passthrough_available))
+    }
+
+    /// The cinema room round this video, when it shows.
     pub fn cinema_room(
         &self,
         settings: &Settings,
         passthrough_available: bool,
     ) -> Option<fp_render::CinemaRoom> {
-        self.wanted_room(settings).filter(|_| {
-            self.player.info().video_stream().is_some()
-                && !(settings.passthrough && passthrough_available)
-                && !self.shown_settings(&settings.default_view).chroma_key
-                && self.format.alpha_pack_scale().is_none()
-        })
+        self.room_to_load(settings, passthrough_available)
+            .filter(|_| self.player.info().video_stream().is_some())
+    }
+
+    /// Whether Adjust can offer this video a cinema room: a flat video's
+    /// picture, where a room can show.
+    pub fn rooms_offered(&self, settings: &Settings, passthrough_available: bool) -> bool {
+        fp_render::CinemaRoom::any_available()
+            && self.format.projection == format::Projection::Flat
+            && self.player.info().video_stream().is_some()
+            && self.room_allowed(settings, passthrough_available)
     }
 
     /// What is shown now: [`Self::current_settings`] with the global chroma
@@ -1290,7 +1312,7 @@ impl Playback {
     /// picked for this video.
     pub fn shown_settings(&self, global: &ViewSettings) -> ViewSettings {
         let mut s = self.current_settings().with_global_key(global);
-        if self.settings.environment == BackgroundEnvironment::UseGlobal {
+        if s.environment == BackgroundEnvironment::UseGlobal {
             s.background = global.background;
         }
         if let Some(c) = self.found_colour() {

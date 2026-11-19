@@ -270,8 +270,8 @@ pub(crate) fn next_cluster(
 
 /// Of the clusters from `at` to `end`, where the latest that opens with a
 /// keyframe of `track` no later than `target` starts, and that keyframe's
-/// timestamp. A look costs one short read: the clusters' sizes lead from
-/// one to the next.
+/// timestamp; with none, whether one after `target` does. A look costs one
+/// short read: the clusters' sizes lead from one to the next.
 pub(crate) fn cluster_key(
     src: &dyn ByteSource,
     track: u64,
@@ -279,11 +279,12 @@ pub(crate) fn cluster_key(
     end: u64,
     target: i64,
     cancelled: &impl Fn() -> bool,
-) -> Option<(u64, i64)> {
-    if end > src.size()? {
-        return None;
+) -> (Option<(u64, i64)>, bool) {
+    if src.size().is_none_or(|size| end > size) {
+        return (None, false);
     }
     let mut best = None;
+    let mut later = false;
     let mut head = [0; CLUSTER_HEAD];
     for _ in 0..CLUSTER_LOOKS {
         if at >= end {
@@ -301,13 +302,15 @@ pub(crate) fn cluster_key(
         };
         if let Some((pts, key)) = first_video(head, &cluster, track, at) {
             if pts > target {
-                break;
-            }
-            if key {
+                if best.is_some() || key {
+                    later = key;
+                    break;
+                }
+            } else if key {
                 best = Some((at, pts));
             }
         }
         at = next;
     }
-    best
+    (best, later && best.is_none())
 }

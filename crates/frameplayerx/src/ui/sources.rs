@@ -644,25 +644,16 @@ fn add_form(ui: &mut egui::Ui, v: &mut View) {
 /// Remove source, which asks again: pressed once it turns red as
 /// "Remove it?" for 4 seconds. Whether it was pressed again.
 fn remove_button(ui: &mut egui::Ui, f: &mut SourceForm) -> bool {
-    let armed = f
-        .remove_armed
-        .is_some_and(|at| at.elapsed().as_secs_f32() < 4.0);
-    let (label, kind) = if armed {
-        (tr!("source-remove-confirm"), Kind::Danger)
-    } else {
-        (tr!("source-remove"), Kind::Secondary)
-    };
-    let pressed = widgets::button_sized(ui, Some(icons::TRASH), label, kind, 44.0)
-        .tip(tr!("sources-remove"))
-        .clicked();
-    if armed {
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(500));
-    }
-    if pressed && !armed {
-        f.remove_armed = Some(std::time::Instant::now());
-    }
-    pressed && armed
+    super::confirm_button(
+        ui,
+        &mut f.remove_armed,
+        tr!("source-remove"),
+        tr!("source-remove-confirm"),
+        |ui, label, kind| {
+            widgets::button_sized(ui, Some(icons::TRASH), label, kind, 44.0)
+                .tip(tr!("sources-remove"))
+        },
+    )
 }
 
 /// The form's title and its source type; whether it was cancelled, and
@@ -1097,15 +1088,8 @@ fn server_form(
 
 /// What a blank NFS user (or group) ID sends: this process's.
 fn default_id(user: bool) -> String {
-    #[cfg(unix)]
-    // SAFETY: getuid and getgid cannot fail and touch no memory.
-    let id = unsafe { if user { libc::getuid() } else { libc::getgid() } };
-    #[cfg(not(unix))]
-    let id = {
-        let _ = user;
-        65534
-    };
-    id.to_string()
+    let (uid, gid) = fp_sources::nfs::default_ids();
+    if user { uid } else { gid }.to_string()
 }
 
 pub(super) fn text_field(ui: &mut egui::Ui, value: &mut String, hint: &str, masked: bool) {

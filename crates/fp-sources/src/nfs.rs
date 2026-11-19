@@ -74,6 +74,38 @@ pub fn exports_root(config: &NfsConfig) -> Result<bool> {
     Ok(source.list_exports()?.iter().any(Vec::is_empty))
 }
 
+/// Maps a location saved by an NFS source configured as `old` to the same
+/// file's location once it is configured as `new`: a whole server's
+/// locations name the export they are in, an export's are relative to it,
+/// so editing one into the other, or into another export, changes them.
+/// `None` for a location that isn't `old`'s, or lies outside `new`.
+pub fn rekey(old: &NfsConfig, new: &NfsConfig) -> Result<impl Fn(&str) -> Option<String>> {
+    let (old, new) = (NfsSource::new(old)?, NfsSource::new(new)?);
+    Ok(move |location: &str| {
+        let mut loc = NfsLocation::parse(&old.current_url(location).ok()?).ok()?;
+        old.check_owned(&loc).ok()?;
+        if !old.whole_server() {
+            loc.export = Some(old.export.len());
+        }
+        new.canonical_location(&loc.to_url())
+    })
+}
+
+/// The user and group IDs requests carry when the source names none: this
+/// process's.
+#[cfg(all(unix, feature = "nfs"))]
+pub fn default_ids() -> (u32, u32) {
+    // SAFETY: getuid and getgid cannot fail and touch no memory.
+    unsafe { (libc::getuid(), libc::getgid()) }
+}
+
+/// The user and group IDs requests carry when the source names none:
+/// nobody's, where there is no process user.
+#[cfg(not(all(unix, feature = "nfs")))]
+pub fn default_ids() -> (u32, u32) {
+    (65534, 65534)
+}
+
 /// The non-empty segments of a `/`-separated path.
 fn segments(path: &str) -> impl Iterator<Item = &str> {
     path.split('/').filter(|s| !s.is_empty())
@@ -758,11 +790,7 @@ mod imp {
 
     /// The AUTH_SYS credential requests carry.
     fn credential(config: &NfsConfig) -> opaque_auth<'static> {
-        #[cfg(unix)]
-        // SAFETY: getuid and getgid cannot fail and touch no memory.
-        let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
-        #[cfg(not(unix))]
-        let (uid, gid) = (65534, 65534);
+        let (uid, gid) = super::default_ids();
         let uid = config.uid.unwrap_or(uid);
         let gid = config.gid.unwrap_or(gid);
         opaque_auth::auth_unix(&auth_unix {
@@ -1858,6 +1886,37 @@ mod tests {
                 .canonical_location("nfs://nas.local:2049/volume1/videos/a.mp4")
                 .is_none()
         );
+    }
+
+    #[cfg(feature = "nfs")]
+    #[test]
+    fn saved_locations_follow_an_edit_between_the_whole_server_and_an_export() {
+        let export = config();
+        let mut whole = config();
+        whole.export.clear();
+        let in_export = crate::location::encode("n", "nfs", "sub/a.mp4");
+        let in_whole = rekey(&export, &whole).unwrap()(&in_export).unwrap();
+        assert_eq!(
+            NfsSource::new(&whole)
+                .unwrap()
+                .current_url(&in_whole)
+                .unwrap(),
+            "nfs://nas.local/%2Fvolume1%2Fvideos/sub/a.mp4"
+        );
+        assert_eq!(
+            rekey(&whole, &export).unwrap()(&in_whole),
+            Some(in_export.clone())
+        );
+        // Another export keeps what lies in it, and nothing else.
+        let mut narrower = config();
+        narrower.export = "/volume1/videos/sub".into();
+        assert_eq!(
+            rekey(&export, &narrower).unwrap()(&in_export),
+            Some(crate::location::encode("n", "nfs", "a.mp4"))
+        );
+        let mut music = config();
+        music.export = "/volume1/music".into();
+        assert_eq!(rekey(&export, &music).unwrap()(&in_export), None);
     }
 
     #[cfg(feature = "nfs")]

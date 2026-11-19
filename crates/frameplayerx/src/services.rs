@@ -201,12 +201,15 @@ impl Opener {
             || is_local_path(location)
         {
             // Only the headset's own sources name its files: a server that
-            // lists one doesn't get it deleted.
-            let elsewhere = source_id.and_then(|id| self.source(id)).is_some_and(|s| {
-                !matches!(
-                    s.kind(),
-                    fp_sources::SourceKind::Local | fp_sources::SourceKind::Library
-                )
+            // lists one doesn't get it deleted, even once it is removed and
+            // no longer says what it was.
+            let elsewhere = source_id.is_some_and(|id| {
+                self.source(id).is_none_or(|s| {
+                    !matches!(
+                        s.kind(),
+                        fp_sources::SourceKind::Local | fp_sources::SourceKind::Library
+                    )
+                })
             });
             return if elsewhere {
                 DeleteRoute::None
@@ -475,6 +478,48 @@ fn migrate_source_locations(library: &Library, opener: &Opener, configs: &[Sourc
     }
 }
 
+/// An NFS source edited between its whole server and an export, or from
+/// one export to another on the same server, saves its videos' locations
+/// another way: they are changed over while the old export is known.
+fn rekey_moved_exports(library: &Library, old: &[SourceConfig], new: &[SourceConfig]) {
+    for config in new {
+        let SourceConfig::Nfs(new) = config else {
+            continue;
+        };
+        let Some(SourceConfig::Nfs(old)) = old.iter().find(|c| c.id() == new.id) else {
+            continue;
+        };
+        if old.export == new.export
+            || !old.host.eq_ignore_ascii_case(&new.host)
+            || old.port != new.port
+        {
+            continue;
+        }
+        let rekey = match fp_sources::nfs::rekey(old, new) {
+            Ok(rekey) => rekey,
+            Err(error) => {
+                log::warn!(
+                    "cannot move saved locations of NFS source {}: {error}",
+                    new.id
+                );
+                continue;
+            }
+        };
+        match library.rewrite_source_locations(&new.id, rekey) {
+            Ok(changed) if changed > 0 => {
+                log::info!("moved {changed} media locations of NFS source {}", new.id);
+            }
+            Ok(_) => {}
+            Err(error) => {
+                log::warn!(
+                    "cannot move saved locations of NFS source {}: {error}",
+                    new.id
+                );
+            }
+        }
+    }
+}
+
 impl Services {
     pub fn device_identifier(&self) -> &str {
         &self.device_identifier
@@ -606,6 +651,7 @@ impl Services {
     pub fn set_sources(&mut self, configs: Vec<SourceConfig>) -> SourcesChange {
         // Convert legacy references while the old endpoint/root is still known.
         migrate_source_locations(&self.library, &self.opener, &self.source_configs);
+        rekey_moved_exports(&self.library, &self.source_configs, &configs);
         let save_error = fp_sources::save_configs(&Settings::sources_path(), &configs)
             .inspect_err(|e| log::error!("saving sources: {e}"))
             .err()
@@ -1024,6 +1070,9 @@ mod tests {
         for named in [path.clone(), format!("file://{path}")] {
             assert_eq!(opener.delete_allowed_in(Some("dav"), &named), Some(false));
             assert!(opener.delete_in(Some("dav"), &named).is_err());
+            // Nor does one since removed.
+            assert_eq!(opener.delete_allowed_in(Some("gone"), &named), Some(false));
+            assert!(opener.delete_in(Some("gone"), &named).is_err());
         }
         assert!(file.exists());
         assert_eq!(opener.delete_allowed_in(None, &path), Some(true));
