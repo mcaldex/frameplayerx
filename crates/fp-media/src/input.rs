@@ -76,6 +76,8 @@ struct Gap {
     /// The last entry no later than the target: in MP4, whose index places
     /// every sample, there are entries between.
     last: usize,
+    /// The entries after it, up to the next listed keyframe.
+    after: std::ops::Range<usize>,
     /// Where the next listed keyframe starts, or the file ends.
     end: u64,
     /// The target, in the stream's time base.
@@ -87,6 +89,15 @@ struct NewKey {
     pos: i64,
     timestamp: i64,
     size: c_int,
+}
+
+/// What one look into a [`Gap`] found.
+enum Look {
+    Key(NewKey),
+    /// None before the target, but one after it: the target is early
+    /// between two keyframes, and the index does leave some out.
+    Later,
+    Nothing,
 }
 
 /// A title being played clip after clip.
@@ -478,7 +489,7 @@ impl Input {
         let Some(gap) = self.listed_gap(vi, seconds) else {
             return false;
         };
-        let key = if gap.matroska {
+        let look = if gap.matroska {
             self.unlisted_cluster(&gap, cancelled)
         } else {
             self.unlisted_sample(&gap, cancelled)
@@ -486,9 +497,16 @@ impl Input {
         if cancelled() {
             return false;
         }
-        let Some(key) = key else {
-            self.unlisted.misses += 1;
-            return false;
+        let key = match look {
+            Look::Key(key) => key,
+            Look::Later => {
+                self.unlisted.misses = 0;
+                return false;
+            }
+            Look::Nothing => {
+                self.unlisted.misses += 1;
+                return false;
+            }
         };
         self.unlisted.misses = 0;
         let st = self.streams()[gap.stream];
@@ -534,12 +552,16 @@ impl Input {
             }
             let last =
                 ff::av_index_search_timestamp(st, target, backward | ff::AVSEEK_FLAG_ANY as c_int);
-            let next = ff::avformat_index_get_entry_from_timestamp(st, target.checked_add(1)?, 0);
+            let after_target = target.checked_add(1)?;
+            let next = ff::avformat_index_get_entry_from_timestamp(st, after_target, 0);
+            let next_index = match ff::av_index_search_timestamp(st, after_target, 0) {
+                i if i >= 0 && !next.is_null() => i as usize,
+                _ => ff::avformat_index_get_entries_count(st).max(0) as usize,
+            };
             let anchor_pos = u64::try_from(a.pos).ok()?;
             let end = match next.as_ref() {
                 Some(n) => u64::try_from(n.pos).ok()?,
-                None if !matroska => src.size()?,
-                None => return None,
+                None => src.size()?,
             };
             if end <= anchor_pos || src.remote() && end - anchor_pos < UNLISTED_GAP_REMOTE {
                 return None;
@@ -551,33 +573,55 @@ impl Input {
                 anchor_pos,
                 anchor_ts: a.timestamp,
                 last: last.max(anchor) as usize,
+                after: (last.max(anchor) as usize + 1)..next_index,
                 end,
                 target,
             })
         }
     }
 
-    /// A sample in an MP4's `gap` that decoding can start at.
-    fn unlisted_sample(&self, gap: &Gap, cancelled: &impl Fn() -> bool) -> Option<NewKey> {
+    /// A sample in an MP4's `gap` that decoding can start at, before its
+    /// target or else after it.
+    fn unlisted_sample(&self, gap: &Gap, cancelled: &impl Fn() -> bool) -> Look {
         let st = self.streams()[gap.stream];
         // SAFETY: as in `listed_gap`; the extradata has extradata_size bytes.
-        unsafe {
+        let reader = unsafe {
             let par = &*(*st).codecpar;
             let extradata = if par.extradata.is_null() {
                 &[][..]
             } else {
                 std::slice::from_raw_parts(par.extradata, par.extradata_size as usize)
             };
-            let reader = NalReader::new(par.codec_id, extradata)?;
-            let samples = (gap.anchor + 1..=gap.last)
-                .filter_map(|i| {
+            NalReader::new(par.codec_id, extradata)
+        };
+        let Some(reader) = reader else {
+            return Look::Nothing;
+        };
+        let src = self._io.source();
+        let key_in = |entries: std::ops::Range<usize>| {
+            // SAFETY: as in `listed_gap`.
+            let samples = entries
+                .filter_map(|i| unsafe {
                     let e = ff::avformat_index_get_entry(st, i as c_int).as_ref()?;
                     let pos = u64::try_from(e.pos).ok()?;
                     (e.flags() & INDEX_DISCARD == 0).then_some((i, pos, e.size() as usize))
                 })
                 .collect();
-            let src = self._io.source();
-            let i = crate::unlisted_keys::sample_key(&*src, &reader, samples, cancelled)? as c_int;
+            crate::unlisted_keys::sample_key(&*src, &reader, samples, cancelled)
+        };
+        match key_in(gap.anchor + 1..gap.last + 1) {
+            Some(i) => self.new_sample_key(gap, i).map_or(Look::Nothing, Look::Key),
+            None if !cancelled() && key_in(gap.after.clone()).is_some() => Look::Later,
+            None => Look::Nothing,
+        }
+    }
+
+    /// Index entry `i` of `gap`'s stream as a keyframe to add.
+    fn new_sample_key(&self, gap: &Gap, i: usize) -> Option<NewKey> {
+        let st = self.streams()[gap.stream];
+        let i = i as c_int;
+        // SAFETY: as in `listed_gap`.
+        unsafe {
             let e = ff::avformat_index_get_entry(st, i).as_ref()?;
             // FFmpeg updates the first entry with this timestamp: it must be
             // this one.
@@ -591,9 +635,13 @@ impl Input {
     }
 
     /// A cluster in a Matroska file's `gap` that opens with a keyframe.
-    fn unlisted_cluster(&mut self, gap: &Gap, cancelled: &impl Fn() -> bool) -> Option<NewKey> {
+    fn unlisted_cluster(&mut self, gap: &Gap, cancelled: &impl Fn() -> bool) -> Look {
         let src = self._io.source();
-        let start = crate::unlisted_keys::next_cluster(&*src, gap.anchor_pos, gap.end, cancelled)?;
+        let Some(start) =
+            crate::unlisted_keys::next_cluster(&*src, gap.anchor_pos, gap.end, cancelled)
+        else {
+            return Look::Nothing;
+        };
         let track = match self.unlisted.matroska_track {
             Some(track) => track,
             None => {
@@ -603,14 +651,25 @@ impl Input {
                 }
                 track
             }
-        }?;
-        let (pos, timestamp) =
-            crate::unlisted_keys::cluster_key(&*src, track, start, gap.end, gap.target, cancelled)?;
-        (timestamp > gap.anchor_ts).then_some(NewKey {
-            pos: i64::try_from(pos).ok()?,
-            timestamp,
-            size: 0,
-        })
+        };
+        let Some(track) = track else {
+            return Look::Nothing;
+        };
+        let (key, later) =
+            crate::unlisted_keys::cluster_key(&*src, track, start, gap.end, gap.target, cancelled);
+        match key {
+            Some((pos, timestamp)) if timestamp > gap.anchor_ts => {
+                i64::try_from(pos).map_or(Look::Nothing, |pos| {
+                    Look::Key(NewKey {
+                        pos,
+                        timestamp,
+                        size: 0,
+                    })
+                })
+            }
+            _ if later => Look::Later,
+            _ => Look::Nothing,
+        }
     }
 
     /// Seeks so the next packets start at the first keyframe after
