@@ -222,6 +222,7 @@ pub struct Renderer {
     comfort_focus: ComfortFocus,
     /// When comfort focus last measured.
     focus_measured_at: Option<std::time::Instant>,
+    glow: crate::glow::Glow,
     /// Times each frame's parts on the GPU, where it has timestamps.
     timer: Option<FrameTimer>,
     /// The parts of the last frame the GPU finished.
@@ -455,6 +456,7 @@ impl Renderer {
                 focus_aim: AimFilter::default(),
                 comfort_focus: ComfortFocus::default(),
                 focus_measured_at: None,
+                glow: Default::default(),
                 timer: FrameTimer::new(&gpu, SLOTS),
                 gpu_times: None,
                 imports: Default::default(),
@@ -925,6 +927,7 @@ impl Renderer {
         if let Some((scores, aim, lat)) = self.focus.as_mut().and_then(|f| f.take(self.current)) {
             self.comfort_focus.ingest(&scores, aim, lat);
         }
+        self.glow.read(self.current);
         if let Some(t) = self.timer.as_mut() {
             // Read before `begin` resets the queries for this frame.
             self.gpu_times = t.read(&self.gpu, self.current);
@@ -1235,6 +1238,7 @@ impl Renderer {
     /// Starts the HDR peak afresh, ignoring measurements still on their way.
     fn forget_scene(&mut self) {
         self.hdr_peak.reset();
+        self.glow.reset();
         if let Some(p) = self.peak.as_mut() {
             p.discard();
         }
@@ -1637,6 +1641,13 @@ impl Renderer {
         self.gaze = gaze;
     }
 
+    /// Lights the background round a flat screen with the picture's edge
+    /// colours, or not with `None`. It shows only on an opaque background,
+    /// not in a cinema or with a chroma key.
+    pub fn set_screen_glow(&mut self, glow: Option<crate::ScreenGlow>) {
+        self.glow.set(glow);
+    }
+
     /// Records both eye passes.
     pub fn draw(
         &mut self,
@@ -1718,6 +1729,31 @@ impl Renderer {
             (p.fill.z, p.fill.w) = (depth[0], depth[1]);
         }
         p.hdr = params::hdr_levels(self.hdr_peak.peak_nits());
+        // Screen glow, round a flat screen on an opaque background: not in a
+        // cinema, nor over passthrough or a chroma key.
+        let now = std::time::Instant::now();
+        let glow_shows = self.glow.wanted()
+            && video.cinema.is_none()
+            && p.mode[0] == 0
+            && p.bg_color.w >= 1.0
+            && p.key2.y == 0.0
+            && p.key2.z == 0.0
+            && self.slots[slot_idx].has_video
+            && frame_desc.is_some();
+        let (glow, measure_glow) = if glow_shows
+            && self.glow.prepare(
+                &self.gpu,
+                self.color_format,
+                self.video_rate,
+                (self.scene_pl, self.tp10_eyes.as_ref().map(|t| t.layout)),
+                SLOTS,
+            ) {
+            (self.glow.apply(&mut p, now), self.glow.due(now))
+        } else {
+            self.glow.reset();
+            (false, false)
+        };
+        let glow_eyes = glow.then(|| (self.glow.eye_pipeline(false), self.glow.eye_pipeline(true)));
         let want_focus = video.settings.comfort_focus
             && video.format.can_comfort_focus()
             && self.slots[slot_idx].has_video;
@@ -1911,6 +1947,8 @@ impl Renderer {
                         Some(t) => {
                             if room.is_some() {
                                 t.bind_cinema(gpu, cmd, slot_idx);
+                            } else if let Some((_, glowing)) = glow_eyes {
+                                t.bind_with(gpu, cmd, slot_idx, glowing);
                             } else {
                                 t.bind(gpu, cmd, slot_idx, want_focus);
                             }
@@ -1922,7 +1960,7 @@ impl Renderer {
                             let pipe = match room {
                                 Some((_, room)) => room.scene_pipe,
                                 None if want_focus => self.comfort_pipe,
-                                None => self.scene_pipe,
+                                None => glow_eyes.map_or(self.scene_pipe, |(glowing, _)| glowing),
                             };
                             d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipe);
                             d.cmd_bind_descriptor_sets(
@@ -1995,7 +2033,38 @@ impl Renderer {
         if let Some((aim, lat)) = measure {
             self.record_focus(slot_idx, tp10, aim, lat);
         }
+        if measure_glow {
+            self.record_glow(slot_idx, tp10, now);
+        }
         Ok(())
+    }
+
+    /// Measures the picture's edge colours for screen glow with the eye
+    /// passes' own layout and bindings, as [`Self::record_focus`] does.
+    fn record_glow(&mut self, slot_idx: usize, tp10: bool, now: std::time::Instant) {
+        let slot = &self.slots[slot_idx];
+        let (cmd, scene_set) = (slot.cmd, slot.scene_set);
+        let (gpu, scene_pl) = (&self.gpu, self.scene_pl);
+        let tp10_eyes = self.tp10_eyes.as_ref().filter(|_| tp10);
+        self.glow
+            .record(gpu, cmd, slot_idx, tp10, now, |pipe| match tp10_eyes {
+                Some(t) => t.bind_with(gpu, cmd, slot_idx, pipe),
+                // SAFETY: recording; the pipeline was made with the eye
+                // passes' layout and the slot's scene set is written for
+                // this frame.
+                None => unsafe {
+                    let d = &gpu.device;
+                    d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipe);
+                    d.cmd_bind_descriptor_sets(
+                        cmd,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        scene_pl,
+                        0,
+                        &[scene_set],
+                        &[],
+                    );
+                },
+            });
     }
 
     /// Draws comfort focus's samples round `aim` (`fs_focus`) with the eye
@@ -2490,6 +2559,7 @@ impl Drop for Renderer {
             if let Some(mut f) = self.focus.take() {
                 f.destroy(&gpu);
             }
+            self.glow.destroy(&gpu);
             if let Some(mut t) = self.timer.take() {
                 t.destroy(&gpu);
             }

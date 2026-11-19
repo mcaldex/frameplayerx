@@ -828,6 +828,18 @@ The same at the bottom of the Position tab changes it for the video that
 is playing, and **Save for this video** keeps it with the rest of its
 adjustments. Your room replaces it while it shows.
 
+**Screen glow**, under the colour in Settings › Video position, lights the
+background round a flat screen the way an LED strip behind a television
+lights the wall: each part takes the colour of the picture's edge beside
+it, mixing with its neighbours further out, and changes with the picture.
+Black bars above and below a film, or beside it, are left out.
+**Brightness** sets how bright it is beside the screen, up to as bright as
+the picture's edge, and **Spread** how far out it reaches. The same under
+the colour on the Position tab changes it for the video that is playing,
+and the button beside its switch puts the video back on Settings. It shows
+on a colour background only, not in a cinema, over your room or with a
+chroma key.
+
 ### Comfort focus
 
 **Comfort focus**, on the Stereo tab for stereo 180° and fisheye videos,

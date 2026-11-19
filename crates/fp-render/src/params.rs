@@ -50,6 +50,12 @@ pub(crate) struct SceneParams {
     /// fills the rest (a cinema's screen). z, w: in a cinema, the depth
     /// each eye draws it at ([`crate::cinema::screen_depth`]).
     pub fill: Vec4,
+    /// Screen glow ([`crate::glow`]): x its brightness beside the edge, as a
+    /// share of the edge's light; y how far it reaches, metres.
+    pub glow: Vec4,
+    /// The picture's edge colours, linear, clockwise from its top left: as
+    /// measured, then spread as the light is halfway out and at its reach.
+    pub glow_colours: [[Vec4; crate::glow::ZONES]; 3],
 }
 
 /// Sets `p` up for a Q10C picture of `height` rows sampled where it lies
@@ -467,6 +473,8 @@ pub(crate) fn build(
         eyes: [Vec4::ZERO; 2],
         relief: [Vec4::W; 2],
         fill,
+        glow: Vec4::ZERO,
+        glow_colours: [[Vec4::ZERO; crate::glow::ZONES]; 3],
     }
 }
 
