@@ -2022,7 +2022,88 @@ pub(super) fn global_background(ui: &mut egui::Ui, settings: &mut crate::setting
             &mut settings.default_view.background,
             tr!("settings-background-desc"),
         );
+        ui.add_space(6.0);
+        screen_glow(ui, &mut settings.screen_glow);
     }
+}
+
+/// The glow round a flat screen on a colour background for every video that
+/// follows Settings › Video position.
+fn screen_glow(ui: &mut egui::Ui, glow: &mut crate::settings::ScreenGlow) {
+    let mut view = ViewSettings::default();
+    let d = crate::settings::ScreenGlow::default();
+    glow_rows(ui, &mut view, glow, &d, false);
+    *glow = crate::settings::ScreenGlow {
+        on: view.screen_glow.unwrap_or(glow.on),
+        brightness: view.glow_brightness.unwrap_or(glow.brightness),
+        spread: view.glow_spread.unwrap_or(glow.spread),
+    };
+}
+
+/// Screen glow's switch and, while it is on, its brightness and spread in
+/// percent of their most: `view`'s own values, else `shown`'s, which the
+/// sliders reset to `defaults`. With `own`, a button beside the switch puts
+/// the video back on Settings' glow.
+fn glow_rows(
+    ui: &mut egui::Ui,
+    view: &mut ViewSettings,
+    shown: &crate::settings::ScreenGlow,
+    defaults: &crate::settings::ScreenGlow,
+    own: bool,
+) {
+    let mut on = view.screen_glow.unwrap_or(shown.on);
+    widgets::rows(ui, |r| {
+        r.row(
+            tr!("settings-screen-glow"),
+            Some(tr!("settings-screen-glow-desc")),
+            |ui| {
+                let set = view.screen_glow.is_some()
+                    || view.glow_brightness.is_some()
+                    || view.glow_spread.is_some();
+                if own
+                    && set
+                    && widgets::icon_button(ui, icons::ARROW_COUNTER_CLOCKWISE, 40.0, false)
+                        .tip(tr!("adjust-reset"))
+                        .clicked()
+                {
+                    (view.screen_glow, view.glow_brightness, view.glow_spread) = (None, None, None);
+                    on = shown.on;
+                }
+                if widgets::switch(ui, &mut on).changed() {
+                    view.screen_glow = Some(on);
+                }
+            },
+        );
+        if on {
+            for (title, value, current, default) in [
+                (
+                    tr!("settings-glow-brightness"),
+                    &mut view.glow_brightness,
+                    shown.brightness,
+                    defaults.brightness,
+                ),
+                (
+                    tr!("settings-glow-spread"),
+                    &mut view.glow_spread,
+                    shown.spread,
+                    defaults.spread,
+                ),
+            ] {
+                let mut percent = value.unwrap_or(current) * 100.0;
+                if r.slider(
+                    title,
+                    None,
+                    &mut percent,
+                    10.0..=100.0,
+                    default * 100.0,
+                    "%",
+                    0,
+                ) {
+                    *value = Some(percent / 100.0);
+                }
+            }
+        }
+    });
 }
 
 /// Where a cinema seats you: its row and how much its screen curves, now
@@ -2123,6 +2204,8 @@ fn video_background(
             view.environment = Colour;
         }
     }
+    ui.add_space(6.0);
+    glow_rows(ui, view, &settings.screen_glow, &settings.screen_glow, true);
 }
 
 fn background_controls(ui: &mut egui::Ui, c: &mut [f32; 3], desc: &str) {

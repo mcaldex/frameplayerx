@@ -634,6 +634,11 @@ impl App {
             .playback
             .as_ref()
             .map(|p| p.shown_settings(&self.settings.default_view));
+        renderer.set_screen_glow(
+            self.settings
+                .screen_glow
+                .look(shown.as_ref().unwrap_or(&self.settings.default_view)),
+        );
         // The open video's colour, else the one videos start with. It is
         // sRGB; the eyes are cleared in linear light.
         let [r, g, b] = shown

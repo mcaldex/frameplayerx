@@ -59,6 +59,40 @@ pub const DEFAULT_PLAY_ALL_LIMIT: usize = 300;
 /// the floating screen's default.
 pub const DEFAULT_CINEMA_ROW: u8 = 2;
 
+/// Settings › Video position's screen glow: the background round a flat
+/// screen lit by the colours at the picture's edges. Brightness and spread
+/// are each a share of their most.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScreenGlow {
+    pub on: bool,
+    pub brightness: f32,
+    pub spread: f32,
+}
+
+impl Default for ScreenGlow {
+    fn default() -> Self {
+        ScreenGlow {
+            on: false,
+            brightness: 0.5,
+            spread: 0.5,
+        }
+    }
+}
+
+impl ScreenGlow {
+    /// What the renderer draws for a video with `view`'s adjustments: its
+    /// own where it has them, else these; nothing while it is off.
+    pub fn look(&self, view: &ViewSettings) -> Option<fp_render::ScreenGlow> {
+        view.screen_glow
+            .unwrap_or(self.on)
+            .then(|| fp_render::ScreenGlow {
+                brightness: view.glow_brightness.unwrap_or(self.brightness),
+                spread: view.glow_spread.unwrap_or(self.spread),
+            })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -79,6 +113,7 @@ pub struct Settings {
     pub presets: Vec<Preset>,
     /// Show the real world around flat screens and the UI.
     pub passthrough: bool,
+    pub screen_glow: ScreenGlow,
     /// Resume videos where they were left.
     pub resume: bool,
     /// The format a video starts in when nothing identifies it (no
@@ -249,6 +284,7 @@ impl Default for Settings {
             default_view: ViewSettings::default(),
             presets: Vec::new(),
             passthrough: false,
+            screen_glow: ScreenGlow::default(),
             resume: true,
             default_format: fp_core::format::VideoFormat::FALLBACK,
             fisheye_presets: FISHEYE_PRESETS.to_vec(),
@@ -340,7 +376,8 @@ impl Settings {
     }
 
     /// Adjustments for a video that has none saved: the defaults, following
-    /// the global chroma key, comfort focus, background and cinema seat.
+    /// the global chroma key, comfort focus, background, cinema seat and
+    /// screen glow.
     pub fn new_video_view(&self) -> ViewSettings {
         ViewSettings {
             key_own: Some(false),
@@ -348,6 +385,9 @@ impl Settings {
             environment: BackgroundEnvironment::UseGlobal,
             cinema_row: None,
             cinema_curvature: None,
+            screen_glow: None,
+            glow_brightness: None,
+            glow_spread: None,
             ..self.default_view
         }
     }
