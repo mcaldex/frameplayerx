@@ -137,6 +137,15 @@ settings-height = Height
 settings-height-desc = Raise or lower yourself in videos without their own.
 settings-background = Background
 settings-background-desc = Around flat videos and the menus. Your room replaces it while it shows.
+# Short: a chip. The video follows Settings › Video position.
+background-use-global = Use global
+# Short: a chip.
+background-colour = Colour
+# Short: a chip. A traditional cinema room: walnut panels, red seats.
+background-classic = Classic
+# Short: a chip. A modern cinema room with neon lights and leather recliners.
+background-luxe = Luxe
+background-room-desc = Around flat videos as they play. Your room replaces it while it shows.
 # Short: a chip.
 background-black = Black
 # Short: a chip.
@@ -397,6 +406,10 @@ adjust-rim-stretch-desc = Like Edge stretch, but mostly at the very edge of the 
 adjust-lens-centre = Lens centre
 adjust-lens-centre-desc = Where each image circle's centre is, if not in the middle. Point at a slider and push the thumbstick left or right for fine steps.
 adjust-screen = Screen
+# Short: a slider's name. Which row of the cinema you sit in.
+adjust-row = Row
+adjust-row-desc = Row 1 is the front row, { $rows } the back row.
+adjust-cinema-curvature-desc = 0 is flat. At 1 the screen's edges come 0.8 m towards you.
 adjust-distance = Distance
 adjust-width = Width
 adjust-curvature = Curvature
@@ -1046,6 +1059,7 @@ library-unreadable = Could not read the file: { $error }
 library-missing = The file is missing (drive unplugged?)
 toast-volume = Volume { $percent }%
 toast-height = Height { $metres } m
+toast-row = Row { $row }
 # Which video in the list is playing.
 toast-queue-position = { $at } of { $of }
 toast-subtitles = Subtitles: { $title }

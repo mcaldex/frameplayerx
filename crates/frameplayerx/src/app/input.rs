@@ -139,8 +139,32 @@ impl App {
             }
             Cmd::Zoom(d) => {
                 if let Some(p) = &mut self.playback {
+                    let room = p.cinema_room(&self.settings, input.passthrough_available);
+                    // In a cinema, zooming in moves you a row forward: at
+                    // once, then again for each ROW_PULL held.
+                    if let Some(room) = room {
+                        let pull = &mut self.cinema;
+                        if input.time - pull.pulled_at > 0.2 {
+                            pull.row_pull = frame::ROW_PULL.copysign(d);
+                        } else {
+                            pull.row_pull += d;
+                        }
+                        pull.pulled_at = input.time;
+                        if pull.row_pull.abs() >= frame::ROW_PULL {
+                            pull.row_pull -= frame::ROW_PULL.copysign(pull.row_pull);
+                            let rows = room.rows();
+                            let row = p.cinema_row(&self.settings).min(rows);
+                            let row = if d > 0.0 {
+                                row.saturating_sub(1).max(1)
+                            } else {
+                                (row + 1).min(rows)
+                            };
+                            p.settings.cinema_row = self.settings.own_cinema_row(row, rows);
+                            p.settings_dirty = true;
+                            self.ui.toast(tr!("toast-row", row = row));
+                        }
                     // A flat screen's size is its width.
-                    if p.format.projection == Projection::Flat {
+                    } else if p.format.projection == Projection::Flat {
                         p.settings.screen_width =
                             (p.settings.screen_width * (1.0 + d)).clamp(0.5, 30.0);
                     } else {
@@ -175,6 +199,7 @@ impl App {
                     ) = (d.yaw, d.pitch, d.roll, d.zoom, d.height, d.forward);
                     if p.format.projection == Projection::Flat {
                         p.settings.screen_width = d.screen_width;
+                        p.settings.cinema_row = None;
                     }
                     p.settings_dirty = true;
                     self.ui.toast(tr!("toast-view-reset"));

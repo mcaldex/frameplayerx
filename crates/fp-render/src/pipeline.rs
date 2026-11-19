@@ -10,13 +10,27 @@ pub(crate) struct PipelineDesc<'a> {
     pub fragment: &'a std::ffi::CStr,
     pub layout: vk::PipelineLayout,
     pub color_format: vk::Format,
+    pub depth: Depth,
     pub vertex_stride: u32,
+    /// Bytes per copy in binding 1, read once per instance; 0 for none.
+    pub instance_stride: u32,
     pub attributes: &'a [vk::VertexInputAttributeDescription],
     /// Premultiplied-alpha blending.
     pub blend: bool,
     /// Its descriptors come from descriptor buffers, not sets.
     pub descriptor_buffer: bool,
     pub shading_rate: ShadingRate,
+}
+
+/// How a pipeline meets the cinema's depth attachment ([`crate::cinema`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Depth {
+    /// It never draws into renders with one.
+    None,
+    /// It draws into them, ignoring depth.
+    Attached,
+    /// It draws into them, tested against and writing depth.
+    Tested,
 }
 
 /// How a pipeline meets the eye passes' shading rate attachment
@@ -43,13 +57,20 @@ pub(crate) fn create(gpu: &Gpu, d: &PipelineDesc) -> Result<vk::Pipeline> {
             .module(module)
             .name(d.fragment),
     ];
-    let bindings = [vk::VertexInputBindingDescription::default()
-        .binding(0)
-        .stride(d.vertex_stride)
-        .input_rate(vk::VertexInputRate::VERTEX)];
+    let bindings = [
+        vk::VertexInputBindingDescription::default()
+            .binding(0)
+            .stride(d.vertex_stride)
+            .input_rate(vk::VertexInputRate::VERTEX),
+        vk::VertexInputBindingDescription::default()
+            .binding(1)
+            .stride(d.instance_stride)
+            .input_rate(vk::VertexInputRate::INSTANCE),
+    ];
+    let used = if d.instance_stride > 0 { 2 } else { 1 };
     let vertex_input = if d.vertex_stride > 0 {
         vk::PipelineVertexInputStateCreateInfo::default()
-            .vertex_binding_descriptions(&bindings)
+            .vertex_binding_descriptions(&bindings[..used])
             .vertex_attribute_descriptions(d.attributes)
     } else {
         vk::PipelineVertexInputStateCreateInfo::default()
@@ -85,6 +106,14 @@ pub(crate) fn create(gpu: &Gpu, d: &PipelineDesc) -> Result<vk::Pipeline> {
     let formats = [d.color_format];
     let mut rendering =
         vk::PipelineRenderingCreateInfo::default().color_attachment_formats(&formats);
+    if d.depth != Depth::None {
+        rendering = rendering.depth_attachment_format(crate::cinema::DEPTH_FORMAT);
+    }
+    let tested = d.depth == Depth::Tested;
+    let depth = vk::PipelineDepthStencilStateCreateInfo::default()
+        .depth_test_enable(tested)
+        .depth_write_enable(tested)
+        .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL);
     let mut flags = vk::PipelineCreateFlags::empty();
     if d.descriptor_buffer {
         flags |= vk::PipelineCreateFlags::DESCRIPTOR_BUFFER_EXT;
@@ -114,6 +143,9 @@ pub(crate) fn create(gpu: &Gpu, d: &PipelineDesc) -> Result<vk::Pipeline> {
         .dynamic_state(&dynamic)
         .layout(d.layout)
         .push_next(&mut rendering);
+    if d.depth != Depth::None {
+        info = info.depth_stencil_state(&depth);
+    }
     if d.shading_rate == ShadingRate::Attachment {
         info = info.push_next(&mut rate);
     }
@@ -156,10 +188,9 @@ pub(crate) fn set_layout(
 
 pub(crate) fn layout(
     gpu: &Gpu,
-    set: vk::DescriptorSetLayout,
+    sets: &[vk::DescriptorSetLayout],
     push_bytes: u32,
 ) -> Result<vk::PipelineLayout> {
-    let sets = [set];
     let ranges = [vk::PushConstantRange::default()
         .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
         .offset(0)
@@ -168,7 +199,7 @@ pub(crate) fn layout(
     unsafe {
         gpu.device.create_pipeline_layout(
             &vk::PipelineLayoutCreateInfo::default()
-                .set_layouts(&sets)
+                .set_layouts(sets)
                 .push_constant_ranges(&ranges),
             None,
         )

@@ -7,8 +7,9 @@ use crate::playback::Quality;
 use crate::subtitles::Pick;
 use egui::{Align, Color32, Layout, RichText, Sense, Vec2};
 use fp_core::format::{Projection, StereoLayout, VideoFormat};
-use fp_core::view::ViewSettings;
+use fp_core::view::{BackgroundEnvironment, ViewSettings};
 use fp_media::PlayerState;
+use fp_render::CinemaRoom;
 
 /// Width of the projection names beside the format list's rows.
 const GROUP_WIDTH: f32 = 130.0;
@@ -1158,6 +1159,11 @@ pub fn adjust_panel(ctx: &egui::Context, v: &mut View) {
         }
         ui.add_space(10.0);
         let editing = v.state.presets_editing;
+        // In a cinema its row places you, not the screen's distance and width.
+        let in_cinema = v.state.adjust_tab == 1
+            && pb
+                .cinema_room(v.settings, v.passthrough_available)
+                .is_some();
         // Save and reset stay at the bottom while the page scrolls.
         let footer = !editing && v.state.adjust_tab <= 4;
         let footer_h = if footer { 64.0 } else { 0.0 };
@@ -1178,7 +1184,12 @@ pub fn adjust_panel(ctx: &egui::Context, v: &mut View) {
                         let flat = pb.format.projection == Projection::Flat;
                         let moved = v.settings.panel_offsets != Default::default()
                             || (flat && (pb.settings.yaw, pb.settings.pitch) != (0.0, 0.0));
-                        position_tab(ui, &mut pb.settings, flat, moved, v.actions);
+                        position_tab(ui, &mut pb.settings, flat, moved, in_cinema, v.actions);
+                        let rooms = flat
+                            && pb.player.info().video_stream().is_some()
+                            && CinemaRoom::any_available();
+                        ui.add_space(6.0);
+                        video_background(ui, &mut pb.settings, v.settings, rooms);
                     }
                     2 => stereo_tab(
                         ui,
@@ -1477,12 +1488,15 @@ fn format_tab(
     }
 }
 
-/// Position tab: where the picture is, and for a flat screen its size.
+/// Position tab: where the picture is, and for a flat screen its size (in
+/// a cinema, where you sit: `cinema` holds the distances that choose its
+/// front to back row).
 fn position_tab(
     ui: &mut egui::Ui,
     s: &mut ViewSettings,
     flat: bool,
     moved: bool,
+    in_cinema: bool,
     actions: &mut Vec<Action>,
 ) {
     let d = ViewSettings::default();
@@ -1565,7 +1579,7 @@ fn position_tab(
         );
     });
     ui.label(RichText::new(tr!("adjust-position-hint")).color(theme::TEXT_3));
-    if flat {
+    if flat && !in_cinema {
         ui.add_space(6.0);
         widgets::section_label(ui, tr!("adjust-screen"));
         widgets::rows(ui, |r| {
@@ -1598,9 +1612,6 @@ fn position_tab(
             );
         });
     }
-    ui.add_space(6.0);
-    widgets::section_label(ui, tr!("settings-background"));
-    background_controls(ui, &mut s.background);
 }
 
 /// Depth, comfort focus and eye alignment, with subtitle depth unless
@@ -1924,10 +1935,162 @@ fn backgrounds() -> [(&'static str, [f32; 3]); 4] {
     ]
 }
 
-/// The colour around flat videos and the menus while the room doesn't
-/// show, for the open video (the Position tab) or the one videos start
-/// with (Settings > Video position).
-pub(super) fn background_controls(ui: &mut egui::Ui, c: &mut [f32; 3]) {
+/// The background chips: the rooms built into this player, and for a
+/// single video, following Settings › Video position.
+fn environment_picker(
+    ui: &mut egui::Ui,
+    selected: BackgroundEnvironment,
+    per_video: bool,
+) -> Option<BackgroundEnvironment> {
+    use BackgroundEnvironment::*;
+    let choices = [
+        (UseGlobal, tr!("background-use-global"), per_video),
+        (Colour, tr!("background-colour"), true),
+        (
+            Classic,
+            tr!("background-classic"),
+            CinemaRoom::Classic.is_available(),
+        ),
+        (
+            Luxe,
+            tr!("background-luxe"),
+            CinemaRoom::Luxe.is_available(),
+        ),
+    ];
+    let mut picked = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+        for (environment, label, offered) in choices {
+            if offered && widgets::chip(ui, label, selected == environment).clicked() {
+                picked = Some(environment);
+            }
+        }
+    });
+    picked
+}
+
+/// The background videos start with: a colour, or a cinema room when this
+/// build has one.
+pub(super) fn global_background(ui: &mut egui::Ui, settings: &mut crate::settings::Settings) {
+    if CinemaRoom::any_available()
+        && let Some(environment) = environment_picker(ui, settings.environment(), false)
+    {
+        settings.set_environment(environment);
+    }
+    if let Some(room) = crate::playback::room_for(settings.environment()) {
+        ui.label(RichText::new(tr!("background-room-desc")).color(theme::TEXT_3));
+        let seat = Seat {
+            row: settings.cinema_row(),
+            row_default: crate::settings::DEFAULT_CINEMA_ROW,
+            curvature: settings.cinema_curvature(),
+            curvature_default: 0.0,
+        };
+        let (row, curvature) = seat_sliders(ui, room, seat);
+        if let Some(row) = row {
+            settings.set_cinema_row(row);
+        }
+        if let Some(curvature) = curvature {
+            settings.set_cinema_curvature(curvature);
+        }
+    } else {
+        background_controls(ui, &mut settings.default_view.background);
+    }
+}
+
+/// Where a cinema seats you: its row and how much its screen curves, now
+/// and when reset.
+struct Seat {
+    row: u8,
+    row_default: u8,
+    curvature: f32,
+    curvature_default: f32,
+}
+
+/// The row of `room` to sit in and how much its screen curves; what was
+/// changed.
+fn seat_sliders(ui: &mut egui::Ui, room: CinemaRoom, seat: Seat) -> (Option<u8>, Option<f32>) {
+    let rows = room.rows();
+    let mut row = f32::from(seat.row.clamp(1, rows));
+    let mut curvature = seat.curvature;
+    let desc = tr!("adjust-row-desc", rows = rows);
+    let (mut new_row, mut new_curvature) = (None, None);
+    widgets::rows(ui, |r| {
+        if r.slider(
+            tr!("adjust-row"),
+            Some(&desc),
+            &mut row,
+            1.0..=f32::from(rows),
+            f32::from(seat.row_default.clamp(1, rows)),
+            "",
+            0,
+        ) {
+            new_row = Some(row.round() as u8);
+        }
+        if r.slider(
+            tr!("adjust-curvature"),
+            Some(tr!("adjust-cinema-curvature-desc")),
+            &mut curvature,
+            0.0..=1.0,
+            seat.curvature_default,
+            "",
+            2,
+        ) {
+            new_curvature = Some(curvature);
+        }
+    });
+    (new_row, new_curvature)
+}
+
+fn video_background(
+    ui: &mut egui::Ui,
+    view: &mut ViewSettings,
+    settings: &crate::settings::Settings,
+    show_rooms: bool,
+) {
+    use BackgroundEnvironment::*;
+    widgets::section_label(ui, tr!("settings-background"));
+    if show_rooms {
+        if let Some(environment) = environment_picker(ui, view.environment, true) {
+            // Its own colour starts from the one it was following.
+            if environment == Colour && view.environment == UseGlobal {
+                view.background = settings.default_view.background;
+            }
+            view.environment = environment;
+        }
+        let environment = match view.environment {
+            UseGlobal => settings.environment(),
+            own => own,
+        };
+        if let Some(room) = crate::playback::room_for(environment) {
+            let seat = Seat {
+                row: view.cinema_row.unwrap_or_else(|| settings.cinema_row()),
+                row_default: settings.cinema_row(),
+                curvature: view
+                    .cinema_curvature
+                    .unwrap_or_else(|| settings.cinema_curvature()),
+                curvature_default: settings.cinema_curvature(),
+            };
+            let (row, curvature) = seat_sliders(ui, room, seat);
+            if let Some(row) = row {
+                view.cinema_row = settings.own_cinema_row(row, room.rows());
+            }
+            if let Some(curvature) = curvature {
+                view.cinema_curvature = settings.own_cinema_curvature(curvature);
+            }
+        }
+        if view.environment == Colour {
+            background_controls(ui, &mut view.background);
+        }
+    } else {
+        let before = view.background;
+        background_controls(ui, &mut view.background);
+        if view.environment == UseGlobal && view.background != before {
+            view.environment = Colour;
+        }
+    }
+}
+
+fn background_controls(ui: &mut egui::Ui, c: &mut [f32; 3]) {
     ui.label(
         RichText::new(tr!("settings-background-desc"))
             .font(theme::font(Weight::Regular, 15.0))

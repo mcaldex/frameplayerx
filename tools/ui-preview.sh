@@ -578,6 +578,47 @@ subtitle-preview account
 panel tracks opensubtitles-account
 EOF
 
+if [ "${UI_PREVIEW_PLEX_ONLY:-0}" != 1 ]; then
+  cat >>"$script" <<EOF
+# The cinema: the Luxe from the second row (the default), with the film
+# playing and paused, then its screen curved, and the Classic. A slow
+# preview frame brings the house lights up by at most 0.1 s of their fade.
+close
+look 0 0
+aim 90 40
+environment luxe
+loop video
+open $home/Videos/Mountain Lake_360.webm
+wait-playing
+format-flat
+hide-controls
+wait 6
+sbs cinema-playing
+pause
+wait 4
+sbs cinema-paused
+shot cinema
+view cinema_curvature 1
+frames 4
+shot cinema-curved
+view cinema_curvature 0
+look 55 -9
+frames 3
+shot cinema-aisle
+look 180 -9
+frames 3
+shot cinema-rear
+look 0 0
+environment classic
+wait 6
+shot cinema-classic
+click
+adjust 1
+frames 6
+panel adjust cinema-position
+EOF
+fi
+
 cargo build -p frameplayerx
 HOME="$home" XDG_CONFIG_HOME="$home/.config" XDG_DATA_HOME="$home/.local/share" \
   XDG_CACHE_HOME="$home/.cache" \

@@ -67,6 +67,9 @@ struct Params {
     eyes: array<vec4<f32>, 2>,
     // Each eye's turn apart about the head's up, as a quaternion
     relief: array<vec4<f32>, 2>,
+    // xy: the picture's share of the screen's width and height; black fills
+    // the rest (a cinema's screen)
+    fill: vec4<f32>,
 };
 
 struct PushConstants {
@@ -96,6 +99,8 @@ fn vs_main(@builtin(vertex_index) i: u32) -> VsOut {
 
 const PI: f32 = 3.14159265358979;
 const INVALID: vec2<f32> = vec2<f32>(-1.0, -1.0);
+// On the screen, beside or above the picture.
+const BAR: vec2<f32> = vec2<f32>(-2.0, -2.0);
 
 fn rot_y(a: f32) -> mat3x3<f32> {
     let c = cos(a); let s = sin(a);
@@ -241,7 +246,9 @@ fn flat_uv(origin: vec3<f32>, d: vec3<f32>) -> vec2<f32> {
     }
     let v = 0.5 - p.y / h;
     if (u < 0.0 || u > 1.0 || v < 0.0 || v > 1.0) { return INVALID; }
-    return vec2<f32>(u, v);
+    let picture = (vec2<f32>(u, v) - 0.5) / params.fill.xy + 0.5;
+    if (any(picture < vec2<f32>(0.0)) || any(picture > vec2<f32>(1.0))) { return BAR; }
+    return picture;
 }
 
 fn to_eye_rect(uv: vec2<f32>, eye: u32) -> vec2<f32> {
@@ -387,6 +394,9 @@ fn shade(in: VsOut, comfort: bool) -> vec4<f32> {
     } else {
         let dir = (params.anchor_inv * vec4<f32>(world_dir, 0.0)).xyz;
         uv = video_uv(dir, eye, comfort);
+    }
+    if (uv.x < -1.5) {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
     if (uv.x < 0.0) {
         return params.bg_color;

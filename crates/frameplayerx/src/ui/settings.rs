@@ -548,7 +548,7 @@ fn video_position(ui: &mut egui::Ui, v: &mut View) {
         );
     });
     heading(ui, tr!("settings-background"));
-    super::player::background_controls(ui, &mut d.background);
+    super::player::global_background(ui, v.settings);
 }
 
 /// How videos look until they are adjusted: the picture, and a 3D video's

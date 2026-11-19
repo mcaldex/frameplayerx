@@ -6,6 +6,18 @@ use serde::{Deserialize, Serialize};
 /// The colour around a flat screen to start with, a near-black grey.
 pub const BACKGROUND: [f32; 3] = [0.086, 0.086, 0.11];
 
+/// What surrounds a flat video while the room doesn't show.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundEnvironment {
+    /// A video follows Settings › Video position, its colour included.
+    #[default]
+    UseGlobal,
+    Colour,
+    Classic,
+    Luxe,
+}
+
 /// Everything the viewer can adjust about how a video is shown. Defaults are
 /// neutral. Persisted per video by the library and applied by the renderer.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -59,6 +71,13 @@ pub struct ViewSettings {
     /// The colour around a flat screen and the menus while the room doesn't
     /// show, sRGB 0..1.
     pub background: [f32; 3],
+    pub environment: BackgroundEnvironment,
+    /// The cinema row to sit in, 1 being the front row; `None` follows
+    /// Settings › Video position.
+    pub cinema_row: Option<u8>,
+    /// How much the cinema's screen curves, from 0 (flat) to 1 (as deep as
+    /// the room allows); `None` follows Settings › Video position.
+    pub cinema_curvature: Option<f32>,
     /// Subtitle depth in metres.
     pub subtitle_distance: f32,
     /// Chroma key: makes one colour of the video see-through (a green or
@@ -106,6 +125,9 @@ impl Default for ViewSettings {
             screen_width: 6.0,
             screen_curvature: 0.0,
             background: BACKGROUND,
+            environment: BackgroundEnvironment::UseGlobal,
+            cinema_row: None,
+            cinema_curvature: None,
             subtitle_distance: 2.5,
             chroma_key: false,
             key_color: [0.08, 0.04, 1.0],
@@ -160,6 +182,26 @@ impl ViewSettings {
             screen_width: l(self.screen_width, other.screen_width),
             screen_curvature: l(self.screen_curvature, other.screen_curvature),
             background: [0, 1, 2].map(|i| l(self.background[i], other.background[i])),
+            environment: if t < 0.5 {
+                self.environment
+            } else {
+                other.environment
+            },
+            cinema_row: if t < 0.5 {
+                self.cinema_row
+            } else {
+                other.cinema_row
+            },
+            cinema_curvature: match (self.cinema_curvature, other.cinema_curvature) {
+                (Some(a), Some(b)) => Some(l(a, b)),
+                (a, b) => {
+                    if t < 0.5 {
+                        a
+                    } else {
+                        b
+                    }
+                }
+            },
             subtitle_distance: l(self.subtitle_distance, other.subtitle_distance),
             chroma_key: if t < 0.5 {
                 self.chroma_key

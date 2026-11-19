@@ -1,7 +1,7 @@
 //! Persistent user settings (`~/.config/frameplayerx/settings.json`).
 //! Source credentials live separately in `sources.json` (mode 0600).
 
-use fp_core::view::{Preset, ViewSettings};
+use fp_core::view::{BackgroundEnvironment, Preset, ViewSettings};
 use fp_haptics::HapticsSettings;
 use fp_remote::config::RemoteConfig;
 use serde::{Deserialize, Serialize};
@@ -54,6 +54,10 @@ pub const IMAGE_CACHE_SIZES: [u32; 5] = [100, 250, 500, 1000, 2000];
 /// The most videos Play all takes from a folder and its subfolders, unless
 /// a source sets its own limit.
 pub const DEFAULT_PLAY_ALL_LIMIT: usize = 300;
+
+/// The cinema row videos start in: the second, about as large a picture as
+/// the floating screen's default.
+pub const DEFAULT_CINEMA_ROW: u8 = 2;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -282,6 +286,49 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// What surrounds flat videos that follow Settings › Video position.
+    pub fn environment(&self) -> BackgroundEnvironment {
+        match self.default_view.environment {
+            BackgroundEnvironment::UseGlobal => BackgroundEnvironment::Colour,
+            environment => environment,
+        }
+    }
+
+    pub fn set_environment(&mut self, environment: BackgroundEnvironment) {
+        self.default_view.environment = environment;
+    }
+
+    /// The cinema row for videos that follow Settings › Video position.
+    pub fn cinema_row(&self) -> u8 {
+        self.default_view.cinema_row.unwrap_or(DEFAULT_CINEMA_ROW)
+    }
+
+    pub fn set_cinema_row(&mut self, row: u8) {
+        self.default_view.cinema_row = Some(row);
+    }
+
+    /// A video's own setting for sitting in `row` of a room with `rows`:
+    /// none, following this one, where they are the same row.
+    pub fn own_cinema_row(&self, row: u8, rows: u8) -> Option<u8> {
+        (row != self.cinema_row().min(rows)).then_some(row)
+    }
+
+    /// The cinema screen's curve for videos that follow Settings › Video
+    /// position.
+    pub fn cinema_curvature(&self) -> f32 {
+        self.default_view.cinema_curvature.unwrap_or(0.0)
+    }
+
+    pub fn set_cinema_curvature(&mut self, curvature: f32) {
+        self.default_view.cinema_curvature = Some(curvature);
+    }
+
+    /// A video's own setting for `curvature`: none, following this one,
+    /// where they are the same.
+    pub fn own_cinema_curvature(&self, curvature: f32) -> Option<f32> {
+        ((curvature - self.cinema_curvature()).abs() > 1e-3).then_some(curvature)
+    }
+
     /// The most videos Play all takes from `source`'s subfolders, `None`
     /// for no limit.
     pub fn play_all_limit(&self, source: &str) -> Option<usize> {
@@ -305,11 +352,14 @@ impl Settings {
     }
 
     /// Adjustments for a video that has none saved: the defaults, following
-    /// the global chroma key and comfort focus.
+    /// the global chroma key, comfort focus, background and cinema seat.
     pub fn new_video_view(&self) -> ViewSettings {
         ViewSettings {
             key_own: Some(false),
             focus_own: Some(false),
+            environment: BackgroundEnvironment::UseGlobal,
+            cinema_row: None,
+            cinema_curvature: None,
             ..self.default_view
         }
     }
@@ -463,6 +513,23 @@ mod tests {
         assert_eq!(p.volume, 0.25);
         assert_eq!(p.seek_step, 10.0);
         assert!(!p.haptics_enabled, "haptics stay off until turned on");
+        assert_eq!(p.environment(), BackgroundEnvironment::Colour);
+        let mut cinema = Settings::default();
+        assert_eq!(cinema.cinema_row(), DEFAULT_CINEMA_ROW);
+        cinema.set_environment(BackgroundEnvironment::Classic);
+        cinema.set_cinema_row(5);
+        cinema.set_cinema_curvature(0.5);
+        cinema.save(&path).unwrap();
+        let cinema = Settings::load(&path);
+        assert_eq!(cinema.environment(), BackgroundEnvironment::Classic);
+        assert_eq!(cinema.cinema_row(), 5);
+        assert_eq!(cinema.cinema_curvature(), 0.5);
+        let view = cinema.new_video_view();
+        assert_eq!(view.environment, BackgroundEnvironment::UseGlobal);
+        assert_eq!(view.cinema_row, None, "a new video follows the global row");
+        assert_eq!(view.cinema_curvature, None, "and the global curve");
+        assert_eq!(cinema.own_cinema_curvature(0.5), None);
+        assert_eq!(cinema.own_cinema_curvature(0.8), Some(0.8));
         assert_eq!(p.default_format, fp_core::format::VideoFormat::FALLBACK);
         assert_eq!(p.fisheye_presets, FISHEYE_PRESETS);
         assert_eq!(p.fisheye_start, FISHEYE_START);
