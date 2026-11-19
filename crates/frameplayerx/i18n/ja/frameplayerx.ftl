@@ -825,6 +825,7 @@ source-added = { $name } を追加しました
 source-saved = { $name } を保存しました
 source-added-unsaved = 終了するまで { $name } を追加しました：ソースを保存できませんでした（{ $error }）
 source-added-nfs-server = { $name } を { $address }（サーバーのエクスポート一覧）として追加しました：/ のエクスポートがありません
+source-saved-nfs-server = { $name } を { $address }（サーバーのエクスポート一覧）として保存しました：/ のエクスポートがありません
 source-changed-unsaved = 終了するまで { $name } を変更しました：ソースを保存できませんでした（{ $error }）
 source-removed-unsaved = 終了するまで削除しました：ソースを保存できませんでした（{ $error }）
 source-locked-toast = { $name } をロックしました

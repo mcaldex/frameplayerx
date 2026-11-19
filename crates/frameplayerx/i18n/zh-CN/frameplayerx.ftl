@@ -825,6 +825,7 @@ source-added = 已添加 { $name }
 source-saved = 已保存 { $name }
 source-added-unsaved = 已添加 { $name }，在退出前有效：无法保存来源（{ $error }）
 source-added-nfs-server = 已将 { $name } 添加为 { $address }（服务器的导出列表）：它没有 / 导出
+source-saved-nfs-server = 已将 { $name } 保存为 { $address }（服务器的导出列表）：它没有 / 导出
 source-changed-unsaved = 已更改 { $name }，在退出前有效：无法保存来源（{ $error }）
 source-removed-unsaved = 已移除，在退出前有效：无法保存来源（{ $error }）
 source-locked-toast = 已锁定 { $name }

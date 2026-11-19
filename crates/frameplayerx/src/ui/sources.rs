@@ -1097,15 +1097,8 @@ fn server_form(
 
 /// What a blank NFS user (or group) ID sends: this process's.
 fn default_id(user: bool) -> String {
-    #[cfg(unix)]
-    // SAFETY: getuid and getgid cannot fail and touch no memory.
-    let id = unsafe { if user { libc::getuid() } else { libc::getgid() } };
-    #[cfg(not(unix))]
-    let id = {
-        let _ = user;
-        65534
-    };
-    id.to_string()
+    let (uid, gid) = fp_sources::nfs::default_ids();
+    if user { uid } else { gid }.to_string()
 }
 
 pub(super) fn text_field(ui: &mut egui::Ui, value: &mut String, hint: &str, masked: bool) {

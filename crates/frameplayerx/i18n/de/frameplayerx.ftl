@@ -872,6 +872,7 @@ source-added = { $name } hinzugefügt
 source-saved = { $name } gespeichert
 source-added-unsaved = { $name } bis zum Beenden hinzugefügt: Die Quellen konnten nicht gespeichert werden ({ $error })
 source-added-nfs-server = { $name } als { $address } hinzugefügt, die Liste der Exporte des Servers: Er hat keinen Export /
+source-saved-nfs-server = { $name } als { $address } gespeichert, die Liste der Exporte des Servers: Er hat keinen Export /
 source-changed-unsaved = { $name } bis zum Beenden geändert: Die Quellen konnten nicht gespeichert werden ({ $error })
 source-removed-unsaved = Bis zum Beenden entfernt: Die Quellen konnten nicht gespeichert werden ({ $error })
 source-locked-toast = { $name } gesperrt

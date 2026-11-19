@@ -88,8 +88,9 @@ pub(super) enum Job {
     QuickConnectInitiated(u64, Result<fp_sources::QuickConnectState, String>),
     /// The answer to a poll with secret `.0`.
     QuickConnectPolled(String, Result<Option<(String, String)>, String>),
-    /// Whether the server of an NFS source being added exports `/`.
-    NfsRootChecked(Box<fp_sources::NfsConfig>, Result<bool, String>),
+    /// Whether the server of an NFS source being added, or saved when
+    /// `.2`, exports `/`.
+    NfsRootChecked(Box<fp_sources::NfsConfig>, Result<bool, String>, bool),
     PlexInitiated(u64, Result<fp_sources::plex::auth::PlexPin, String>),
     PlexPolled(u64, Box<Result<PlexLink, String>>),
     PlexConnected(u64, Box<Result<fp_sources::PlexConfig, String>>),
@@ -536,7 +537,7 @@ impl App {
             }
             Job::QuickConnectInitiated(seq, r) => self.quick_connect_code(seq, r),
             Job::QuickConnectPolled(secret, r) => self.quick_connect_answer(&secret, r),
-            Job::NfsRootChecked(c, r) => self.nfs_root_checked(*c, r),
+            Job::NfsRootChecked(c, r, saved) => self.nfs_root_checked(*c, r, saved),
             Job::PlexInitiated(generation, result) => self.plex_initiated(generation, result),
             Job::PlexPolled(generation, result) => self.plex_polled(generation, *result),
             Job::PlexConnected(generation, result) => self.plex_connected(generation, *result),

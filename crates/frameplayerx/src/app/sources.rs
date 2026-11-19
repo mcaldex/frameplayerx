@@ -569,28 +569,37 @@ impl App {
         play_all_limit: Option<usize>,
     ) {
         self.settings.set_play_all_limit(cfg.id(), play_all_limit);
-        // `nfs://host/` is the server's export `/`: asked of the server first,
-        // as one without it is added as the whole server (`nfs://host`).
-        if let fp_sources::SourceConfig::Nfs(c) = &cfg
-            && c.export == "/"
-        {
-            let c = c.clone();
-            self.jobs.spawn("nfs_root_export", move || {
-                let r = fp_sources::nfs::exports_root(&c).map_err(|e| ui::errors::source(&e));
-                Job::NfsRootChecked(Box::new(c), r)
-            });
-            return;
+        if !self.check_nfs_root(&cfg, false) {
+            self.insert_source(cfg);
         }
-        self.insert_source(cfg);
     }
 
-    /// Adds an NFS source for the export `/` once the server has said
-    /// whether it has one; if not, the whole server instead. A server that
-    /// can't be asked keeps the address as typed.
+    /// `nfs://host/` is the server's export `/`: asked of the server first,
+    /// as one without it is the whole server (`nfs://host`). Whether it was
+    /// asked, for a source being added or, with `saved`, saved.
+    fn check_nfs_root(&mut self, cfg: &fp_sources::SourceConfig, saved: bool) -> bool {
+        let fp_sources::SourceConfig::Nfs(c) = cfg else {
+            return false;
+        };
+        if c.export != "/" {
+            return false;
+        }
+        let c = c.clone();
+        self.jobs.spawn("nfs_root_export", move || {
+            let r = fp_sources::nfs::exports_root(&c).map_err(|e| ui::errors::source(&e));
+            Job::NfsRootChecked(Box::new(c), r, saved)
+        });
+        true
+    }
+
+    /// Adds or saves an NFS source for the export `/` once the server has
+    /// said whether it has one; if not, the whole server instead. A server
+    /// that can't be asked keeps the address as typed.
     pub(super) fn nfs_root_checked(
         &mut self,
         mut c: fp_sources::NfsConfig,
         exported: Result<bool, String>,
+        saved: bool,
     ) {
         let whole = match exported {
             Ok(true) => false,
@@ -604,6 +613,16 @@ impl App {
             c.export.clear();
         }
         let cfg = fp_sources::SourceConfig::Nfs(c);
+        if saved {
+            if self.save_source(cfg.clone()) && whole {
+                self.ui.toast(tr!(
+                    "source-saved-nfs-server",
+                    name = cfg.name(),
+                    address = cfg.address()
+                ));
+            }
+            return;
+        }
         if self.insert_source(cfg.clone()) && whole {
             self.ui.toast(tr!(
                 "source-added-nfs-server",
@@ -649,6 +668,22 @@ impl App {
             self.ask_pin(&id);
             return;
         }
+        self.settings.set_play_all_limit(&id, play_all_limit);
+        // The server was asked about `/` when the address became this one.
+        let asked = match (self.source_config(&id), &cfg) {
+            (Some(fp_sources::SourceConfig::Nfs(old)), fp_sources::SourceConfig::Nfs(new)) => {
+                old.host == new.host && old.port == new.port && old.export == new.export
+            }
+            _ => false,
+        };
+        if asked || !self.check_nfs_root(&cfg, true) {
+            self.save_source(cfg);
+        }
+    }
+
+    /// Saves the edited `cfg` and opens it afresh; true when it was saved.
+    fn save_source(&mut self, cfg: fp_sources::SourceConfig) -> bool {
+        let id = cfg.id().to_string();
         let moved = match (self.source_config(&id), &cfg) {
             (
                 Some(fp_sources::SourceConfig::Library(old)),
@@ -663,7 +698,6 @@ impl App {
             .map(|c| if c.id() == id { cfg.clone() } else { c.clone() })
             .collect();
         let change = self.services.set_sources(list);
-        self.settings.set_play_all_limit(&id, play_all_limit);
         if moved {
             // Its next scan takes back the videos still in the new folder.
             let lib = &self.services.library;
@@ -675,18 +709,26 @@ impl App {
             }
             self.scan_libraries(|l| l.id == id, false, false);
         }
-        match change.errors.into_iter().find(|e| e.id == id) {
-            Some(e) => self.ui.toast(e.to_string()),
-            None => self.ui.toast(match change.save_error {
-                Some(e) => tr!("source-changed-unsaved", name = cfg.name(), error = e),
-                None => tr!("source-saved", name = cfg.name()),
-            }),
-        }
+        let saved = match change.errors.into_iter().find(|e| e.id == id) {
+            Some(e) => {
+                self.ui.toast(e.to_string());
+                false
+            }
+            None => {
+                let saved = change.save_error.is_none();
+                self.ui.toast(match change.save_error {
+                    Some(e) => tr!("source-changed-unsaved", name = cfg.name(), error = e),
+                    None => tr!("source-saved", name = cfg.name()),
+                });
+                saved
+            }
+        };
         // Its browser and saved listing were made with the old details.
         self.close_source_view(&id);
         let _ = std::fs::remove_file(fp_sources::FeedLibrary::cache_path(&id));
         self.ui.home = None;
         self.ui.delete_checks.clear();
+        saved
     }
 
     pub(super) fn remove_source(&mut self, id: &str) {

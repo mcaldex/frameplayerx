@@ -1213,6 +1213,7 @@ source-added = Added { $name }
 source-saved = Saved { $name }
 source-added-unsaved = Added { $name } until you quit: the sources couldn't be saved ({ $error })
 source-added-nfs-server = Added { $name } as { $address }, the server's list of exports: it has no / export
+source-saved-nfs-server = Saved { $name } as { $address }, the server's list of exports: it has no / export
 source-changed-unsaved = Changed { $name } until you quit: the sources couldn't be saved ({ $error })
 source-removed-unsaved = Removed until you quit: the sources couldn't be saved ({ $error })
 source-locked-toast = Locked { $name }
