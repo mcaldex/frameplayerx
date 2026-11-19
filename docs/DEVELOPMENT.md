@@ -653,7 +653,12 @@ headset and copies the text and JSON reports into `probe-reports/`.
    `FP_OPENSUBTITLES_API_KEY` repository secret (or a variable of that
    name, which the secret overrides). Packaging embeds it in the app;
    without it, **Find subtitles** says OpenSubtitles is unavailable.
-3. Stable: push (or merge) to `main`. Beta: run the `ci` workflow on the
+3. Once: make a webhook for the Discord announcements channel (the
+   channel's settings › Integrations › Webhooks) and store its URL as the
+   `DISCORD_WEBHOOK_URL` repository secret. Each stable and beta release
+   is then posted there with its notes once it's published; an alpha
+   isn't. Without the secret, nothing is posted.
+4. Stable: push (or merge) to `main`. Beta: run the `ci` workflow on the
    `beta` branch from the Actions tab (Run workflow). CI calculates the
    version, stamps it into `crates/frameplayerx/Cargo.toml`, builds,
    packages, signs `manifest.json` and publishes the GitHub release with
