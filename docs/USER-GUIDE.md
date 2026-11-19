@@ -509,8 +509,9 @@ scenes from last time while the server sends the current list
 ### Editing and locking a source
 
 The pencil next to a source under **Sources** opens its details: rename
-it, change its address, user name and password, or its PIN. Its type
-stays; a Jellyfin server signed in with Quick Connect keeps that sign-in
+it, change its address, user name and password or its PIN, or remove it
+with **Remove source** at the top, which turns red as *Remove it?* and
+removes the source when pressed again within 4 seconds. Its type stays; a Jellyfin server signed in with Quick Connect keeps that sign-in
 unless you clear it.
 
 When a server's address, IP address or root folder changes, edit the

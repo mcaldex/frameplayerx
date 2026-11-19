@@ -261,12 +261,6 @@ fn list_row(ui: &mut egui::Ui, v: &mut View, row: Row) {
                         return;
                     }
                     if !builtin {
-                        if widgets::icon_button(ui, icons::TRASH, 44.0, false)
-                            .tip(tr!("sources-remove"))
-                            .clicked()
-                        {
-                            v.actions.push(Action::RemoveSource(id.clone()));
-                        }
                         if widgets::icon_button(ui, icons::PENCIL_SIMPLE, 44.0, false)
                             .tip(tr!("sources-edit"))
                             .clicked()
@@ -607,7 +601,12 @@ fn add_form(ui: &mut egui::Ui, v: &mut View) {
         return;
     };
     let editing = f.editing.clone();
-    let cancel = form_header(ui, f, editing.as_ref());
+    let (cancel, remove) = form_header(ui, f, editing.as_ref());
+    if remove && let Some(old) = &editing {
+        v.actions.push(Action::RemoveSource(old.id().to_string()));
+        v.state.source_form = None;
+        return;
+    }
     let id = match &editing {
         Some(c) => c.id().to_string(),
         None => format!(
@@ -642,9 +641,39 @@ fn add_form(ui: &mut egui::Ui, v: &mut View) {
     }
 }
 
-/// The form's title and its source type; true when cancelled.
-fn form_header(ui: &mut egui::Ui, f: &mut SourceForm, editing: Option<&SourceConfig>) -> bool {
+/// Remove source, which asks again: pressed once it turns red as
+/// "Remove it?" for 4 seconds. Whether it was pressed again.
+fn remove_button(ui: &mut egui::Ui, f: &mut SourceForm) -> bool {
+    let armed = f
+        .remove_armed
+        .is_some_and(|at| at.elapsed().as_secs_f32() < 4.0);
+    let (label, kind) = if armed {
+        (tr!("source-remove-confirm"), Kind::Danger)
+    } else {
+        (tr!("source-remove"), Kind::Secondary)
+    };
+    let pressed = widgets::button_sized(ui, Some(icons::TRASH), label, kind, 44.0)
+        .tip(tr!("sources-remove"))
+        .clicked();
+    if armed {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(500));
+    }
+    if pressed && !armed {
+        f.remove_armed = Some(std::time::Instant::now());
+    }
+    pressed && armed
+}
+
+/// The form's title and its source type; whether it was cancelled, and
+/// whether Remove source was pressed again.
+fn form_header(
+    ui: &mut egui::Ui,
+    f: &mut SourceForm,
+    editing: Option<&SourceConfig>,
+) -> (bool, bool) {
     let mut cancel = false;
+    let mut remove = false;
     ui.add_space(12.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 12.0;
@@ -663,6 +692,11 @@ fn form_header(ui: &mut egui::Ui, f: &mut SourceForm, editing: Option<&SourceCon
                 .font(theme::font(Weight::Bold, 30.0))
                 .color(theme::TEXT),
         );
+        if editing.is_some() {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                remove = remove_button(ui, f);
+            });
+        }
     });
     ui.add_space(12.0);
     widgets::section_label(ui, tr!("source-type"));
@@ -693,7 +727,7 @@ fn form_header(ui: &mut egui::Ui, f: &mut SourceForm, editing: Option<&SourceCon
     ui.add_space(4.0);
     ui.label(RichText::new(help).color(theme::TEXT_2));
     ui.add_space(12.0);
-    cancel
+    (cancel, remove)
 }
 
 fn supports_play_all_limit(kind: SourceKind) -> bool {
