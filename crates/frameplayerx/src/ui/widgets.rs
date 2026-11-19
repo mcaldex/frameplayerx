@@ -1452,7 +1452,7 @@ pub fn slider(
             resp.mark_changed();
         }
     } else {
-        ui.data_mut(|d| d.remove::<(Pos2, f32)>(grab));
+        ui.data_mut(|d| d.remove::<(Pos2, f32, f32)>(grab));
     }
     if ui.is_rect_visible(rect) {
         let t = anim(ui, resp.id, resp.hovered() || resp.dragged());

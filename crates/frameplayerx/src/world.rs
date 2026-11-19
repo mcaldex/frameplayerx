@@ -39,6 +39,8 @@ pub struct Panel {
     /// Repaint at least this often while visible (live content).
     pub refresh: Option<Duration>,
     repaint_requested: bool,
+    /// When egui asked to be run again, further ahead than the next frame.
+    repaint_at: Option<Instant>,
 }
 
 impl Panel {
@@ -67,6 +69,7 @@ impl Panel {
             last_paint: None,
             refresh: None,
             repaint_requested: true,
+            repaint_at: None,
         }
     }
 
@@ -160,6 +163,9 @@ impl Panel {
         if self.repaint_requested || !self.events.is_empty() || self.last_paint.is_none() {
             return true;
         }
+        if self.repaint_at.is_some_and(|at| Instant::now() >= at) {
+            return true;
+        }
         match (self.refresh, self.last_paint) {
             (Some(r), Some(t)) => t.elapsed() >= r,
             _ => false,
@@ -203,11 +209,14 @@ impl Panel {
                 painter.circle_filled(p, 5.0, egui::Color32::WHITE);
             }
         });
-        let repaint = out
+        let delay = out
             .viewport_output
             .get(&egui::ViewportId::ROOT)
-            .map(|v| v.repaint_delay < Duration::from_millis(100))
-            .unwrap_or(false);
+            .map_or(Duration::MAX, |v| v.repaint_delay);
+        let repaint = delay < Duration::from_millis(100);
+        // Later, as when a confirm button turns back, it runs at that time.
+        let later = (!repaint).then(|| Instant::now().checked_add(delay));
+        self.repaint_at = later.flatten();
         let prims = self.ctx.tessellate(out.shapes, out.pixels_per_point);
         if let Some(id) = self.id {
             renderer.paint_panel(id, &prims, &out.textures_delta, out.pixels_per_point)?;
