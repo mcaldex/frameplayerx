@@ -34,16 +34,48 @@
 //! more to the side where readings are less precise ([`side_scale`]), so the
 //! eyes
 //! roaming over the nearer and farther parts of what they look at leave it
-//! still. It glides in gently, over about a second, so what is looked at
+//! still; past that it follows by what is beyond the fifth only, so going
+//! back and forth between two parts farther apart moves it once rather
+//! than every time. It glides in gently, over about a second, so what is looked at
 //! doesn't visibly grow; out more promptly, as what is then looked at is
 //! farther and pushed past infinity while the easing lasts, once something
 //! farther has stayed in focus for a quarter of a second (a glance there and
-//! back leaves it be) or nothing has been readable for a second. The
+//! back leaves it be) or what it is eased for hasn't been read for a second.
+//! The
 //! re-projection follows the distance in focus only once holding its own
 //! would misalign either eye's picture of what is looked at by more than
 //! [`REDRAW_TOLERANCE_RAD`] ([`redraw_lever`]): it holds still with the
 //! head level and facing the video's front, where it changes nothing, and
-//! follows closely lying down, where it keeps things in one piece.
+//! follows closely lying down, where it keeps things in one piece. The
+//! part of each eye's offset from its camera that lies along the line
+//! through the eyes ([`Lever::side`], all of it with the head turned to
+//! one side of the video) only sets what is looked at a little nearer or
+//! farther when its distance is wrong, so that part is drawn for a
+//! distance of its own ([`Focus::side_distance`]), which follows as the
+//! easing does, by what is beyond a fifth: the eyes going over the parts
+//! of something near then don't move the pictures against each other at
+//! every look, while what would pull them apart up and down stays exact.
+//! At the video's left and right edges ([`EDGE_FROM`]) it gives twice the
+//! tolerance and glides rather than going at once after a landing.
+//!
+//! A change while the eyes rest on something shows, as it coming apart and
+//! together again, so those are the gentle ones. When the eyes jump and
+//! land somewhere else ([`AimFilter::take_landed`]) they take a moment to
+//! converge on what is there, and it is drawn for its own distance in that
+//! moment ([`LANDING_SECS`]): the re-projection goes there at once, and so
+//! does the easing, out for something farther without the wait, and in for
+//! something nearer in about a third of a second
+//! ([`LANDED_EASE_IN_OMEGA`]): eased in for later, the eyes have converged
+//! on it all the way by then and must let go again.
+//!
+//! Something much nearer than the distance in focus takes over only once it
+//! has stayed ([`NEARER_HOLD_SECS`]): a quarter of a second where the eyes
+//! have landed for it or the head aims, a second while the eyes rest where
+//! they were. What passes in front of what is looked at reads as that near
+//! while the eyes are still converged on what is behind it, which only they
+//! know; gone again sooner, it moves nothing. A distance the eyes were on
+//! in the last few seconds ([`KNOWN_SECS`]) needn't wait when they land
+//! back on it.
 //!
 //! After the eye passes, whenever there is something new to measure (a new
 //! video frame, or the eyes moved on by [`REMEASURE_RAD`]) and at least
@@ -54,8 +86,9 @@
 //! of angles about the cameras' baseline ([`aim_angles`]): each row is the
 //! line both cameras see a point on, so a disparity is a shift along it by
 //! its own angle, with no vertical part, wherever the aim is. [`FocusPass`]
-//! then matches them (`shaders/focus.wgsl`), one 64-thread workgroup per
-//! patch of a 3 x 3 cluster, scoring 64 candidate disparities per patch.
+//! then matches them (`shaders/focus.wgsl`), three 64-thread workgroups per
+//! patch of a 3 x 3 cluster, scoring 192 candidate disparities per patch:
+//! down to 0.1 m, as close things are where it matters most.
 //! [`ComfortFocus`] reads the curves back once the slot's fence has
 //! signalled and triangulates the middle patch's disparity ([`nearness`]),
 //! or takes the ring's median when the middle has nothing to match (biased
@@ -72,8 +105,18 @@ use gpu_allocator::MemoryLocation;
 use std::f32::consts::FRAC_PI_2;
 use std::time::{Duration, Instant};
 
+/// Workgroups matching each patch, 64 candidates each (`focus.wgsl`).
+const BANDS: usize = 3;
 /// Number of disparity candidates evaluated per patch (`focus.wgsl`).
-pub(crate) const CANDIDATES: usize = 64;
+pub(crate) const CANDIDATES: usize = 64 * BANDS;
+/// Candidates with texture a patch needs for a reading, among the first
+/// band's, whose windows lie within 6° of the aim: half of them, as many as
+/// something 3° across against a plain wall gives. Texture farther out says
+/// nothing of what is at the aim: where that is plain (a bare wall, the
+/// middle of something evenly lit, the black round a cut-out subject), two
+/// outlines 25° to 37° apart can look alike enough to match, and read as
+/// something 10 cm away.
+const MIN_VALID: usize = 32;
 /// Candidates below zero disparity (`focus.wgsl`): footage shot with the
 /// cameras slightly converged puts distant things there, and without these
 /// they would have no candidate to match.
@@ -100,7 +143,7 @@ const GRID_ALONG: f32 = 0.06;
 const MAX_ALONG: f32 = 65.0 * std::f32::consts::PI / 180.0;
 /// Each patch's strips in the samples target (`scene.wgsl`, `focus.wgsl`):
 /// columns for each eye, and rows.
-const SAMPLE_COLS: u32 = 53;
+const SAMPLE_COLS: u32 = 117;
 const SAMPLE_ROWS: u32 = 19;
 /// The samples target's format: luma, and -1 off the picture.
 pub(crate) const SAMPLES_FORMAT: vk::Format = vk::Format::R32_SFLOAT;
@@ -141,17 +184,22 @@ const NEAR_MARGIN: f32 = 0.04;
 const AMBIGUITY: f32 = 0.1;
 /// Candidates either side of the best that belong to its own peak.
 const PEAK_HALF_WIDTH: usize = 2;
-/// How long (seconds) the correction stays with no reading at all. The eyes
-/// may rest on a plain or dark spot of what is in focus for a moment, but
-/// past this they may well be on something else, perhaps far, which the
-/// correction would push past infinity.
+/// How long (seconds) the correction stays with no reading of the distance
+/// in focus: none at all, or only ones of something else that don't settle
+/// on a distance of their own. The eyes may rest on a plain or dark spot of
+/// what is in focus for a moment, but past this they may well be on
+/// something else, perhaps far, which the correction would push past
+/// infinity.
 const UNREAD_HOLD_SECS: f32 = 1.0;
 /// How much the distance in focus must change, as a share, for the easing
 /// to follow it: a fifth straight ahead, [`side_scale`] times as much to the
 /// side (24% at 35°, 31% at 50°, 40% at 60°). Something 0.4 m away has
 /// parts a few centimetres nearer and farther, which would otherwise be
 /// eased by different amounts and make it grow and shrink as the eyes move
-/// over it.
+/// over it. Past that it follows by what is beyond it only, staying that
+/// share short of the distance in focus: the eyes going back and forth
+/// between two parts of something, 0.40 and 0.52 m away, move it once, by a
+/// third of what easing for each in turn would move it every time.
 const RELIEF_STEP: f32 = 0.2;
 /// Natural frequency (rad/s) of the critically damped spring easing the
 /// correction in: 90% of a change in about a second, gently enough that
@@ -170,6 +218,51 @@ const EASE_OUT_MAX_SPEED: f32 = 0.12;
 /// correction eases out for it: a glance there and back, as most take
 /// less, leaves it be.
 const EASE_OUT_HOLD_SECS: f32 = 0.25;
+/// How long (seconds) something much nearer than the distance in focus
+/// (by more than [`RELIEF_STEP`]) must stay read before it takes over,
+/// where the eyes have just landed ([`LANDING_SECS`]) or the head aims.
+/// Something passing in front of what is looked at reads as that near while
+/// the eyes are still converged on what is behind it, and so do two
+/// outlines far apart that happen to match for a few frames; changing the
+/// picture for either shows as a jolt there and back. With the eyes tracked
+/// and resting where they were, they haven't chosen it: it must stay
+/// [`UNREAD_HOLD_SECS`], by when they may well have gone to it.
+const NEARER_HOLD_SECS: f32 = 0.25;
+/// How long (seconds) after the eyes land somewhere else what is read there
+/// is acted on at once ([`ComfortFocus::landed`]): the re-projection goes to
+/// its distance, and the easing out to less for something farther, while
+/// the eyes are still converging on it. Later they have fused it, and a
+/// change shows as it coming apart and together again, so it is made
+/// gently.
+const LANDING_SECS: f32 = 0.3;
+/// Natural frequency (rad/s) of the easing out for something farther the
+/// eyes have just landed on: 90% of a change in 0.13 s.
+const LANDED_EASE_OMEGA: f32 = 30.0;
+/// Fastest the correction may shrink then (radians per eye per second).
+const LANDED_EASE_MAX_SPEED: f32 = 0.6;
+/// Natural frequency (rad/s) of the easing in for something nearer the
+/// eyes have just landed on: 90% of a change in 0.28 s, while they are
+/// still converging on it. Eased in for later, they have converged on it
+/// all the way by then, and must let go again as the easing comes.
+const LANDED_EASE_IN_OMEGA: f32 = 14.0;
+/// Fastest the correction may grow then (radians per eye per second).
+const LANDED_EASE_IN_MAX_SPEED: f32 = 0.3;
+/// How long (seconds) the easing keeps that pace once set off, and the
+/// re-projection's glide its own ([`LANDED_GLIDE_SECS`]).
+const LANDED_PACE_SECS: f32 = 0.3;
+/// How long (seconds) a distance stays known after the distance in focus
+/// left it: the eyes landing back on it within that needn't wait
+/// ([`NEARER_HOLD_SECS`]), as going back and forth between something near
+/// and what is behind it is what they do most.
+const KNOWN_SECS: f32 = 5.0;
+/// How long (seconds) a distance must have been in focus to be known: what
+/// the eyes rested on, not what a few readings took for it.
+const KNOWN_MIN_SECS: f32 = 0.5;
+/// Distances known at a time.
+const KNOWN: usize = 4;
+/// Time constant (seconds) of the re-projection's glide to the distance of
+/// what the eyes have just landed on: 90% of a change in 0.06 s.
+const LANDED_GLIDE_SECS: f32 = 0.025;
 /// A blink this long (seconds) or shorter keeps the aim where the eyes were.
 const BLINK_SECS: f32 = 0.4;
 /// A gaze further than this (radians, 45°) from where the head points is
@@ -195,6 +288,10 @@ const GAZE_GAP_SECS: f32 = 0.1;
 /// sample is catching up with a jump of the eyes ([`AimFilter::settled`]);
 /// a resting gaze's jitter keeps within it.
 const SETTLED_RAD: f32 = 0.035;
+/// Two gaze samples running no further apart than this (radians, 1°) are
+/// both of where the eyes have landed after a jump: the aim goes between
+/// them, which halves the tracker's jitter in it.
+const LANDED_RAD: f32 = 0.0175;
 
 /// The matching pass reading the samples the fragment pass drew.
 const COMPUTE_READ: (vk::PipelineStageFlags2, vk::AccessFlags2) = (
@@ -436,7 +533,7 @@ impl FocusPass {
                 &[s.set],
                 &[],
             );
-            d.cmd_dispatch(cmd, PATCHES as u32, 1, 1);
+            d.cmd_dispatch(cmd, PATCHES as u32, BANDS as u32, 1);
             let done = [vk::BufferMemoryBarrier2::default()
                 .buffer(s.scores.buffer)
                 .size(vk::WHOLE_SIZE)
@@ -500,9 +597,11 @@ impl FocusPass {
     }
 }
 
-/// Maps (fractional) candidate index `idx` in `0..=63` to per-eye disparity:
-/// half a lattice step apart, the first [`NEGATIVE`] below zero, the last
-/// 0.103 rad (~0.32 m with a 65 mm baseline).
+/// Maps (fractional) candidate index `idx` in `0..=191` to per-eye
+/// disparity: half a lattice step apart, the first [`NEGATIVE`] below zero,
+/// the last 0.327 rad (0.093 m straight ahead with a 63 mm baseline). Nearer
+/// still the cameras see a thing from more than 37° apart, and their
+/// pictures of it have little left in common to match.
 pub(crate) fn kappa_at(idx: f32) -> f32 {
     (idx.clamp(0.0, (CANDIDATES - 1) as f32) - NEGATIVE as f32) * 0.5 * STEP
 }
@@ -518,13 +617,28 @@ pub(crate) fn correction_from_kappa(kappa: f32) -> f32 {
     (e * e / (e + KAPPA_KNEE)).min(MAX_COMFORT_CORR_RAD)
 }
 
-/// Finds the sub-step per-eye disparity of one patch from its 64-candidate
-/// `(score, std)` curve, or `None` when it lacks texture or a clear peak.
+/// Why a patch gave no reading.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Miss {
+    /// Too little texture to match, or too much of it off the picture.
+    Plain,
+    /// No candidate matches well enough, or none stands out.
+    Weak,
+    /// More than one stands out ([`AMBIGUITY`]).
+    Ambiguous,
+}
+
+/// Finds the sub-step per-eye disparity of one patch from its
+/// `(score, std)` curve, or why it has none: no texture, or no clear peak.
 /// `far` is the disparity at and below which what is there needs no
 /// relief: [`KAPPA_FAR`] straight ahead, less where the baseline is seen
 /// at a slant ([`far_kappa`]).
-pub(crate) fn estimate_kappa(scores: &[[f32; 2]; CANDIDATES], far: f32) -> Option<f32> {
+pub(crate) fn estimate_kappa(
+    scores: &[[f32; 2]; CANDIDATES],
+    far: f32,
+) -> std::result::Result<f32, Miss> {
     let mut valid_count = 0usize;
+    let mut valid_at_aim = 0usize;
     let mut sum = 0.0f32;
     let mut best: Option<usize> = None;
     let mut best_far: Option<usize> = None;
@@ -534,6 +648,7 @@ pub(crate) fn estimate_kappa(scores: &[[f32; 2]; CANDIDATES], far: f32) -> Optio
             continue;
         }
         valid_count += 1;
+        valid_at_aim += (i < CANDIDATES / BANDS) as usize;
         sum += score;
         if best.is_none_or(|b| score > scores[b][0]) {
             best = Some(i);
@@ -543,14 +658,14 @@ pub(crate) fn estimate_kappa(scores: &[[f32; 2]; CANDIDATES], far: f32) -> Optio
         }
     }
 
-    if valid_count < CANDIDATES / 2 {
-        return None;
+    if valid_at_aim < MIN_VALID {
+        return Err(Miss::Plain);
     }
-    let mut best_i = best?;
+    let mut best_i = best.ok_or(Miss::Plain)?;
     let mean = sum / valid_count as f32;
     let peak = scores[best_i][0];
     if peak < MIN_PEAK_SCORE || peak - mean < MIN_PROMINENCE {
-        return None;
+        return Err(Miss::Weak);
     }
     // Another peak nearly as good: more than one depth fits.
     let valid = |i: usize| {
@@ -567,7 +682,7 @@ pub(crate) fn estimate_kappa(scores: &[[f32; 2]; CANDIDATES], far: f32) -> Optio
         })
         .fold(f32::NEG_INFINITY, f32::max);
     if rival >= peak - AMBIGUITY {
-        return None;
+        return Err(Miss::Ambiguous);
     }
     // Asymmetric decision: a near reading must clearly beat every far one.
     if kappa_at(best_i as f32) > far
@@ -588,7 +703,7 @@ pub(crate) fn estimate_kappa(scores: &[[f32; 2]; CANDIDATES], far: f32) -> Optio
             refined += (0.5 * (y0 - y2) / denom).clamp(-0.5, 0.5);
         }
     }
-    Some(kappa_at(refined))
+    Ok(kappa_at(refined))
 }
 
 /// Lens spacing assumed for every video, metres: the average adult eye
@@ -597,8 +712,9 @@ pub(crate) const LENS_SPACING: f32 = 0.063;
 /// The distance in focus before the first reading: the farthest, where the
 /// re-projection moves nothing, so the picture starts as filmed.
 const START_DISTANCE: f32 = FARTHEST;
-/// The nearest and farthest the distance in focus goes, metres.
-const NEAREST: f32 = 0.3;
+/// The nearest and farthest the distance in focus goes, metres: about as
+/// near as the candidates reach straight ahead ([`kappa_at`]).
+const NEAREST: f32 = 0.1;
 const FARTHEST: f32 = 50.0;
 /// Time constant (seconds) of the re-projection's glide to a new distance,
 /// in nearness: 90% of a change in ~0.7 s.
@@ -606,18 +722,54 @@ const DISTANCE_GLIDE_SECS: f32 = 0.3;
 /// How far (radians, 0.15°) keeping the re-projection's distance may
 /// misalign either eye's picture of what is looked at before it follows the
 /// distance in focus: the eye's [`redraw_lever`] times the change in
-/// nearness. With the head turned 45° that is a change of 11% at 0.4 m;
-/// lying down, 2%; with the head level and facing the video's front, none
-/// ever, as the re-projection changes nothing there.
+/// nearness. Lying down that is a change of 2% at 0.4 m, and it follows
+/// all the way, as the pictures come apart up and down ([`Lever::up`]).
+/// The part of each eye's offset along the line through the eyes
+/// ([`Lever::side`]) only moves the pictures towards or away from each
+/// other, which the eyes follow: that part is drawn for a distance of its
+/// own ([`Focus::side_distance`]) that goes by what is beyond
+/// [`RELIEF_STEP`], as the easing does. With the head level and facing the
+/// video's front, none ever, as the re-projection changes nothing
+/// there.
 const REDRAW_TOLERANCE_RAD: f32 = 0.0026;
-/// Readings the first distance in focus is decided on: the newest and the
-/// two before it.
+/// Where the video's left and right edges begin for the re-projection, and
+/// where they have fully begun: lattice angles `along` ([`aim_angles`]),
+/// radians (30° and 45°). Out there the eyes are far from where their
+/// cameras were, as the head is turned to look, readings are at their least
+/// precise, and something near fills much of the view: its parts, each at
+/// its own distance, would move the pictures at every look. So the
+/// re-projection gives twice [`REDRAW_TOLERANCE_RAD`] there, and glides to
+/// what the eyes land on as it does to anything else, rather than going at
+/// once. Between the two it does part of each.
+const EDGE_FROM: f32 = std::f32::consts::FRAC_PI_6;
+const EDGE_FULL: f32 = std::f32::consts::FRAC_PI_4;
+
+/// How far into the video's left or right edge an aim at lattice angle
+/// `along` is: 0 short of [`EDGE_FROM`], 1 past [`EDGE_FULL`].
+pub(crate) fn edge(along: f32) -> f32 {
+    ((along.abs() - EDGE_FROM) / (EDGE_FULL - EDGE_FROM)).clamp(0.0, 1.0)
+}
+
+/// Readings the first distance in focus is decided on: the newest that
+/// gave a distance and the two before it, within [`PAIR_SECS`].
 const RECENT: usize = 3;
+/// How long (seconds) a reading that gave a distance counts towards another
+/// one agreeing with it. Where little can be matched, readings with nothing
+/// to match come between the ones that give a distance: those two still
+/// decide together, as two running do. Longer ago, the eyes may have been
+/// on something else.
+const PAIR_SECS: f32 = 0.5;
 /// Two readings agree within this, in nearness (1/metres), straight ahead:
 /// three times what the matcher resolves with a 63 mm baseline, under a
 /// sixth of a degree of the eyes' convergence (1 m against 1.04 m, 3 m
 /// against 3.4 m). To the side, [`side_scale`] times as much.
 const AGREE: f32 = 0.04;
+/// Nearer than 0.3 m two readings agree within this share of how near they
+/// are, where that is more than [`AGREE`]: 1.2%, which is [`AGREE`] at
+/// 0.3 m. Something that close seldom keeps still to a millimetre from one
+/// reading to the next, and the same movement is more of a change in
+/// nearness the nearer it is.
+const AGREE_SHARE: f32 = 0.012;
 /// How far a reading agreeing with the distance in focus moves it towards
 /// itself: an average over about the last two, steady against the
 /// matcher's noise while following something moving slowly.
@@ -632,26 +784,64 @@ pub(crate) fn side_scale(along: f32) -> f32 {
     1.0 / along.cos().max(MAX_ALONG.cos())
 }
 
-/// How far, across the aim (play space), the farther of the eyes is from
-/// where its camera was, metres, with the eyes `offsets` (room frame) from
-/// the point between them: a change of the re-projection's distance by `dn`
-/// in nearness moves that eye's picture of what is looked at by about
-/// `dn` times this, radians. 0 with the head level, facing the video's
+/// How far, across the aim, the farther of the eyes is from where its
+/// camera was, metres ([`redraw_lever`]): a change of the re-projection's
+/// distance by `dn` in nearness moves that eye's picture of what is looked
+/// at by about `dn` times this, radians, the other eye's the other way.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Lever {
+    /// Along the line through the eyes, as the aim sees it: the pictures
+    /// move towards or away from each other, and what is looked at seems a
+    /// little nearer or farther. All of it with the head turned to one side
+    /// of the video.
+    pub side: f32,
+    /// Square to that line: one picture moves up and the other down, and
+    /// what is looked at comes apart. Grows as the head tilts to a shoulder.
+    pub up: f32,
+}
+
+impl Lever {
+    /// The whole of it.
+    pub fn length(self) -> f32 {
+        self.side.hypot(self.up)
+    }
+}
+
+/// The [`Lever`] of the eyes, `offsets` (room frame, left then right) from
+/// the point between them, for an `aim` in the play space, and the line
+/// through the eyes as the aim sees it (the video's frame, unit; zero
+/// where there is none). No lever with the head level, facing the video's
 /// front, and the eyes the lens spacing apart.
-pub(crate) fn redraw_lever(scene: &SceneParams, aim: Vec3, offsets: [Vec3; 2]) -> f32 {
+pub(crate) fn redraw_lever(scene: &SceneParams, aim: Vec3, offsets: [Vec3; 2]) -> (Lever, Vec3) {
     let room = scene.anchor_inv.transform_vector3(aim);
     let Some(d) = scene.correction.transform_vector3(room).try_normalize() else {
-        return 0.0;
+        return (Lever::default(), Vec3::ZERO);
     };
-    [-1.0f32, 1.0]
+    let across = |v: Vec3| v - v.dot(d) * d;
+    // The line through the eyes as the aim sees it.
+    let line = across(scene.correction.transform_vector3(offsets[1] - offsets[0])).try_normalize();
+    let lever = [-1.0f32, 1.0]
         .into_iter()
         .zip(offsets)
         .map(|(side, o)| {
             let camera = Vec3::X * (side * 0.5 * LENS_SPACING);
-            let off = scene.correction.transform_vector3(o) - camera;
-            (off - off.dot(d) * d).length()
+            let off = across(scene.correction.transform_vector3(o) - camera);
+            match line {
+                Some(line) => Lever {
+                    side: off.dot(line).abs(),
+                    up: (off - off.dot(line) * line).length(),
+                },
+                None => Lever {
+                    side: 0.0,
+                    up: off.length(),
+                },
+            }
         })
-        .fold(0.0, f32::max)
+        .fold(Lever::default(), |a, b| Lever {
+            side: a.side.max(b.side),
+            up: a.up.max(b.up),
+        });
+    (lever, line.unwrap_or(Vec3::ZERO))
 }
 
 /// How near a point is, 1/metres from between the cameras, that the
@@ -696,30 +886,53 @@ pub(crate) fn relief_at(nearness: f32) -> f32 {
     correction_from_kappa((0.5 * LENS_SPACING * nearness).atan())
 }
 
+/// What a measurement found at the aim.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Reading {
+    /// How near (1/metres) what lies there is, or `None` when it can't be
+    /// measured.
+    pub nearness: Option<f32>,
+    /// Why the middle patch gave no reading, when it gave none: the ring
+    /// round it stands in then, where enough of it reads.
+    pub miss: Option<Miss>,
+    /// The middle patch's best match is at the near end of the candidates:
+    /// what lies there may well be nearer than they reach.
+    pub at_end: bool,
+}
+
 /// How near (1/metres) what lies at the aim is: the middle patch's reading,
-/// else the median of the ring round it, or `None` when neither can be
+/// else the median of the ring round it, or none when neither can be
 /// measured. `along` is the aim's lattice angle ([`aim_angles`]); each patch
 /// is triangulated at its own.
-pub(crate) fn aim_nearness(scores: &[[f32; 2]], along: f32) -> Option<f32> {
+pub(crate) fn aim_reading(scores: &[[f32; 2]], along: f32) -> Reading {
     let curves = scores.as_chunks::<CANDIDATES>().0;
     let read = |i: usize| {
         let at = along + ((i % GRID_W) as f32 - 1.0) * GRID_ALONG;
-        let kappa = estimate_kappa(curves.get(i)?, far_kappa(at))?;
-        Some(nearness(at, kappa))
+        let kappa = estimate_kappa(curves.get(i).ok_or(Miss::Plain)?, far_kappa(at))?;
+        std::result::Result::<(f32, f32), Miss>::Ok((nearness(at, kappa), kappa))
     };
-    if let Some(n) = read(AIM_PATCH) {
-        return Some(n);
-    }
+    let miss = match read(AIM_PATCH) {
+        Ok((n, kappa)) => {
+            return Reading {
+                nearness: Some(n),
+                miss: None,
+                at_end: kappa >= kappa_at((CANDIDATES - 2) as f32),
+            };
+        }
+        Err(miss) => miss,
+    };
     let mut ring: Vec<f32> = (0..curves.len())
         .filter(|&i| i != AIM_PATCH)
-        .filter_map(read)
+        .filter_map(|i| read(i).ok())
+        .map(|(n, _)| n)
         .collect();
-    if ring.len() < MIN_RING_READINGS {
-        return None;
-    }
     ring.sort_by(f32::total_cmp);
-    // The lower middle of an even count: the farther one.
-    Some(ring[(ring.len() - 1) / 2])
+    Reading {
+        // The lower middle of an even count: the farther one.
+        nearness: (ring.len() >= MIN_RING_READINGS).then(|| ring[(ring.len() - 1) / 2]),
+        miss: Some(miss),
+        at_end: false,
+    }
 }
 
 /// What comfort focus does to a frame.
@@ -730,7 +943,76 @@ pub(crate) struct Focus {
     /// The radius of the camera spheres, metres: points at this distance
     /// line up for any head pose.
     pub distance: f32,
+    /// The distance, metres, each eye's offset from its camera along the
+    /// line through the eyes is drawn for ([`Lever::side`]): the same, but
+    /// following the distance in focus as the easing does, by what is
+    /// beyond a fifth.
+    pub side_distance: f32,
 }
+
+/// What comfort focus read and did, counted for the log ([`FocusLog`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Tally {
+    /// Measurements read by the middle patch, and by the ring in its place.
+    pub aim: u32,
+    pub ring: u32,
+    /// Measurements that read nothing, by why the middle patch didn't.
+    pub plain: u32,
+    pub weak: u32,
+    pub ambiguous: u32,
+    /// Readings nearer than each of [`NEAR_MARKS`], and ones whose best
+    /// match was at the near end of the candidates ([`Reading::at_end`]).
+    pub nearer: [u32; 3],
+    pub at_end: u32,
+    /// Times the distance in focus went to another one, and times
+    /// something much nearer was gone again before it had stayed long
+    /// enough to ([`NEARER_HOLD_SECS`]).
+    pub changes: u32,
+    pub passed: u32,
+    /// Times the easing was set for another distance, by how much in all
+    /// (radians per eye), and times it let go with no reading of the one it
+    /// was for.
+    pub eased: u32,
+    pub eased_by: f32,
+    pub let_go: u32,
+    /// Frames stepped, and of them those the easing moved in
+    /// ([`MOVING_SPEED`]).
+    pub steps: u32,
+    pub moving: u32,
+    /// Times the eyes landed somewhere else ([`ComfortFocus::landed`]), and
+    /// times the easing went out at once for what they landed on, and in.
+    pub landings: u32,
+    pub eased_at_once: u32,
+    pub eased_in_at_once: u32,
+    /// Times the re-projection's distance followed the one in focus, and of
+    /// them those just after the eyes landed, at once; and times the one
+    /// along the line through the eyes did ([`Focus::side_distance`]).
+    pub redrawn: u32,
+    pub redrawn_at_once: u32,
+    pub redrawn_side: u32,
+    /// How far each eye's picture moved, radians, summed over the frames
+    /// stepped: by the easing, and by the re-projection up or down
+    /// ([`Lever::up`]) and along the line through the eyes
+    /// ([`Lever::side`]).
+    pub moved_easing: f32,
+    pub moved_up: f32,
+    pub moved_side: f32,
+    /// How far to the side the readings that gave a distance aimed (their
+    /// lattice angle `along`, radians), summed.
+    pub aside: f32,
+    /// The eyes' [`redraw_lever`], metres, summed over the frames stepped:
+    /// all of it, and the part square to the line through the eyes
+    /// ([`Lever::up`]).
+    pub lever: f32,
+    pub lever_up: f32,
+}
+
+/// The distances (metres) the log counts readings nearer than.
+pub(crate) const NEAR_MARKS: [f32; 3] = [0.3, 0.2, 0.15];
+/// The easing counts as moving, for the log, while it changes faster than
+/// this (radians per eye a second, 0.2°/s): the last of a glide, slower
+/// still, doesn't show.
+const MOVING_SPEED: f32 = 0.0035;
 
 /// Correction tracker across frames.
 #[derive(Default)]
@@ -739,14 +1021,31 @@ pub(crate) struct ComfortFocus {
     /// what lay at its aim was, 1/metres (`None`: nothing to match there),
     /// and the lattice angle `along` there.
     pending: Option<(Option<f32>, f32)>,
-    /// The latest [`RECENT`] readings, wherever the eyes were, newest last:
-    /// how near (`None`: nothing to match there).
-    recent: Vec<Option<f32>>,
+    /// The latest readings that gave a distance, wherever the eyes were,
+    /// newest last: how near, and when by `clock`. No more than [`RECENT`],
+    /// none older than [`PAIR_SECS`].
+    recent: Vec<(f32, f32)>,
+    /// Seconds stepped through, at most 0.1 s a frame: a stalled frame
+    /// doesn't age the readings before it.
+    clock: f32,
     /// What the distance in focus glides to, as nearness, once two
     /// readings have agreed on it.
     accepted: Option<f32>,
-    /// When the last reading with a disparity came.
-    last_read: Option<Instant>,
+    /// When a reading last saw the distance in focus.
+    seen: Option<Instant>,
+    /// Whether the aim follows the eyes ([`ComfortFocus::follows_eyes`]).
+    eyes: bool,
+    /// [`side_scale`] where the latest reading that gave a distance aimed,
+    /// and how far into the video's edge that was ([`edge`]).
+    scale: f32,
+    edge: f32,
+    /// Something much nearer than the distance in focus is being read, not
+    /// yet for long enough to take over ([`NEARER_HOLD_SECS`]): since when,
+    /// and when last, by `clock`.
+    nearer: Option<(f32, f32)>,
+    /// The distance in focus has just gone to something nearer the eyes
+    /// landed on: the re-projection goes there at once, and the easing in.
+    landed_on: bool,
     /// The distance in focus (nearness) `target` was set for, while it is.
     eased_for: Option<f32>,
     /// The correction (radians per eye) being eased towards.
@@ -763,68 +1062,183 @@ pub(crate) struct ComfortFocus {
     /// [`REDRAW_TOLERANCE_RAD`]; 0 until the first step.
     near: f32,
     near_target: f32,
+    /// The same for what lies along the line through the eyes
+    /// ([`Focus::side_distance`]), following by what is beyond
+    /// [`RELIEF_STEP`].
+    side: f32,
+    side_target: f32,
     last_step_at: Option<Instant>,
+    /// When the eyes last landed somewhere else, by `clock`
+    /// ([`ComfortFocus::landed`]).
+    landed_at: Option<f32>,
+    /// Until when, by `clock`, the easing goes out, goes in, and the
+    /// re-projection glides at the pace for what the eyes have just landed
+    /// on.
+    ease_at_once_until: f32,
+    ease_in_at_once_until: f32,
+    glide_at_once_until: f32,
+    /// Since when, by `clock`, the distance in focus is the one it is.
+    accepted_since: f32,
+    /// Distances lately in focus ([`KNOWN_SECS`], [`KNOWN_MIN_SECS`]): how
+    /// near, and when the distance in focus left each, by `clock`.
+    known: Vec<(f32, f32)>,
+    tally: Tally,
 }
 
 impl ComfortFocus {
+    /// Starts afresh, as for another video. What was counted for the log
+    /// stays.
     pub fn reset(&mut self) {
-        *self = Self::default();
+        *self = Self {
+            tally: self.tally,
+            eyes: self.eyes,
+            ..Self::default()
+        };
     }
 
     /// Takes the read-back patch scores of a completed frame and the lattice
     /// angle `along` where they aimed ([`aim_angles`]).
     pub fn ingest(&mut self, scores: &[[f32; 2]], along: f32) {
-        self.pending = Some((aim_nearness(scores, along), along));
+        let reading = aim_reading(scores, along);
+        let t = &mut self.tally;
+        *match (reading.nearness, reading.miss) {
+            (Some(_), None) => &mut t.aim,
+            (Some(_), Some(_)) => &mut t.ring,
+            (None, Some(Miss::Weak)) => &mut t.weak,
+            (None, Some(Miss::Ambiguous)) => &mut t.ambiguous,
+            (None, _) => &mut t.plain,
+        } += 1;
+        t.at_end += reading.at_end as u32;
+        if let Some(n) = reading.nearness {
+            for (count, mark) in t.nearer.iter_mut().zip(NEAR_MARKS) {
+                *count += (n * mark > 1.0) as u32;
+            }
+        }
+        self.pending = Some((reading.nearness, along));
+    }
+
+    /// The eyes have jumped and landed somewhere else
+    /// ([`AimFilter::take_landed`]): what is read there within
+    /// [`LANDING_SECS`] is acted on at once.
+    pub fn landed(&mut self) {
+        self.landed_at = Some(self.clock);
+        self.tally.landings += 1;
+    }
+
+    fn just_landed(&self) -> bool {
+        self.landed_at
+            .is_some_and(|t| self.clock - t <= LANDING_SECS)
+    }
+
+    /// Whether the aim follows the eyes (`true`) or the head: only the eyes
+    /// tell, by landing somewhere, that they have gone to something else.
+    pub fn follows_eyes(&mut self, eyes: bool) {
+        self.eyes = eyes;
+    }
+
+    /// Whether something much nearer than the distance in focus, read now
+    /// as nearness `to` and first at `first` (by `clock`), has stayed long
+    /// enough to take over: [`NEARER_HOLD_SECS`] since the eyes landed for
+    /// it (no longer than [`LANDING_SECS`] before it was first read, or
+    /// since) or with the head aiming, and no time at all where its
+    /// distance, within `step`, is one they were on lately ([`KNOWN_SECS`]);
+    /// [`UNREAD_HOLD_SECS`] with the eyes resting where they were, known or
+    /// not.
+    fn stayed(&mut self, first: f32, to: f32, step: f32) -> bool {
+        let clock = self.clock;
+        let since = match self.nearer {
+            Some((since, last)) if clock - last <= PAIR_SECS => since,
+            _ => first,
+        };
+        self.nearer = Some((since, clock));
+        let landed = self
+            .landed_at
+            .filter(|&t| self.eyes && t >= since - LANDING_SECS);
+        let chosen = if self.eyes {
+            landed.map(|t| since.max(t))
+        } else {
+            Some(since)
+        };
+        let known = self
+            .known
+            .iter()
+            .any(|&(k, left)| clock - left <= KNOWN_SECS && to <= k * step && k <= to * step);
+        let stayed = chosen.is_some_and(|t| known || clock - t >= NEARER_HOLD_SECS)
+            || clock - since >= UNREAD_HOLD_SECS;
+        self.landed_on = stayed && landed.is_some();
+        stayed
+    }
+
+    /// What was counted since the last call.
+    pub fn take_tally(&mut self) -> Tally {
+        std::mem::take(&mut self.tally)
+    }
+
+    /// The distance in focus, metres, and the easing now, radians per eye;
+    /// `None` before the first readings have agreed on a distance.
+    pub fn in_focus(&self) -> Option<(f32, f32)> {
+        self.accepted.map(|a| (1.0 / a, self.corr))
     }
 
     /// Advances to `now`, with the eyes' [`redraw_lever`] `lever`. Where the
     /// eyes look doesn't enter: the readings come from there, and the eyes
     /// roaming over what is in focus (or a blink) say nothing about how
     /// near it is.
-    pub fn step(&mut self, now: Instant, lever: f32) -> Focus {
+    pub fn step(&mut self, now: Instant, lever: Lever) -> Focus {
         let dt = self
             .last_step_at
             .map(|prev| now.saturating_duration_since(prev).as_secs_f32().min(0.1))
             .unwrap_or(1.0 / 90.0);
         self.last_step_at = Some(now);
+        self.clock += dt;
         if self.near == 0.0 {
             self.near = 1.0 / START_DISTANCE;
             self.near_target = self.near;
+            self.side = self.near;
+            self.side_target = self.near;
         }
 
-        match self.pending.take() {
-            Some((Some(n), along)) => {
-                self.last_read = Some(now);
-                self.read(n.clamp(1.0 / FARTHEST, 1.0 / NEAREST), along, now);
-            }
-            // Nothing to match where it was read: older readings count for
-            // less.
-            Some((None, _)) if !self.recent.is_empty() => self.remember(None),
-            _ => {}
+        if let Some((Some(n), along)) = self.pending.take() {
+            self.read(n.clamp(1.0 / FARTHEST, 1.0 / NEAREST), along, now);
         }
         // Something farther has stayed in focus: ease out for it.
         if let Some((want, a, since)) = self.lower
             && now.saturating_duration_since(since).as_secs_f32() >= EASE_OUT_HOLD_SECS
         {
+            self.tally.eased += 1;
+            self.tally.eased_by += (want - self.target).abs();
             self.target = want;
             self.eased_for = Some(a);
             self.lower = None;
         }
-        // Nothing readable for a while: let go of the easing. The distance in
-        // focus stays, as the nearest guess there is.
+        // The distance in focus not read for a while: let go of the easing,
+        // whether nothing was readable or the readings were of something
+        // else that didn't take over. It stays the distance in focus, as
+        // the nearest guess there is.
         if self
-            .last_read
+            .seen
             .is_none_or(|t| now.saturating_duration_since(t).as_secs_f32() > UNREAD_HOLD_SECS)
         {
+            if self.target > 0.0 {
+                self.tally.let_go += 1;
+            }
             self.target = 0.0;
             self.eased_for = None;
             self.lower = None;
         }
 
         // Critically damped spring towards the target, speed-limited: gently
-        // in, more promptly out.
+        // in, more promptly out, and either at once for what the eyes have
+        // just landed on.
+        let before = self.corr;
         let (omega, max_speed) = if self.target > self.corr {
-            (EASE_IN_OMEGA, EASE_IN_MAX_SPEED)
+            if self.clock < self.ease_in_at_once_until {
+                (LANDED_EASE_IN_OMEGA, LANDED_EASE_IN_MAX_SPEED)
+            } else {
+                (EASE_IN_OMEGA, EASE_IN_MAX_SPEED)
+            }
+        } else if self.clock < self.ease_at_once_until {
+            (LANDED_EASE_OMEGA, LANDED_EASE_MAX_SPEED)
         } else {
             (EASE_OUT_OMEGA, EASE_OUT_MAX_SPEED)
         };
@@ -849,61 +1263,148 @@ impl ComfortFocus {
             self.corr = 0.0;
             self.vel = 0.0;
         }
+        self.tally.steps += 1;
+        self.tally.moving += ((self.corr - before).abs() > MOVING_SPEED * dt) as u32;
+        self.tally.moved_easing += (self.corr - before).abs();
         // The re-projection follows the distance in focus once keeping its
-        // own would misalign what is looked at.
+        // own would misalign what is looked at: all the way, as up and
+        // down that pulls it apart, which the eyes can't follow. Twice as
+        // much at the video's edges ([`EDGE_FROM`]).
+        let tolerance = REDRAW_TOLERANCE_RAD * (1.0 + self.edge);
+        let mut followed = false;
         if let Some(a) = self.accepted
-            && (a - self.near_target).abs() * lever > REDRAW_TOLERANCE_RAD
+            && (a - self.near_target).abs() * lever.length() > tolerance
         {
             self.near_target = a;
+            self.tally.redrawn += 1;
+            followed = true;
         }
-        self.near += (self.near_target - self.near) * (1.0 - (-dt / DISTANCE_GLIDE_SECS).exp());
+        // Along the line through the eyes it only sets it a little nearer
+        // or farther, and follows as the easing does: for a change beyond
+        // [`RELIEF_STEP`], by what is beyond it. The eyes going over the
+        // parts of something near would otherwise move the pictures
+        // against each other at every look.
+        if let Some(a) = self.accepted
+            && (a - self.side_target).abs() * lever.side > tolerance
+        {
+            let step = 1.0 + RELIEF_STEP * self.scale.max(1.0);
+            let kept = self.side_target.clamp(a / step, a * step);
+            if kept != self.side_target {
+                self.side_target = kept;
+                self.tally.redrawn_side += 1;
+                followed = true;
+            }
+        }
+        // What the eyes have just landed on: there before they have
+        // converged on it. Not at the video's edges, where it glides.
+        if followed && self.edge < 1.0 && (self.just_landed() || self.landed_on) {
+            self.glide_at_once_until = self.clock + LANDED_PACE_SECS;
+            self.tally.redrawn_at_once += 1;
+        }
+        self.landed_on = false;
+        self.tally.lever += lever.length();
+        self.tally.lever_up += lever.up;
+        let glide = if self.clock < self.glide_at_once_until {
+            LANDED_GLIDE_SECS + (DISTANCE_GLIDE_SECS - LANDED_GLIDE_SECS) * self.edge
+        } else {
+            DISTANCE_GLIDE_SECS
+        };
+        let glided = 1.0 - (-dt / glide).exp();
+        let (near, side) = (self.near, self.side);
+        self.near += (self.near_target - self.near) * glided;
+        self.side += (self.side_target - self.side) * glided;
+        self.tally.moved_up += (self.near - near).abs() * lever.up;
+        self.tally.moved_side += (self.side - side).abs() * lever.side;
         Focus {
             relief: self.corr,
             distance: 1.0 / self.near,
-        }
-    }
-
-    fn remember(&mut self, reading: Option<f32>) {
-        self.recent.push(reading);
-        if self.recent.len() > RECENT {
-            self.recent.remove(0);
+            side_distance: 1.0 / self.side,
         }
     }
 
     /// Folds in a reading of nearness `n` where the eyes are, at lattice
     /// angle `along`, where readings agree within [`AGREE`] times
-    /// [`side_scale`]. The first two
+    /// [`side_scale`] ([`AGREE_SHARE`] of how near, nearer than 0.3 m). The
+    /// first two
     /// to agree set the distance in focus; one agreeing with it refines it.
-    /// Another distance takes over as soon as the latest two readings agree
-    /// on it, both apart from the one in focus: a lone wrong reading never
+    /// Another distance takes over as soon as the latest two readings that
+    /// gave a distance agree on it, both apart from the one in focus and no
+    /// more than [`PAIR_SECS`] apart: a lone wrong reading never
     /// moves it, and with the eyes on the edge of something near, readings
     /// going back and forth between it and what is behind keep it where it
-    /// is rather than halfway between the two.
+    /// is rather than halfway between the two. One more than
+    /// [`RELIEF_STEP`] nearer takes over only once it has stayed
+    /// ([`ComfortFocus::stayed`]): what passes in front of what is looked
+    /// at, and is gone again, moves nothing. Readings with nothing to
+    /// match don't come into it, so something that reads only now and then
+    /// still takes over.
     fn read(&mut self, n: f32, along: f32, now: Instant) {
         let scale = side_scale(along);
-        let agree = AGREE * scale;
-        let before = self.recent.last().copied().flatten();
-        self.remember(Some(n));
-        self.accepted = match self.accepted {
+        self.scale = scale;
+        self.edge = edge(along);
+        self.tally.aside += along.abs();
+        let agree = AGREE.max(AGREE_SHARE * n) * scale;
+        let clock = self.clock;
+        self.recent.retain(|&(_, t)| clock - t <= PAIR_SECS);
+        let before = self.recent.last().copied();
+        self.recent.push((n, clock));
+        if self.recent.len() > RECENT {
+            self.recent.remove(0);
+        }
+        let accepted = self.accepted;
+        self.accepted = match accepted {
             None => {
                 let agreeing: Vec<f32> = self
                     .recent
                     .iter()
-                    .flatten()
-                    .copied()
+                    .map(|&(p, _)| p)
                     .filter(|p| (p - n).abs() <= agree)
                     .collect();
                 (agreeing.len() >= 2).then(|| agreeing.iter().sum::<f32>() / agreeing.len() as f32)
             }
-            Some(a) if (n - a).abs() <= agree => Some(a + (n - a) * REFINE),
+            Some(a) if (n - a).abs() <= agree => {
+                // Back on what is in focus: what was nearer has gone.
+                self.tally.passed += self.nearer.take().is_some() as u32;
+                Some(a + (n - a) * REFINE)
+            }
             Some(a) => Some(match before {
-                Some(p) if (p - n).abs() <= agree && (p - a).abs() > agree => 0.5 * (p + n),
+                Some((p, first)) if (p - n).abs() <= agree && (p - a).abs() > agree => {
+                    let to = 0.5 * (p + n);
+                    // Farther, or no more than a little nearer than what
+                    // is in focus or what the picture is still eased for
+                    // (back from a glance at something farther): at once.
+                    // Much nearer: once it has stayed.
+                    let step = 1.0 + RELIEF_STEP * scale;
+                    let eased = self.eased_for.is_some_and(|e| to <= e * step);
+                    if to <= a * step || eased || self.stayed(first, to, step) {
+                        self.nearer = None;
+                        self.tally.changes += 1;
+                        // What the eyes were on for a while is known for a
+                        // while after.
+                        if clock - self.accepted_since >= KNOWN_MIN_SECS {
+                            self.known.retain(|&(k, left)| {
+                                clock - left <= KNOWN_SECS && (k > a * step || a > k * step)
+                            });
+                            if self.known.len() == KNOWN {
+                                self.known.remove(0);
+                            }
+                            self.known.push((a, clock));
+                        }
+                        self.accepted_since = clock;
+                        to
+                    } else {
+                        a
+                    }
+                }
                 _ => a,
             }),
         };
         let Some(a) = self.accepted else {
             return;
         };
+        if accepted.is_none() {
+            self.accepted_since = clock;
+        }
         // Eased for what is in focus once this reading sees it, and only for
         // a change of distance of [`RELIEF_STEP`] or more, wider to the side
         // (or out to none): more at once, less once it has lasted
@@ -911,19 +1412,48 @@ impl ComfortFocus {
         if (n - a).abs() > agree {
             return;
         }
+        self.seen = Some(now);
         let step = 1.0 + RELIEF_STEP * scale;
         let moved = self.eased_for.is_none_or(|e| a > e * step || a * step < e);
-        let want = relief_at(a);
+        // What to ease for: the distance in focus when coming from no
+        // easing, and where it needs none; else the nearest to what it is
+        // eased for now that is within the step of the distance in focus.
+        let ease_for = match self.eased_for {
+            Some(e) if self.target > 0.0 && relief_at(a) > 0.0 => e.clamp(a / step, a * step),
+            _ => a,
+        };
+        let want = relief_at(ease_for);
         if !moved && !(want == 0.0 && self.target > 0.0) {
             // Back on what it is eased for: a glance away is over.
             self.lower = None;
         } else if want >= self.target {
+            if want > self.target {
+                self.tally.eased += 1;
+                self.tally.eased_by += want - self.target;
+                // Something nearer the eyes have just landed on: eased in
+                // for while they converge on it, so they stop where it
+                // will stay.
+                if self.just_landed() || self.landed_on {
+                    self.tally.eased_in_at_once += 1;
+                    self.ease_in_at_once_until = self.clock + LANDED_PACE_SECS;
+                }
+            }
             self.target = want;
-            self.eased_for = Some(a);
+            self.eased_for = Some(ease_for);
             self.lower = None;
+        } else if self.just_landed() {
+            // Something farther the eyes have just landed on: eased out for
+            // at once, so they converge on it where it will stay.
+            self.tally.eased += 1;
+            self.tally.eased_at_once += 1;
+            self.tally.eased_by += self.target - want;
+            self.target = want;
+            self.eased_for = Some(ease_for);
+            self.lower = None;
+            self.ease_at_once_until = self.clock + LANDED_PACE_SECS;
         } else {
             let since = self.lower.map_or(now, |(.., t)| t);
-            self.lower = Some((want, a, since));
+            self.lower = Some((want, ease_for, since));
         }
     }
 }
@@ -971,51 +1501,275 @@ pub(crate) struct AimFilter {
     /// When the last gaze sample was taken in, and where it was.
     last_sample: Option<Instant>,
     raw: Option<Vec2>,
+    from: AimFrom,
+    /// Where the aim was when the eyes jumped away from it, until they
+    /// land, and for how many samples running the smoothing has kept up
+    /// with them since.
+    jump_from: Option<Vec2>,
+    caught_up: u8,
+    /// The eyes have landed somewhere else since the last
+    /// [`AimFilter::take_landed`].
+    landed: bool,
+}
+
+/// What the aim followed, the last time it was asked for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum AimFrom {
+    /// Where the head points: no tracker, or the eyes lost for longer than
+    /// a blink.
+    #[default]
+    Head,
+    /// The tracked gaze.
+    Eyes,
+    /// Where the eyes were, through a blink.
+    Held,
 }
 
 impl AimFilter {
     /// The aim at `now` (play space) from the tracker's `gaze` (play space),
     /// when it has one, for a head turned `head`.
     pub fn aim(&mut self, now: Instant, gaze: Option<Vec3>, head: Quat) -> Vec3 {
-        if let Some(g) = gaze.and_then(Vec3::try_normalize)
-            && g.angle_between(head * Vec3::NEG_Z) <= PLAUSIBLE_GAZE_RAD
-        {
+        let tracked = gaze
+            .and_then(Vec3::try_normalize)
+            .filter(|g| g.angle_between(head * Vec3::NEG_Z) <= PLAUSIBLE_GAZE_RAD);
+        if let Some(g) = tracked {
             self.take(now, yaw_pitch(head.inverse() * g));
         }
         match (self.smoothed, self.last_sample) {
             (Some(yp), Some(t)) if now.saturating_duration_since(t).as_secs_f32() <= BLINK_SECS => {
+                self.from = if tracked.is_some() {
+                    AimFrom::Eyes
+                } else {
+                    AimFrom::Held
+                };
                 head * from_yaw_pitch(yp)
             }
-            _ => head * Vec3::NEG_Z,
+            _ => {
+                self.from = AimFrom::Head;
+                head * Vec3::NEG_Z
+            }
         }
     }
 
-    /// Smooths in one sample, `yp` (head axes), by the One Euro filter.
+    /// What the last [`AimFilter::aim`] followed.
+    pub fn from(&self) -> AimFrom {
+        self.from
+    }
+
     /// Whether the aim is where the eyes are, rather than catching up with
     /// a jump: in a jump it sweeps across whatever lies between, which is
     /// not worth measuring. Always, aiming with the head.
     pub fn settled(&self) -> bool {
         match (self.smoothed, self.raw) {
-            (Some(s), Some(r)) => s.distance(r) <= SETTLED_RAD,
+            (Some(s), Some(r)) => self.jump_from.is_none() && s.distance(r) <= SETTLED_RAD,
             _ => true,
         }
     }
 
+    /// Whether the eyes have jumped and landed somewhere else since the
+    /// last call: the aim is there already, and what lies there is what
+    /// they are about to converge on ([`ComfortFocus::landed`]).
+    pub fn take_landed(&mut self) -> bool {
+        std::mem::take(&mut self.landed)
+    }
+
+    /// Smooths in one sample, `yp` (head axes), by the One Euro filter. A
+    /// jump of the eyes is taken at once where it lands, rather than
+    /// smoothed to over a few frames: there the gaze is new, with nothing
+    /// before it to smooth with.
     fn take(&mut self, now: Instant, yp: Vec2) {
         let dt = self
             .last_sample
             .map(|t| now.saturating_duration_since(t).as_secs_f32());
         self.last_sample = Some(now);
-        self.raw = Some(yp);
+        let before = self.raw.replace(yp);
         let Some((x, dt)) = self.smoothed.zip(dt).filter(|&(_, dt)| dt <= GAZE_GAP_SECS) else {
+            // Afresh after a gap: the eyes may be somewhere else by now.
+            self.landed |= self.smoothed.is_some_and(|s| s.distance(yp) > SETTLED_RAD);
             self.smoothed = Some(yp);
             self.speed = Vec2::ZERO;
+            self.jump_from = None;
+            self.caught_up = 0;
             return;
         };
+        // A jump: the gaze leaves where the aim rests.
+        if self.jump_from.is_none() && x.distance(yp) > SETTLED_RAD {
+            self.jump_from = Some(x);
+        }
         let dt = dt.max(1e-4);
         self.speed += ((yp - x) / dt - self.speed) * low_pass(GAZE_SPEED_CUTOFF_HZ, dt);
         let cutoff = GAZE_MIN_CUTOFF_HZ + GAZE_BETA * self.speed.length();
-        self.smoothed = Some(x + (yp - x) * low_pass(cutoff, dt));
+        let next = x + (yp - x) * low_pass(cutoff, dt);
+        self.smoothed = Some(next);
+        // It has landed once the smoothing has caught up with the gaze and
+        // two samples running are close together (one sample can't tell a
+        // jump's first step from its end), or the smoothing has kept up for
+        // three frames, should the tracker's jitter keep its samples apart.
+        // The aim goes where the eyes are at once, rather than over the
+        // tenth of a second the last degree or two would take. Back where it
+        // left from, it was a stray sample.
+        let Some(from) = self.jump_from else {
+            return;
+        };
+        if next.distance(yp) > SETTLED_RAD {
+            self.caught_up = 0;
+            return;
+        }
+        self.caught_up += 1;
+        let close = before.filter(|b| b.distance(yp) <= LANDED_RAD);
+        if close.is_some() || self.caught_up >= 3 {
+            self.jump_from = None;
+            self.caught_up = 0;
+            let at = close.map_or(yp, |b| (b + yp) * 0.5);
+            self.landed = from.distance(at) > SETTLED_RAD;
+            self.smoothed = Some(if self.landed { at } else { from });
+            self.speed = Vec2::ZERO;
+        }
+    }
+}
+
+/// What comfort focus did over a stretch of frames, for one line of the log:
+/// how often what is looked at could be read and why not, how often the
+/// distance in focus and the easing changed, what the aim followed, and
+/// what a measurement costs the GPU.
+#[derive(Default)]
+pub(crate) struct FocusLog {
+    since: Option<Instant>,
+    /// Frames drawn with comfort focus.
+    frames: u32,
+    /// Of them: aimed by the eyes, by where they were through a blink, with
+    /// the aim still catching up with a jump of the eyes, aimed too far to
+    /// the side to measure ([`MAX_ALONG`]), and measured.
+    eyes: u32,
+    held: u32,
+    catching_up: u32,
+    aside: u32,
+    measured: u32,
+    /// The eye passes' GPU time, milliseconds summed and frames, with a
+    /// measurement and without.
+    gpu: [(f32, u32); 2],
+}
+
+impl FocusLog {
+    /// A frame drawn with comfort focus at `now`: what its aim followed,
+    /// whether the aim was `settled` ([`AimFilter::settled`]) and near
+    /// enough the front to measure (`in_reach`), and whether it `measured`.
+    pub fn frame(
+        &mut self,
+        now: Instant,
+        from: AimFrom,
+        settled: bool,
+        in_reach: bool,
+        measured: bool,
+    ) {
+        self.since.get_or_insert(now);
+        self.frames += 1;
+        self.eyes += (from == AimFrom::Eyes) as u32;
+        self.held += (from == AimFrom::Held) as u32;
+        self.catching_up += !settled as u32;
+        self.aside += !in_reach as u32;
+        self.measured += measured as u32;
+    }
+
+    /// The eye passes of a frame drawn with comfort focus took `ms` on the
+    /// GPU, with a measurement (`measured`) or without.
+    pub fn gpu(&mut self, measured: bool, ms: f32) {
+        let (sum, n) = &mut self.gpu[measured as usize];
+        *sum += ms;
+        *n += 1;
+    }
+
+    /// The frames since the last call as one line, with what the tracker
+    /// counted over them (`tally`) and what is in focus at `now`
+    /// ([`ComfortFocus::in_focus`]); `None` when none was drawn with comfort
+    /// focus.
+    pub fn take_line(
+        &mut self,
+        now: Instant,
+        tally: Tally,
+        in_focus: Option<(f32, f32)>,
+    ) -> Option<String> {
+        let w = std::mem::take(self);
+        let secs = now.saturating_duration_since(w.since?).as_secs_f32();
+        if w.frames == 0 || secs <= 0.0 {
+            return None;
+        }
+        let none = tally.plain + tally.weak + tally.ambiguous;
+        let read = tally.aim + tally.ring + none;
+        let of = |n: u32, all: u32| 100.0 * n as f32 / all.max(1) as f32;
+        let mut line = format!(
+            "comfort focus: {:.0} measurements a second, {read} read back: \
+             {:.0}% at the aim, {:.0}% from the ring, {:.0}% nothing \
+             ({:.0}% plain, {:.0}% weak, {:.0}% ambiguous); \
+             nearer than {:.2} m {:.0}%, than {:.2} m {:.0}%, than {:.2} m {:.0}%, \
+             at the candidates' near end {:.0}%; \
+             {} changes of the distance in focus, {} nearer things gone before they had \
+             stayed, {} of the easing by {:.2}° on average, \
+             {} let go; the easing moving in {:.0}% of frames; \
+             {} landings of the eyes, the easing out at once {} times and in {}; \
+             the re-projection followed {} times and {} along the line through the eyes, \
+             {} of them at once, \
+             the eyes {:.0} mm from their cameras across the aim on average, \
+             {:.0} mm of it off the line through them; \
+             each eye's picture moved {:.1}° by the easing, {:.1}° up or down and \
+             {:.1}° along that line by the re-projection; \
+             readings {:.0}° to the side on average",
+            w.measured as f32 / secs,
+            of(tally.aim, read),
+            of(tally.ring, read),
+            of(none, read),
+            of(tally.plain, read),
+            of(tally.weak, read),
+            of(tally.ambiguous, read),
+            NEAR_MARKS[0],
+            of(tally.nearer[0], read),
+            NEAR_MARKS[1],
+            of(tally.nearer[1], read),
+            NEAR_MARKS[2],
+            of(tally.nearer[2], read),
+            of(tally.at_end, read),
+            tally.changes,
+            tally.passed,
+            tally.eased,
+            (tally.eased_by / tally.eased.max(1) as f32).to_degrees(),
+            tally.let_go,
+            of(tally.moving, tally.steps),
+            tally.landings,
+            tally.eased_at_once,
+            tally.eased_in_at_once,
+            tally.redrawn,
+            tally.redrawn_side,
+            tally.redrawn_at_once,
+            1000.0 * tally.lever / tally.steps.max(1) as f32,
+            1000.0 * tally.lever_up / tally.steps.max(1) as f32,
+            tally.moved_easing.to_degrees(),
+            tally.moved_up.to_degrees(),
+            tally.moved_side.to_degrees(),
+            (tally.aside / (tally.aim + tally.ring).max(1) as f32).to_degrees(),
+        );
+        line += &match in_focus {
+            Some((distance, relief)) => {
+                format!("; now {distance:.2} m, eased {:.2}°", relief.to_degrees())
+            }
+            None => "; nothing in focus yet".to_string(),
+        };
+        line += &format!(
+            "; aim by the eyes in {:.0}% of {} frames, held through a blink {:.0}%, \
+             catching up with a jump {:.0}%, too far aside {:.0}%",
+            of(w.eyes, w.frames),
+            w.frames,
+            of(w.held, w.frames),
+            of(w.catching_up, w.frames),
+            of(w.aside, w.frames),
+        );
+        if let [(without, n0 @ 1..), (with, n1 @ 1..)] = w.gpu {
+            line += &format!(
+                "; eye passes {:.2} GPU ms with a measurement, {:.2} without",
+                with / n1 as f32,
+                without / n0 as f32
+            );
+        }
+        Some(line)
     }
 }
 
@@ -1065,12 +1819,12 @@ mod tests {
 
     /// The correction for what lies at the aim of `scores`.
     fn aim_correction(scores: &[[f32; 2]]) -> Option<f32> {
-        aim_nearness(scores, 0.0).map(relief_at)
+        aim_reading(scores, 0.0).nearness.map(relief_at)
     }
 
     const FRAME: Duration = Duration::from_millis(11);
     /// A [`redraw_lever`] so long the re-projection follows every change.
-    const LEVER: f32 = 1.0;
+    const LEVER: Lever = Lever { side: 0.0, up: 1.0 };
     const AHEAD: Vec3 = Vec3::NEG_Z;
 
     /// `degrees` to the right of straight ahead.
@@ -1095,6 +1849,11 @@ mod tests {
             .collect()
     }
 
+    /// Whether `a` is the picture `b` is, but for the last of a glide.
+    fn same(a: &Focus, b: &Focus) -> bool {
+        (a.relief - b.relief).abs() < 1e-5 && (a.distance - b.distance).abs() < 1e-3 * b.distance
+    }
+
     /// The same, the easing only.
     fn run(cf: &mut ComfortFocus, t: &mut Instant, scores: &[[f32; 2]], frames: usize) -> Vec<f32> {
         run_focus(cf, t, scores, frames)
@@ -1105,7 +1864,7 @@ mod tests {
 
     #[test]
     fn parabolic_refinement_recovers_sub_step_disparity() {
-        for &d in &[0.33f32, 0.45, 0.7, 1.6, 3.5] {
+        for &d in &[0.11f32, 0.15, 0.2, 0.33, 0.45, 0.7, 1.6, 3.5] {
             let k = estimate_kappa(&curve(d, 0.08), KAPPA_FAR).expect("valid lock");
             let err = (k - kappa_for(d)).abs();
             assert!(err < 0.0005, "{d} m: kappa {k} vs {}", kappa_for(d));
@@ -1114,8 +1873,32 @@ mod tests {
 
     #[test]
     fn rejects_featureless_or_ambiguous_patches() {
-        assert!(estimate_kappa(&blank(), KAPPA_FAR).is_none());
-        assert!(estimate_kappa(&[[0.85, 0.05]; CANDIDATES], KAPPA_FAR).is_none());
+        assert_eq!(estimate_kappa(&blank(), KAPPA_FAR), Err(Miss::Plain));
+        assert_eq!(
+            estimate_kappa(&[[0.85, 0.05]; CANDIDATES], KAPPA_FAR),
+            Err(Miss::Weak)
+        );
+    }
+
+    #[test]
+    fn a_match_far_out_with_nothing_to_match_at_the_aim_is_no_reading() {
+        // The aim on something plain: only windows 13° and more to either
+        // side have texture, and two of them happen to look alike.
+        let mut c = curve(0.12, 0.08);
+        for s in &mut c[..CANDIDATES / BANDS] {
+            s[1] = 0.001;
+        }
+        assert_eq!(estimate_kappa(&c, KAPPA_FAR), Err(Miss::Plain));
+        // With texture at the aim too, the same match is something 12 cm
+        // away.
+        let k = estimate_kappa(&curve(0.12, 0.08), KAPPA_FAR).expect("valid");
+        assert!((k - kappa_for(0.12)).abs() < 0.0005, "{k}");
+        // Enough texture at the aim is half the first band's candidates.
+        let mut c = curve(0.12, 0.08);
+        for s in &mut c[MIN_VALID..CANDIDATES / BANDS] {
+            s[1] = 0.001;
+        }
+        assert!(estimate_kappa(&c, KAPPA_FAR).is_ok());
     }
 
     #[test]
@@ -1132,13 +1915,13 @@ mod tests {
         // A second peak nearly as good, near or far: a repeating pattern.
         let mut c = curve(0.4, 0.08);
         c[3][0] = 0.93;
-        assert_eq!(estimate_kappa(&c, KAPPA_FAR), None);
+        assert_eq!(estimate_kappa(&c, KAPPA_FAR), Err(Miss::Ambiguous));
         let mut c = curve(1.5, 0.08);
         let near = curve(0.45, 0.08);
         for (i, s) in c.iter_mut().enumerate() {
             s[0] = s[0].max(0.9 / 0.95 * near[i][0]);
         }
-        assert_eq!(estimate_kappa(&c, KAPPA_FAR), None);
+        assert_eq!(estimate_kappa(&c, KAPPA_FAR), Err(Miss::Ambiguous));
         // A clearly lower one is the pattern's texture: read as usual.
         let mut c = curve(1.5, 0.08);
         for (i, s) in c.iter_mut().enumerate() {
@@ -1304,18 +2087,22 @@ mod tests {
         let mut cf = ComfortFocus::default();
         let mut t = Instant::now();
         run(&mut cf, &mut t, &at(0.4), 300);
-        let (low, high) = (
-            correction_from_kappa(kappa_for(0.4)),
-            correction_from_kappa(kappa_for(0.3)),
-        );
-        // Something nearer for a fifth of a second, mid-glide, then the first
-        // again for good.
-        let mut out = run(&mut cf, &mut t, &at(0.3), 18);
+        // Eased a fifth short of something much nearer, and a fifth short of
+        // the first again from that side.
+        let step = 1.0 + RELIEF_STEP;
+        let low = correction_from_kappa(kappa_for(0.4));
+        let high = relief_at(1.0 / read_as(0.25) / step);
+        let rest = relief_at(1.0 / read_as(0.4) * step);
+        assert!(low < rest && rest < high, "{low} {rest} {high}");
+        // Something nearer for a fifth of a second past where it takes over,
+        // mid-glide, then the first again for good.
+        let hold = (NEARER_HOLD_SECS / FRAME.as_secs_f32()) as usize;
+        let mut out = run(&mut cf, &mut t, &at(0.25), hold + 18);
         let back = run(&mut cf, &mut t, &at(0.4), 200);
         out.extend(&back);
         assert!(out.iter().all(|&c| c <= high + 1e-5), "{out:?}");
         assert!(back.iter().all(|&c| c >= low - 1e-5), "{back:?}");
-        assert!((back.last().unwrap() - low).abs() < 1e-4, "{back:?}");
+        assert!((back.last().unwrap() - rest).abs() < 1e-4, "{back:?}");
     }
 
     #[test]
@@ -1399,10 +2186,21 @@ mod tests {
             out.iter().all(|f| (f.relief - held).abs() < 1e-4),
             "{out:?}"
         );
-        // Something a quarter nearer: eased more.
-        let nearer = *run(&mut cf, &mut t, &at(0.3), 180).last().unwrap();
-        let want = correction_from_kappa(kappa_for(0.3));
-        assert!((nearer - want).abs() < 0.001, "{nearer} vs {want}");
+        // Something a quarter nearer: eased more, by what is beyond the
+        // fifth.
+        let nearer = *run_focus(&mut cf, &mut t, &at(0.3), 180).last().unwrap();
+        let want = relief_at(1.0 / read_as(0.3) / (1.0 + RELIEF_STEP));
+        assert!(want > held + 0.005, "{want} vs {held}");
+        assert!((nearer.relief - want).abs() < 0.001, "{nearer:?} vs {want}");
+        // Back and forth between the two from then on moves nothing.
+        let mut out = Vec::new();
+        for d in [0.4f32, 0.3, 0.4, 0.3, 0.4] {
+            out.extend(run_focus(&mut cf, &mut t, &at(d), 60));
+        }
+        assert!(
+            out.iter().all(|f| (f.relief - nearer.relief).abs() < 1e-3),
+            "{out:?}"
+        );
     }
 
     #[test]
@@ -1428,6 +2226,14 @@ mod tests {
         for _ in 0..frames {
             *t += FRAME;
             cf.pending = Some((Some(n), along));
+            cf.step(*t, LEVER);
+        }
+    }
+
+    /// Steps `frames` frames with nothing read.
+    fn feed_nothing(cf: &mut ComfortFocus, t: &mut Instant, frames: usize) {
+        for _ in 0..frames {
+            *t += FRAME;
             cf.step(*t, LEVER);
         }
     }
@@ -1463,35 +2269,209 @@ mod tests {
 
     #[test]
     fn the_re_projection_follows_only_changes_that_would_misalign_what_is_looked_at() {
-        // The head turned 45° towards something 0.4 m away, and lying down.
-        let turned = 0.5 * LENS_SPACING * (1.0 - std::f32::consts::FRAC_1_SQRT_2);
-        let lying = 0.5 * LENS_SPACING * std::f32::consts::SQRT_2;
-        for (lever, follows_part) in [(turned, false), (lying, true), (0.0, false)] {
+        let half = 0.5 * LENS_SPACING;
+        // Lying down, the eyes one above the other.
+        let lying = Lever {
+            side: half,
+            up: half,
+        };
+        // The head turned 45° to one side of the video: the pictures only
+        // move towards or away from each other.
+        let turned = Lever {
+            side: half * (1.0 - std::f32::consts::FRAC_1_SQRT_2),
+            up: 0.0,
+        };
+        let step = 1.0 + RELIEF_STEP;
+        for lever in [lying, turned, Lever::default()] {
             let mut cf = ComfortFocus::default();
             let mut t = Instant::now();
+            // The nearness it is drawn for, and for what lies along the line
+            // through the eyes.
             let mut go = |n: f32, frames: usize| {
                 for _ in 0..frames {
                     t += FRAME;
                     cf.pending = Some((Some(n), 0.0));
                     cf.step(t, lever);
                 }
-                cf.step(t, lever).distance
+                let f = cf.step(t, lever);
+                (1.0 / f.distance, 1.0 / f.side_distance)
             };
             let first = go(2.5, 300);
-            // A part of it 6% nearer.
+            // A part of it 6% nearer, and something a quarter nearer.
             let part = go(2.5 * 1.06, 300);
-            assert_eq!(
-                (1.0 / part - 1.0 / first).abs() > 0.05,
-                follows_part,
-                "lever {lever}: {first} then {part}"
-            );
-            if lever > 0.0 {
-                assert!((1.0 / first - 2.5).abs() < 0.01, "{first}");
-                // Something a quarter nearer: followed either way.
-                let nearer = go(2.5 * 1.25, 300);
-                assert!((1.0 / nearer - 2.5 * 1.25).abs() < 0.05, "{nearer}");
+            let nearer = go(2.5 * 1.25, 300);
+            let back = go(2.5, 300);
+            if lever == Lever::default() {
+                assert!(first.0 < 0.03 && back.0 < 0.03, "{first:?} {back:?}");
+                assert!(first.1 < 0.03 && back.1 < 0.03, "{first:?} {back:?}");
+                continue;
             }
+            // Along the line through the eyes: a fifth short of each, coming
+            // from farther, and still within a fifth of the first when the
+            // eyes are back on it.
+            assert!((first.1 - 2.5 / step).abs() < 0.01, "{first:?}");
+            assert!((part.1 - 2.5 * 1.06 / step).abs() < 0.01, "{part:?}");
+            assert!((nearer.1 - 2.5 * 1.25 / step).abs() < 0.01, "{nearer:?}");
+            assert!((back.1 - nearer.1).abs() < 1e-3, "{back:?}");
+            // The rest: all the way, lying down every time, with the head
+            // turned once a part is far enough from the last.
+            assert!((first.0 - 2.5).abs() < 0.01, "{first:?}");
+            assert!((nearer.0 - 2.5 * 1.25).abs() < 0.01, "{nearer:?}");
+            assert!((back.0 - 2.5).abs() < 0.01, "{back:?}");
+            assert_eq!(
+                (part.0 - 2.5 * 1.06).abs() < 0.01,
+                lever == lying,
+                "{part:?}"
+            );
         }
+    }
+
+    #[test]
+    fn the_lever_is_along_the_line_through_the_eyes_turning_and_off_it_tilting() {
+        let video = crate::VideoParams {
+            format: fp_core::format::VideoFormat::new(
+                fp_core::format::Projection::EQUIRECT_180,
+                fp_core::format::StereoLayout::SideBySide,
+            ),
+            ..Default::default()
+        };
+        let p = crate::params::build(&video, None, [glam::Mat4::IDENTITY; 2]);
+        let half = 0.5 * LENS_SPACING;
+        // The eyes of a head turned `by`, the lens spacing apart.
+        let eyes = |by: Quat| [by * Vec3::NEG_X * half, by * Vec3::X * half];
+        // Level and facing the front: where the cameras were.
+        let (none, line) = redraw_lever(&p, AHEAD, eyes(Quat::IDENTITY));
+        assert!(none.length() < 1e-6, "{none:?}");
+        assert!(line.abs_diff_eq(Vec3::X, 1e-6), "{line}");
+        // Turned 50° to the right, looking that way: the pictures only move
+        // towards or away from each other.
+        let turn = Quat::from_rotation_y(-50f32.to_radians());
+        let (turned, line) = redraw_lever(&p, turn * AHEAD, eyes(turn));
+        let want = half * (1.0 - 50f32.to_radians().cos());
+        assert!((turned.side - want).abs() < 1e-5, "{turned:?} vs {want}");
+        assert!(turned.up < 1e-6, "{turned:?}");
+        assert!(line.abs_diff_eq(turn * Vec3::X, 1e-5), "{line}");
+        // Lying on one side, looking ahead: as far off the line through
+        // the eyes as along it.
+        let (lying, line) = redraw_lever(&p, AHEAD, eyes(Quat::from_rotation_z(FRAC_PI_2)));
+        assert!((lying.up - half).abs() < 1e-5, "{lying:?}");
+        assert!((lying.side - half).abs() < 1e-5, "{lying:?}");
+        assert!(line.abs_diff_eq(Vec3::Y, 1e-5), "{line}");
+        // Wider eyes than the lenses, level: along it only.
+        let (wide, _) = redraw_lever(&p, AHEAD, [Vec3::NEG_X * 0.034, Vec3::X * 0.034]);
+        assert!(
+            (wide.side - (0.034 - half)).abs() < 1e-6 && wide.up < 1e-6,
+            "{wide:?}"
+        );
+        // Turned to the right and looking 25° down as well: nearly as much
+        // of it is off the line, where a wrong distance pulls the pictures
+        // apart, as along it.
+        let down = turn * Quat::from_rotation_x(-25f32.to_radians());
+        let (both, _) = redraw_lever(&p, down * AHEAD, eyes(turn));
+        assert!((both.side - 0.0113).abs() < 0.0005, "{both:?}");
+        assert!((both.up - 0.0102).abs() < 0.0005, "{both:?}");
+    }
+
+    #[test]
+    fn at_the_video_s_edges_the_re_projection_gives_twice_as_much_and_glides() {
+        assert_eq!(edge(0.0), 0.0);
+        assert_eq!(edge(29f32.to_radians()), 0.0);
+        assert!((edge(37.5f32.to_radians()) - 0.5).abs() < 0.01);
+        assert_eq!(edge(-50f32.to_radians()), 1.0);
+        // The eyes 4 mm from their cameras off the line through them.
+        let lever = Lever {
+            side: 0.0,
+            up: 0.004,
+        };
+        for (along, at_edge) in [(0.0, false), (50f32.to_radians(), true)] {
+            let mut cf = ComfortFocus::default();
+            cf.follows_eyes(true);
+            let mut t = Instant::now();
+            let mut go = |cf: &mut ComfortFocus, n: f32, frames: usize| {
+                (0..frames)
+                    .map(|_| {
+                        t += FRAME;
+                        cf.pending = Some((Some(n), along));
+                        1.0 / cf.step(t, lever).distance
+                    })
+                    .collect::<Vec<f32>>()
+            };
+            go(&mut cf, 4.0, 300);
+            // A part of it 5 cm nearer, 0.23° out up and down: followed
+            // towards the front, left be at the edge.
+            let part = *go(&mut cf, 5.0, 300).last().unwrap();
+            assert_eq!((part - 5.0).abs() < 0.01, !at_edge, "{along}: {part}");
+            // Something much farther the eyes land on: there in a tenth of a
+            // second towards the front, in three quarters at the edge.
+            cf.take_tally();
+            cf.landed();
+            let far = go(&mut cf, 1.0, 70);
+            let done = |n: f32| (part - n) / (part - 1.0);
+            assert_eq!(done(far[10]) > 0.9, !at_edge, "{along}: {far:?}");
+            assert!(at_edge || done(far[10]) > 0.9, "{far:?}");
+            assert!(!at_edge || done(far[10]) < 0.5, "{far:?}");
+            assert!(done(far[69]) > 0.9, "{along}: {far:?}");
+            let tally = cf.take_tally();
+            assert_eq!(tally.redrawn_at_once, !at_edge as u32, "{tally:?}");
+            // How far each eye's picture moved for it, and where it aimed.
+            let moved = (part - 1.0) * lever.up;
+            assert!((tally.moved_up - moved).abs() < 0.1 * moved, "{tally:?}");
+            assert!((tally.aside - 70.0 * along).abs() < 1e-3, "{tally:?}");
+        }
+    }
+
+    #[test]
+    fn with_the_head_turned_the_eyes_going_over_something_near_move_only_what_must() {
+        // The head turned 50° to something 0.22 m away and the eyes a
+        // little down: 11 mm from their cameras along the line through
+        // them, 4 mm off it.
+        let lever = Lever {
+            side: 0.011,
+            up: 0.004,
+        };
+        let mut cf = ComfortFocus::default();
+        cf.follows_eyes(true);
+        let mut t = Instant::now();
+        let mut look = |cf: &mut ComfortFocus, n: f32| {
+            cf.landed();
+            let mut last = None;
+            for _ in 0..30 {
+                t += FRAME;
+                cf.pending = Some((Some(n), 0.0));
+                last = Some(cf.step(t, lever));
+            }
+            last.unwrap()
+        };
+        let first = look(&mut cf, 1.0 / 0.22);
+        cf.take_tally();
+        // Twenty looks at parts of it between 0.19 and 0.26 m away.
+        let mut exact = 0.0f32;
+        let mut side = 0.0f32;
+        let mut before = first;
+        for i in 0..20 {
+            let d = 0.19 + 0.07 * ((i * 7) % 10) as f32 / 9.0;
+            let f = look(&mut cf, 1.0 / d);
+            // What is off the line is drawn for where each part is, within
+            // what shows.
+            let gap = (1.0 / f.distance - 1.0 / d).abs();
+            assert!(
+                gap * lever.up <= REDRAW_TOLERANCE_RAD + 1e-5,
+                "{f:?} for {d}"
+            );
+            // How far each eye's picture moved, either way, radians.
+            exact += (1.0 / f.distance - 1.0 / before.distance).abs() * lever.up;
+            side += (1.0 / f.side_distance - 1.0 / before.side_distance).abs() * lever.side;
+            before = f;
+        }
+        let tally = cf.take_tally();
+        assert!(tally.redrawn >= 10, "{tally:?}");
+        assert!(tally.redrawn_side <= 3, "{tally:?}");
+        // Along the line, where one distance for both moved the pictures
+        // three times as far as off it, they now move a fifth as far.
+        assert!(
+            side < 0.2 * exact * lever.side / lever.up,
+            "{side} vs {exact}"
+        );
     }
 
     #[test]
@@ -1537,6 +2517,589 @@ mod tests {
     }
 
     #[test]
+    fn something_that_reads_only_now_and_then_still_takes_over() {
+        let mut cf = ComfortFocus::default();
+        let mut t = Instant::now();
+        let held = *run(&mut cf, &mut t, &at(0.4), 300).last().unwrap();
+        assert!(held > 0.0);
+        // The eyes go to a wall that reads once in four measurements, with
+        // nothing to match in between: its second reading takes over, and
+        // the easing is out within a second and a half.
+        let blank = cluster(blank(), blank());
+        let mut out = Vec::new();
+        for _ in 0..34 {
+            out.extend(run_focus(&mut cf, &mut t, &at(3.0), 1));
+            out.extend(run_focus(&mut cf, &mut t, &blank, 3));
+        }
+        let far = read_as(3.0);
+        assert!((1.0 / cf.accepted.unwrap() - far).abs() < 0.05 * far);
+        assert!(out[..8].iter().all(|f| (f.relief - held).abs() < 1e-4));
+        assert!(out.last().unwrap().relief < 0.002, "{:?}", out.last());
+    }
+
+    #[test]
+    fn a_reading_from_too_long_ago_decides_nothing() {
+        let mut cf = ComfortFocus::default();
+        let mut t = Instant::now();
+        run(&mut cf, &mut t, &at(0.4), 300);
+        let near = cf.accepted.unwrap();
+        // One reading of the wall, nothing to match for over half a second,
+        // then another: the first no longer counts.
+        run(&mut cf, &mut t, &at(3.0), 1);
+        run(&mut cf, &mut t, &cluster(blank(), blank()), 50);
+        run(&mut cf, &mut t, &at(3.0), 1);
+        assert_eq!(cf.accepted, Some(near));
+        // The next one does, with the one just before it.
+        run(&mut cf, &mut t, &at(3.0), 1);
+        assert!(cf.accepted.unwrap() < 0.5, "{:?}", cf.accepted);
+    }
+
+    #[test]
+    fn readings_of_other_things_that_settle_on_no_distance_let_go_after_a_second() {
+        let mut cf = ComfortFocus::default();
+        let mut t = Instant::now();
+        let held = *run_focus(&mut cf, &mut t, &at(0.4), 300).last().unwrap();
+        assert!(held.relief > 0.0);
+        // The eyes roam over things at ever other distances, none read twice
+        // running: what the easing was for is no longer seen. It holds for a
+        // second, then lets go; the distance in focus stays.
+        let blank = cluster(blank(), blank());
+        let mut out = Vec::new();
+        for d in [2.0f32, 3.0, 5.0, 2.4, 4.0].repeat(12) {
+            out.extend(run_focus(&mut cf, &mut t, &at(d), 1));
+            out.extend(run_focus(&mut cf, &mut t, &blank, 2));
+        }
+        assert!(
+            out[..85]
+                .iter()
+                .all(|f| (f.relief - held.relief).abs() < 1e-4),
+            "{:?}",
+            &out[..85]
+        );
+        let last = out.last().unwrap();
+        assert!(last.relief < 0.002, "{last:?}");
+        assert!((last.distance - held.distance).abs() < 0.01, "{last:?}");
+        assert_eq!(cf.take_tally().let_go, 1);
+    }
+
+    #[test]
+    fn on_an_edge_that_reads_only_now_and_then_it_stays_where_it_is() {
+        let mut cf = ComfortFocus::default();
+        let mut t = Instant::now();
+        let held = *run_focus(&mut cf, &mut t, &at(0.4), 300).last().unwrap();
+        // Readings of the near thing and the wall behind by turns, with
+        // nothing to match between them, for five seconds.
+        let blank = cluster(blank(), blank());
+        let mut out = Vec::new();
+        for i in 0..110 {
+            let d = if i % 2 == 0 { 3.0 } else { 0.4 };
+            out.extend(run_focus(&mut cf, &mut t, &at(d), 1));
+            out.extend(run_focus(&mut cf, &mut t, &blank, 3));
+        }
+        assert!(
+            out.iter().all(|f| (f.distance - held.distance).abs() < 0.01
+                && (f.relief - held.relief).abs() < 1e-4),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn things_nearer_than_30_cm_are_read_down_to_10_cm() {
+        // The candidates reach 0.093 m straight ahead.
+        let nearest = 0.5 * LENS_SPACING / kappa_at((CANDIDATES - 1) as f32).tan();
+        assert!((0.09..0.095).contains(&nearest), "{nearest}");
+        for d in [0.25f32, 0.2, 0.15, 0.11] {
+            let mut cf = ComfortFocus::default();
+            let mut t = Instant::now();
+            let out = run_focus(&mut cf, &mut t, &at(d), 300);
+            let last = out.last().unwrap();
+            assert!(
+                (last.distance - read_as(d)).abs() < 0.005,
+                "{d} m: {last:?}"
+            );
+            // The easing is at its most from 0.31 m in.
+            assert!(
+                (last.relief - MAX_COMFORT_CORR_RAD).abs() < 1e-4,
+                "{last:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn something_very_near_and_moving_stays_in_focus() {
+        let mut cf = ComfortFocus::default();
+        let mut t = Instant::now();
+        run(&mut cf, &mut t, &at(0.15), 300);
+        // Coming nearer at 5 cm a second, read 60 times a second: each
+        // reading is a millimetre nearer, 0.04 in nearness at this distance,
+        // and the distance in focus keeps up with it.
+        let mut d = 0.15f32;
+        for _ in 0..30 {
+            d -= 0.05 / 60.0;
+            feed(&mut cf, &mut t, 1.0 / d, 0.0, 1);
+            feed_nothing(&mut cf, &mut t, 1);
+        }
+        let got = 1.0 / cf.accepted.unwrap();
+        assert!((got - d).abs() < 0.002, "{got} m against {d} m");
+        // Farther than 0.3 m the same step in nearness is another distance.
+        let mut cf = ComfortFocus::default();
+        feed(&mut cf, &mut t, 2.5, 0.0, 300);
+        feed(&mut cf, &mut t, 2.5 + 1.4 * AGREE, 0.0, 1);
+        assert_eq!(cf.accepted, Some(2.5));
+    }
+
+    #[test]
+    fn something_farther_the_eyes_land_on_is_eased_out_for_and_drawn_at_once() {
+        let near = read_as(0.4);
+        let far = read_as(0.8);
+        let mut cf = ComfortFocus::default();
+        let mut t = Instant::now();
+        let held = *run_focus(&mut cf, &mut t, &at(0.4), 300).last().unwrap();
+        assert!((held.distance - near).abs() < 0.01, "{held:?}");
+        // The eyes jump to a part of it twice as far and land: by the time
+        // they have converged on it, a fifth of a second on, the easing is
+        // out and it is drawn at its own distance.
+        cf.landed();
+        let out = run_focus(&mut cf, &mut t, &at(0.8), 18);
+        let last = out.last().unwrap();
+        // Eased for a fifth short of it, from the near side.
+        let want = relief_at((1.0 + RELIEF_STEP) / far);
+        assert!(want < 0.15 * held.relief, "{want}");
+        assert!(last.relief - want < 0.05 * held.relief, "{out:?}");
+        assert!((last.distance - far).abs() < 0.02 * far, "{out:?}");
+        // Never past where it is going.
+        assert!(
+            out.iter()
+                .all(|f| f.relief >= want - 1e-5 && f.distance <= far * 1.001),
+            "{out:?}"
+        );
+        let tally = cf.take_tally();
+        assert_eq!(
+            (tally.landings, tally.eased_at_once, tally.redrawn_at_once),
+            (1, 1, 1),
+            "{tally:?}"
+        );
+
+        // Without a jump of the eyes (what was looked at moved away, or the
+        // head aims), both go gently, as it shows while they happen.
+        let mut cf = ComfortFocus::default();
+        let held = *run_focus(&mut cf, &mut t, &at(0.4), 300).last().unwrap();
+        let out = run_focus(&mut cf, &mut t, &at(0.8), 18);
+        let last = out.last().unwrap();
+        assert!((last.relief - held.relief).abs() < 1e-4, "{out:?}");
+        assert!(last.distance < 0.75 * far, "{out:?}");
+        assert_eq!(cf.take_tally().eased_at_once, 0);
+    }
+
+    #[test]
+    fn what_is_read_long_after_the_eyes_landed_is_followed_gently() {
+        let mut cf = ComfortFocus::default();
+        let mut t = Instant::now();
+        let held = *run(&mut cf, &mut t, &at(0.4), 300).last().unwrap();
+        // The eyes land on something that can't be read for half a second:
+        // by then they have settled, and the easing waits and goes gently.
+        cf.landed();
+        run(&mut cf, &mut t, &cluster(blank(), blank()), 45);
+        let out = run(&mut cf, &mut t, &at(3.0), 20);
+        assert!(out.iter().all(|&c| (c - held).abs() < 1e-4), "{out:?}");
+        assert_eq!(cf.take_tally().eased_at_once, 0);
+    }
+
+    #[test]
+    fn something_nearer_the_eyes_land_on_is_drawn_and_eased_for_while_they_converge() {
+        let mut cf = ComfortFocus::default();
+        cf.follows_eyes(true);
+        let mut t = Instant::now();
+        let far = *run_focus(&mut cf, &mut t, &at(3.0), 300).last().unwrap();
+        cf.landed();
+        let out = run_focus(&mut cf, &mut t, &at(0.4), 210);
+        // Left as it was for the quarter of a second it must stay...
+        let hold = (NEARER_HOLD_SECS / FRAME.as_secs_f32()) as usize;
+        assert!(out[..hold].iter().all(|f| same(f, &far)), "{out:?}");
+        // ...then drawn at its distance within a fifth of a second...
+        let near = read_as(0.4);
+        assert!(
+            (out[hold + 17].distance - near).abs() < 0.02 * near,
+            "{:?}",
+            out[hold + 17]
+        );
+        // ...and eased in for in a third of a second, never past it or back.
+        let want = correction_from_kappa(kappa_for(0.4));
+        let eased = &out[hold..];
+        assert!(eased[30].relief > 0.9 * want, "slow: {:?}", eased[30]);
+        assert!(
+            eased
+                .windows(2)
+                .all(|w| w[1].relief >= w[0].relief - 1e-6 && w[1].relief <= want + 1e-5),
+            "{eased:?}"
+        );
+        assert!((eased[179].relief - want).abs() < 0.001, "{:?}", eased[179]);
+        let tally = cf.take_tally();
+        assert_eq!(
+            (tally.redrawn_at_once, tally.eased_in_at_once),
+            (1, 1),
+            "{tally:?}"
+        );
+
+        // With the head aiming, which tells of no jump, it shows while it
+        // happens: gently, as ever.
+        let mut cf = ComfortFocus::default();
+        run_focus(&mut cf, &mut t, &at(3.0), 300);
+        let out = run_focus(&mut cf, &mut t, &at(0.4), hold + 180);
+        let eased = &out[hold..];
+        assert!(eased[36].relief < 0.5 * want, "abrupt: {:?}", eased[36]);
+        assert!((eased[179].relief - want).abs() < 0.001, "{:?}", eased[179]);
+        assert_eq!(cf.take_tally().eased_in_at_once, 0);
+    }
+
+    #[test]
+    fn back_on_something_near_the_eyes_left_a_moment_ago_it_needn_t_wait() {
+        let mut cf = ComfortFocus::default();
+        cf.follows_eyes(true);
+        let mut t = Instant::now();
+        let near = *run_focus(&mut cf, &mut t, &at(0.4), 300).last().unwrap();
+        // To the wall behind for a second and a half, and back: in focus on
+        // the second reading of it, drawn and eased for within a third of a
+        // second of landing.
+        cf.landed();
+        let far = *run_focus(&mut cf, &mut t, &at(3.0), 140).last().unwrap();
+        assert!(far.relief < 1e-4 && far.distance > 2.5, "{far:?}");
+        cf.take_tally();
+        cf.landed();
+        let out = run_focus(&mut cf, &mut t, &at(0.4), 32);
+        let (d, _) = cf.in_focus().unwrap();
+        assert!((d - near.distance).abs() < 0.01, "{d}");
+        assert!(
+            (out[19].distance - near.distance).abs() < 0.02 * near.distance,
+            "{out:?}"
+        );
+        assert!(out[31].relief > 0.9 * near.relief, "{out:?}");
+        let tally = cf.take_tally();
+        assert_eq!(
+            (tally.changes, tally.redrawn_at_once, tally.eased_in_at_once),
+            (1, 1, 1),
+            "{tally:?}"
+        );
+
+        // Something at that distance passing in front of the wall, the eyes
+        // resting on the wall: it didn't bring them, and moves nothing.
+        cf.landed();
+        let far = *run_focus(&mut cf, &mut t, &at(3.0), 140).last().unwrap();
+        let out = run_focus(&mut cf, &mut t, &at(0.4), 60);
+        assert!(out.iter().all(|f| same(f, &far)), "{out:?}");
+        run_focus(&mut cf, &mut t, &at(3.0), 2);
+        assert_eq!(cf.take_tally().passed, 1);
+
+        // Longer ago than it stays known, it waits as anything nearer does.
+        let away = (KNOWN_SECS / FRAME.as_secs_f32()) as usize + 20;
+        let far = *run_focus(&mut cf, &mut t, &at(3.0), away).last().unwrap();
+        cf.landed();
+        let hold = (NEARER_HOLD_SECS / FRAME.as_secs_f32()) as usize;
+        let out = run_focus(&mut cf, &mut t, &at(0.4), hold);
+        assert!(out.iter().all(|f| same(f, &far)), "{out:?}");
+    }
+
+    #[test]
+    fn what_was_in_focus_for_a_moment_only_is_not_known() {
+        let mut cf = ComfortFocus::default();
+        cf.follows_eyes(true);
+        let mut t = Instant::now();
+        run_focus(&mut cf, &mut t, &at(3.0), 300);
+        // In focus for a fifth of a second: a few readings may have taken
+        // something else for it.
+        let hold = (NEARER_HOLD_SECS / FRAME.as_secs_f32()) as usize;
+        cf.landed();
+        run_focus(&mut cf, &mut t, &at(0.4), hold + 20);
+        let (d, _) = cf.in_focus().unwrap();
+        assert!((d - read_as(0.4)).abs() < 0.01, "{d}");
+        cf.landed();
+        run_focus(&mut cf, &mut t, &at(3.0), 100);
+        cf.landed();
+        run_focus(&mut cf, &mut t, &at(0.4), hold - 2);
+        let (d, _) = cf.in_focus().unwrap();
+        assert!(d > 2.5, "{d}");
+    }
+
+    #[test]
+    fn something_nearer_passing_in_front_of_what_the_eyes_rest_on_moves_nothing() {
+        let mut cf = ComfortFocus::default();
+        cf.follows_eyes(true);
+        let mut t = Instant::now();
+        let held = *run_focus(&mut cf, &mut t, &at(0.8), 300).last().unwrap();
+        cf.take_tally();
+        // Three times something 0.25 m away passes in front for 0.7 s, the
+        // eyes still on what is behind it: the picture stays as it is.
+        let mut out = Vec::new();
+        for _ in 0..3 {
+            out.extend(run_focus(&mut cf, &mut t, &at(0.25), 64));
+            out.extend(run_focus(&mut cf, &mut t, &at(0.8), 30));
+        }
+        assert!(out.iter().all(|f| same(f, &held)), "{out:?}");
+        let tally = cf.take_tally();
+        assert_eq!(
+            (tally.changes, tally.passed, tally.eased, tally.redrawn),
+            (0, 3, 0, 0),
+            "{tally:?}"
+        );
+        // Staying there past a second, it is what they look at by now.
+        let out = run_focus(&mut cf, &mut t, &at(0.25), 300);
+        let stay = (UNREAD_HOLD_SECS / FRAME.as_secs_f32()) as usize;
+        assert!(out[..stay - 2].iter().all(|f| same(f, &held)), "{out:?}");
+        let last = out.last().unwrap();
+        assert!(
+            (last.distance - read_as(0.25)).abs() < 0.01 && last.relief > 0.04,
+            "{last:?}"
+        );
+        // Gently: the eyes didn't jump to it.
+        let tally = cf.take_tally();
+        assert_eq!((tally.changes, tally.redrawn_at_once), (1, 0), "{tally:?}");
+    }
+
+    #[test]
+    fn something_nearer_the_eyes_jump_to_while_it_passes_takes_over_from_then() {
+        let mut cf = ComfortFocus::default();
+        cf.follows_eyes(true);
+        let mut t = Instant::now();
+        let held = *run_focus(&mut cf, &mut t, &at(0.8), 300).last().unwrap();
+        // In front for half a second already when the eyes jump onto it: a
+        // quarter of a second from their landing, not from when it came.
+        let hold = (NEARER_HOLD_SECS / FRAME.as_secs_f32()) as usize;
+        let before = run_focus(&mut cf, &mut t, &at(0.25), 45);
+        cf.landed();
+        let after = run_focus(&mut cf, &mut t, &at(0.25), hold + 20);
+        assert!(
+            before.iter().chain(&after[..hold]).all(|f| same(f, &held)),
+            "{before:?} {after:?}"
+        );
+        let last = after.last().unwrap();
+        assert!((last.distance - read_as(0.25)).abs() < 0.01, "{after:?}");
+        // A landing long before it came says nothing about it.
+        let mut cf = ComfortFocus::default();
+        cf.follows_eyes(true);
+        run_focus(&mut cf, &mut t, &at(0.8), 300);
+        cf.landed();
+        let out = run_focus(&mut cf, &mut t, &at(0.8), 40);
+        let out = [out, run_focus(&mut cf, &mut t, &at(0.25), 2 * hold)].concat();
+        assert!(out.iter().all(|f| same(f, &held)), "{out:?}");
+    }
+
+    #[test]
+    fn aiming_with_the_head_something_nearer_takes_over_in_a_quarter_of_a_second() {
+        let mut cf = ComfortFocus::default();
+        let mut t = Instant::now();
+        let held = *run_focus(&mut cf, &mut t, &at(0.8), 300).last().unwrap();
+        // The head tells of no jump: a short wait whenever, which what is
+        // gone again sooner doesn't last.
+        let hold = (NEARER_HOLD_SECS / FRAME.as_secs_f32()) as usize;
+        let out = run_focus(&mut cf, &mut t, &at(0.25), hold - 2);
+        let out = [out, run_focus(&mut cf, &mut t, &at(0.8), 30)].concat();
+        assert!(out.iter().all(|f| same(f, &held)), "{out:?}");
+        let out = run_focus(&mut cf, &mut t, &at(0.25), hold + 60);
+        assert!(out[..hold].iter().all(|f| same(f, &held)), "{out:?}");
+        let last = out.last().unwrap();
+        assert!((last.distance - read_as(0.25)).abs() < 0.03, "{last:?}");
+        // Gently, as nothing hides it.
+        assert_eq!(cf.take_tally().redrawn_at_once, 0);
+    }
+
+    #[test]
+    fn a_part_a_little_nearer_and_a_glance_back_take_over_at_once() {
+        let mut cf = ComfortFocus::default();
+        cf.follows_eyes(true);
+        let mut t = Instant::now();
+        run_focus(&mut cf, &mut t, &at(0.5), 300);
+        // A part of it 15% nearer: the second reading of it.
+        run_focus(&mut cf, &mut t, &at(0.435), 2);
+        let (d, _) = cf.in_focus().unwrap();
+        assert!((d - read_as(0.435)).abs() < 0.005, "{d}");
+        // A glance at the wall behind, shorter than the easing waits for,
+        // and back: in focus again at once, as the picture is still eased
+        // for it.
+        run_focus(&mut cf, &mut t, &at(3.0), 15);
+        let (d, _) = cf.in_focus().unwrap();
+        assert!(d > 2.5, "{d}");
+        run_focus(&mut cf, &mut t, &at(0.435), 2);
+        let (d, _) = cf.in_focus().unwrap();
+        assert!((d - read_as(0.435)).abs() < 0.005, "{d}");
+        assert_eq!(cf.take_tally().passed, 0);
+    }
+
+    #[test]
+    fn on_an_edge_the_eyes_land_on_it_stays_where_it_is() {
+        let mut cf = ComfortFocus::default();
+        let mut t = Instant::now();
+        let held = *run_focus(&mut cf, &mut t, &at(0.4), 300).last().unwrap();
+        // Landing where the near thing meets the wall behind: readings of
+        // both by turns decide nothing, at once or later.
+        cf.landed();
+        let mut out = Vec::new();
+        for i in 0..60 {
+            let d = if i % 2 == 0 { 3.0 } else { 0.4 };
+            out.extend(run_focus(&mut cf, &mut t, &at(d), 1));
+        }
+        assert!(
+            out.iter().all(|f| (f.distance - held.distance).abs() < 0.01
+                && (f.relief - held.relief).abs() < 1e-4),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn what_was_read_and_what_changed_is_counted() {
+        let mut cf = ComfortFocus::default();
+        let mut t = Instant::now();
+        run(&mut cf, &mut t, &at(0.4), 100);
+        run(&mut cf, &mut t, &cluster(blank(), curve(0.4, 0.08)), 10);
+        run(&mut cf, &mut t, &cluster(blank(), blank()), 5);
+        run(
+            &mut cf,
+            &mut t,
+            &cluster([[0.85, 0.05]; CANDIDATES], blank()),
+            4,
+        );
+        let mut twice = curve(0.4, 0.08);
+        twice[3][0] = 0.93;
+        run(&mut cf, &mut t, &cluster(twice, blank()), 3);
+        run(&mut cf, &mut t, &at(3.0), 100);
+        let tally = cf.take_tally();
+        let want = correction_from_kappa(kappa_for(0.4));
+        assert!((tally.eased_by - 2.0 * want).abs() < 1e-3, "{tally:?}");
+        // Easing in for 1.3 s and out for 0.7 s, of 222 frames in 2.4 s.
+        assert!((160..200).contains(&tally.moving), "{tally:?}");
+        assert!(tally.redrawn >= 2, "to 0.4 m, and to the wall: {tally:?}");
+        // Each eye's picture moved in and out again by the easing, and to
+        // 0.4 m and the wall by the re-projection (the lever a metre).
+        assert!(
+            (tally.moved_easing - 2.0 * want).abs() < 0.05 * want,
+            "{tally:?}"
+        );
+        assert!((tally.moved_up - 2.0 * 2.3).abs() < 0.3, "{tally:?}");
+        assert_eq!(
+            Tally {
+                eased_by: 0.0,
+                moving: 0,
+                redrawn: 0,
+                moved_easing: 0.0,
+                moved_up: 0.0,
+                ..tally
+            },
+            Tally {
+                aim: 200,
+                ring: 10,
+                plain: 5,
+                weak: 4,
+                ambiguous: 3,
+                changes: 1,
+                eased: 2,
+                steps: 222,
+                lever: 222.0,
+                lever_up: 222.0,
+                ..Tally::default()
+            }
+        );
+        assert_eq!(cf.take_tally(), Tally::default());
+        // Nearer things are counted by how near, and what is nearer than
+        // the candidates reach by its match at their end.
+        run(&mut cf, &mut t, &at(0.25), 3);
+        run(&mut cf, &mut t, &at(0.17), 2);
+        run(&mut cf, &mut t, &at(0.12), 1);
+        let mut rising = [[0.0f32, 0.08]; CANDIDATES];
+        for (i, c) in rising.iter_mut().enumerate() {
+            c[0] = 0.9 * (i as f32 / (CANDIDATES - 1) as f32).powi(8);
+        }
+        run(&mut cf, &mut t, &cluster(rising, blank()), 1);
+        let tally = cf.take_tally();
+        assert_eq!((tally.nearer, tally.at_end), ([7, 4, 2], 1), "{tally:?}");
+        // Starting afresh keeps the count.
+        run(&mut cf, &mut t, &at(0.4), 2);
+        cf.reset();
+        assert_eq!(cf.take_tally().aim, 2);
+        assert_eq!(cf.in_focus(), None);
+    }
+
+    #[test]
+    fn the_log_line_tells_what_was_read_what_changed_and_what_it_cost() {
+        let mut log = FocusLog::default();
+        let t = Instant::now();
+        assert_eq!(log.take_line(t, Tally::default(), None), None);
+        for i in 0..900u64 {
+            let from = match i % 100 {
+                0..90 => AimFrom::Eyes,
+                90..95 => AimFrom::Held,
+                _ => AimFrom::Head,
+            };
+            let measured = i % 3 == 0;
+            log.frame(
+                t + Duration::from_millis(i * 11),
+                from,
+                i % 50 != 0,
+                i % 10 != 0,
+                measured,
+            );
+            log.gpu(measured, if measured { 5.5 } else { 5.0 });
+        }
+        let tally = Tally {
+            aim: 210,
+            ring: 30,
+            plain: 30,
+            weak: 15,
+            ambiguous: 15,
+            nearer: [90, 30, 6],
+            at_end: 3,
+            changes: 12,
+            passed: 5,
+            eased: 4,
+            eased_by: 4.0 * 0.01,
+            let_go: 1,
+            steps: 900,
+            moving: 387,
+            landings: 31,
+            eased_at_once: 3,
+            eased_in_at_once: 2,
+            redrawn: 9,
+            redrawn_at_once: 7,
+            redrawn_side: 2,
+            lever: 900.0 * 0.012,
+            lever_up: 900.0 * 0.003,
+            moved_easing: 12.5f32.to_radians(),
+            moved_up: 3.25f32.to_radians(),
+            moved_side: 0.44f32.to_radians(),
+            aside: 240.0 * 37f32.to_radians(),
+        };
+        let line = log
+            .take_line(t + Duration::from_secs(10), tally, Some((0.62, 0.02)))
+            .expect("a line");
+        assert_eq!(
+            line,
+            "comfort focus: 30 measurements a second, 300 read back: \
+             70% at the aim, 10% from the ring, 20% nothing \
+             (10% plain, 5% weak, 5% ambiguous); \
+             nearer than 0.30 m 30%, than 0.20 m 10%, than 0.15 m 2%, \
+             at the candidates' near end 1%; \
+             12 changes of the distance in focus, 5 nearer things gone before they had \
+             stayed, 4 of the easing by 0.57° on average, \
+             1 let go; the easing moving in 43% of frames; \
+             31 landings of the eyes, the easing out at once 3 times and in 2; \
+             the re-projection followed 9 times and 2 along the line through the eyes, \
+             7 of them at once, \
+             the eyes 12 mm from their cameras across the aim on average, \
+             3 mm of it off the line through them; \
+             each eye's picture moved 12.5° by the easing, 3.2° up or down and \
+             0.4° along that line by the re-projection; \
+             readings 37° to the side on average; \
+             now 0.62 m, eased 1.15°; \
+             aim by the eyes in 90% of 900 frames, held through a blink 5%, \
+             catching up with a jump 2%, too far aside 10%; \
+             eye passes 5.50 GPU ms with a measurement, 5.00 without"
+        );
+        assert_eq!(
+            log.take_line(t, tally, None),
+            None,
+            "the window starts again"
+        );
+    }
+
+    #[test]
     fn the_aim_follows_the_eyes_through_a_blink_and_the_head_otherwise() {
         let mut f = AimFilter::default();
         let t = Instant::now();
@@ -1544,8 +3107,10 @@ mod tests {
         let level = Quat::IDENTITY;
         let looked = right_of_ahead(15.0);
         assert!(f.aim(ms(0), Some(looked), level).abs_diff_eq(looked, 1e-6));
+        assert_eq!(f.from(), AimFrom::Eyes);
         // A blink keeps it where the eyes were, turning with the head.
         assert!(f.aim(ms(300), None, level).abs_diff_eq(looked, 1e-6));
+        assert_eq!(f.from(), AimFrom::Held);
         let turned = Quat::from_rotation_y(0.3);
         assert!(
             f.aim(ms(350), None, turned)
@@ -1553,6 +3118,7 @@ mod tests {
         );
         // A longer loss hands it to the head.
         assert!(f.aim(ms(500), None, level).abs_diff_eq(AHEAD, 1e-6));
+        assert_eq!(f.from(), AimFrom::Head);
         // A gaze 60° off the head is the tracker's error.
         let mut f = AimFilter::default();
         assert!(
@@ -1653,6 +3219,93 @@ mod tests {
             follow(&mut f, &mut t, hz, frames as f32 / hz, || (-10.0, 0.0));
             assert!(f.settled());
         }
+    }
+
+    #[test]
+    fn a_jump_of_the_eyes_lands_the_aim_at_once_and_says_so() {
+        let level = Quat::IDENTITY;
+        let t = Instant::now();
+        let at = |n: u64| t + Duration::from_micros(n * 8333);
+        // Resting 5° left with a little jitter, then a jump to 12° right
+        // that takes two samples on the way.
+        let mut f = AimFilter::default();
+        let mut n = 0;
+        for i in 0..60 {
+            f.aim(
+                at(n),
+                Some(right_of_ahead(-5.0 + 0.2 * (i % 3) as f32)),
+                level,
+            );
+            n += 1;
+        }
+        assert!(f.settled() && !f.take_landed());
+        for deg in [1.0f32, 9.0] {
+            f.aim(at(n), Some(right_of_ahead(deg)), level);
+            n += 1;
+            assert!(!f.settled(), "mid-jump at {deg}°");
+            assert!(!f.take_landed(), "mid-jump at {deg}°");
+        }
+        // The first sample where they land is 3° from the one before...
+        f.aim(at(n), Some(right_of_ahead(12.0)), level);
+        assert!(!f.settled() && !f.take_landed());
+        // ...the second is beside it, and the smoothing has caught up:
+        // landed, and the aim is there, between the two.
+        let aim = f.aim(at(n + 1), Some(right_of_ahead(12.2)), level);
+        assert!(aim.angle_between(right_of_ahead(12.1)) < 1e-3, "{aim:?}");
+        assert!(f.settled());
+        assert!(f.take_landed());
+        assert!(!f.take_landed(), "said once");
+
+        // A stray sample of the tracker's, 6° off for one frame, is no
+        // landing, and neither is the gaze resting.
+        let mut f = AimFilter::default();
+        for i in 0..40u64 {
+            let deg = if i == 20 { 6.0 } else { 0.1 * (i % 3) as f32 };
+            f.aim(at(i), Some(right_of_ahead(deg)), level);
+            assert!(!f.take_landed(), "sample {i}");
+        }
+        assert!(f.settled());
+
+        // The eyes back from a blink somewhere else have landed there.
+        let mut f = AimFilter::default();
+        f.aim(at(0), Some(right_of_ahead(-5.0)), level);
+        f.aim(at(1), Some(right_of_ahead(-5.1)), level);
+        assert!(!f.take_landed());
+        f.aim(at(40), Some(right_of_ahead(10.0)), level);
+        assert!(f.take_landed());
+    }
+
+    #[test]
+    fn a_jump_sampled_on_its_way_lands_once_at_its_end() {
+        let level = Quat::IDENTITY;
+        let t = Instant::now();
+        let at = |n: u64| t + Duration::from_micros(n * 8333);
+        let mut f = AimFilter::default();
+        let mut n = 0;
+        for _ in 0..60 {
+            f.aim(at(n), Some(right_of_ahead(-5.0)), level);
+            n += 1;
+        }
+        // 12° at 290° a second, five samples on the way: no landing there,
+        // and nothing measured.
+        let mut landings = 0;
+        for i in 1..=5 {
+            f.aim(at(n), Some(right_of_ahead(-5.0 + 2.4 * i as f32)), level);
+            n += 1;
+            landings += f.take_landed() as u32;
+            assert!(!f.settled(), "sample {i}");
+        }
+        assert_eq!(landings, 0);
+        // At rest again: landed within three frames, once, the aim there.
+        let mut aim = Vec3::ZERO;
+        for _ in 0..3 {
+            aim = f.aim(at(n), Some(right_of_ahead(7.0)), level);
+            n += 1;
+            landings += f.take_landed() as u32;
+        }
+        assert_eq!(landings, 1);
+        assert!(f.settled());
+        assert!(aim.angle_between(right_of_ahead(7.0)) < 1e-3, "{aim:?}");
     }
 
     #[test]

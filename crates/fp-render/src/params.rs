@@ -321,13 +321,18 @@ pub(crate) const MAX_COMFORT_CORR_RAD: f32 = 0.048;
 /// them and `up` the head's up (room frame), and meet a sphere `distance`
 /// metres round the camera; and the eyes' pictures turn apart by
 /// `relief_rad` each about the head's up, so close objects ask for less
-/// convergence while the cyclopean scene stays where it is.
+/// convergence while the cyclopean scene stays where it is. The part of
+/// each offset along `line` (the line through the eyes as the aim sees it,
+/// the video's frame, unit or zero) is drawn for `side_distance` instead:
+/// stretched by how much nearer that is, which moves what is looked at as
+/// a sphere of that radius would, along that line only.
 pub(crate) fn set_comfort_focus(
     p: &mut SceneParams,
     relief_rad: f32,
     distance: f32,
     eyes: [Vec3; 2],
     up: Vec3,
+    (line, side_distance): (Vec3, f32),
 ) {
     let relief = relief_rad.clamp(0.0, MAX_COMFORT_CORR_RAD);
     p.focus.z = 2.0 * relief;
@@ -337,7 +342,13 @@ pub(crate) fn set_comfort_focus(
     // to the right; the left eye turns by -relief, the right by +relief.
     for (e, side) in [-1.0f32, 1.0].into_iter().enumerate() {
         let camera = Vec3::X * (side * 0.5 * crate::focus::LENS_SPACING);
-        p.eyes[e] = (p.correction.transform_vector3(eyes[e]) - camera).extend(0.0);
+        let off = p.correction.transform_vector3(eyes[e]) - camera;
+        let stretch = if side_distance > 0.0 {
+            (distance / side_distance).clamp(0.0, 4.0)
+        } else {
+            1.0
+        };
+        p.eyes[e] = (off + (stretch - 1.0) * off.dot(line) * line).extend(0.0);
         p.relief[e] = Vec4::from(Quat::from_axis_angle(up, side * relief));
     }
 }
@@ -727,20 +738,36 @@ mod tests {
         let eyes = [Vec3::new(-0.032, 0.0, 0.0), Vec3::new(0.032, 0.0, 0.0)];
 
         // Far objects (0.0 correction) leave the depth untouched.
-        set_comfort_focus(&mut p, 0.0, 3.0, eyes, Vec3::Y);
+        set_comfort_focus(&mut p, 0.0, 3.0, eyes, Vec3::Y, (Vec3::X, 3.0));
         assert_eq!(p.focus.z, 0.0);
         assert_eq!(p.focus.w, 3.0);
 
         // Near objects add symmetric vergence relief beside the depth setting
         // (`proj.w`), which the measurement keeps reading unchanged, and leave
         // `viewer` (height/forward sphere) as it was.
-        set_comfort_focus(&mut p, 0.025, 0.4, eyes, Vec3::Y * 2.0);
+        set_comfort_focus(&mut p, 0.025, 0.4, eyes, Vec3::Y * 2.0, (Vec3::X, 0.4));
         assert!((p.focus.z - 0.050).abs() < 1e-6);
         assert_eq!(p.proj.w, 0.0);
         assert_eq!(p.viewer, viewer_before);
         // Each eye's offset from its camera: 0.5 mm wider than the lenses.
         assert!((p.eyes[1].x - 0.0005).abs() < 1e-6, "{:?}", p.eyes[1]);
         assert!((p.eyes[0].x + 0.0005).abs() < 1e-6, "{:?}", p.eyes[0]);
+        // The part of it along the line through the eyes drawn for a
+        // distance of its own, a fifth farther: a fifth less of it, and the
+        // rest as it is.
+        let tilted = [Vec3::new(-0.030, -0.010, 0.0), Vec3::new(0.030, 0.010, 0.0)];
+        let line = (tilted[1] - tilted[0]).normalize();
+        set_comfort_focus(&mut p, 0.0, 0.4, tilted, Vec3::Y, (line, 0.4));
+        let whole = p.eyes[1].truncate();
+        set_comfort_focus(&mut p, 0.0, 0.4, tilted, Vec3::Y, (line, 0.48));
+        let split = p.eyes[1].truncate();
+        assert!((split.dot(line) - whole.dot(line) / 1.2).abs() < 1e-6);
+        let off = |v: Vec3| v - v.dot(line) * line;
+        assert!(
+            off(split).abs_diff_eq(off(whole), 1e-7),
+            "{split} vs {whole}"
+        );
+        set_comfort_focus(&mut p, 0.025, 0.4, eyes, Vec3::Y * 2.0, (Vec3::X, 0.4));
         // Turned apart about the head's up, the right eye's way positive.
         let right = Quat::from_vec4(p.relief[1]) * Vec3::NEG_Z;
         assert!((right.x + 0.025f32.sin()).abs() < 1e-5, "{right}");

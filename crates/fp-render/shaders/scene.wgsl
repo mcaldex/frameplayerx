@@ -674,11 +674,11 @@ fn fs_glow_colours(in: VsOut) -> @location(0) vec4<f32> {
 // after patch, FOCUS_ROWS each; columns: the left eye's strip, then the
 // right's, FOCUS_COLS each. A sample off the picture is -1.
 const FOCUS_STEP: f32 = 0.0035;
-const FOCUS_COLS: u32 = 53u;
+const FOCUS_COLS: u32 = 117u;
 const FOCUS_ROWS: u32 = 19u;
 // The lattice column each strip starts at: its shifts reach these.
 const FOCUS_LEFT0: i32 = -12;
-const FOCUS_RIGHT0: i32 = -39;
+const FOCUS_RIGHT0: i32 = -103;
 const FOCUS_GRID_X: f32 = 0.06;
 const FOCUS_GRID_Y: f32 = 0.05;
 

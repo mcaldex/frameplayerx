@@ -8,7 +8,7 @@
 
 use crate::cinema::Cinema;
 use crate::cinema_mesh::RoomData;
-use crate::focus::{AimFilter, ComfortFocus, FocusPass, MEASURE_EVERY, REMEASURE_RAD};
+use crate::focus::{AimFilter, ComfortFocus, FocusLog, FocusPass, MEASURE_EVERY, REMEASURE_RAD};
 use crate::foveation::{Foveation, RateMaps};
 use crate::gpu::Gpu;
 use crate::hdr::PeakDetector;
@@ -223,6 +223,11 @@ pub struct Renderer {
     /// When comfort focus last measured, where it aimed (play space) and the
     /// video frame it read.
     focus_measured: Option<(std::time::Instant, Vec3, Option<u64>)>,
+    /// What comfort focus did lately, for the log ([`Renderer::focus_line`]),
+    /// and whether each slot's frame in flight was drawn with it: with a
+    /// measurement, or without.
+    focus_log: FocusLog,
+    focus_drawn: [Option<bool>; SLOTS],
     /// The video frame shown ([`fp_media::VideoFrame::id`]).
     shown_frame: Option<u64>,
     glow: crate::glow::Glow,
@@ -459,6 +464,8 @@ impl Renderer {
                 focus_aim: AimFilter::default(),
                 comfort_focus: ComfortFocus::default(),
                 focus_measured: None,
+                focus_log: FocusLog::default(),
+                focus_drawn: [None; SLOTS],
                 shown_frame: None,
                 glow: Default::default(),
                 timer: FrameTimer::new(&gpu, SLOTS),
@@ -937,6 +944,11 @@ impl Renderer {
             self.gpu_times = t.read(&self.gpu, self.current);
             t.begin(&self.gpu, cmd, self.current);
         }
+        if let Some(measured) = self.focus_drawn[self.current].take()
+            && let Some(ms) = self.gpu_times.and_then(|t| t.eyes)
+        {
+            self.focus_log.gpu(measured, ms);
+        }
         self.recording = true;
         Ok(())
     }
@@ -944,6 +956,19 @@ impl Renderer {
     /// The parts of the last frame the GPU finished, two frames back.
     pub fn gpu_times(&self) -> Option<GpuTimes> {
         self.gpu_times
+    }
+
+    /// What comfort focus did since the last call, as one line for the log:
+    /// how often what is looked at could be read, how often the distance in
+    /// focus and the easing changed, what the aim followed and what a
+    /// measurement costs. `None` when no frame was drawn with it.
+    pub fn focus_line(&mut self) -> Option<String> {
+        let tally = self.comfort_focus.take_tally();
+        self.focus_log.take_line(
+            std::time::Instant::now(),
+            tally,
+            self.comfort_focus.in_focus(),
+        )
     }
 
     fn stamp(&mut self, mark: Mark) {
@@ -1775,19 +1800,27 @@ impl Renderer {
             // Where the eyes look whenever the headset tracks them, foveated
             // rendering on or not.
             let aim = self.focus_aim.aim(now, self.gaze, head);
+            // Landed somewhere else: what is read there is acted on at once.
+            if self.focus_aim.take_landed() {
+                self.comfort_focus.landed();
+            }
             // Each eye's offset from the point between them, and the head's
             // up, in the room frame, to draw each eye from where it is.
             let room = |v: Vec3| p.anchor_inv.transform_vector3(v);
             let at = to_world.map(|m| m.w_axis.truncate());
             let mid = (at[0] + at[1]) * 0.5;
             let offsets = at.map(|e| room(e - mid));
-            let lever = crate::focus::redraw_lever(&p, aim, offsets);
+            let (lever, line) = crate::focus::redraw_lever(&p, aim, offsets);
+            self.comfort_focus
+                .follows_eyes(self.focus_aim.from() != crate::focus::AimFrom::Head);
             let focus = self.comfort_focus.step(now, lever);
             let up = room((to_world[0].y_axis + to_world[1].y_axis).truncate());
-            if let Some([along, tilt]) = crate::focus::aim_angles(&p, aim)
+            let angles = crate::focus::aim_angles(&p, aim);
+            let settled = self.focus_aim.settled();
+            if let Some([along, tilt]) = angles
                 && self.focus.is_some()
                 // Not while the aim sweeps across a jump of the eyes.
-                && self.focus_aim.settled()
+                && settled
                 // Something new to read: another frame, the eyes elsewhere, or
                 // a still picture not read for a while.
                 && self.focus_measured.is_none_or(|(t, at, frame)| {
@@ -1801,9 +1834,25 @@ impl Renderer {
                 self.focus_measured = Some((now, aim, self.shown_frame));
                 measure = Some(along);
             }
+            self.focus_log.frame(
+                now,
+                self.focus_aim.from(),
+                settled,
+                angles.is_some(),
+                measure.is_some(),
+            );
+            self.focus_drawn[slot_idx] = Some(measure.is_some());
             // The measurement reads the video as filmed, without it.
-            params::set_comfort_focus(&mut p, focus.relief, focus.distance, offsets, up);
+            params::set_comfort_focus(
+                &mut p,
+                focus.relief,
+                focus.distance,
+                offsets,
+                up,
+                (line, focus.side_distance),
+            );
         } else {
+            self.focus_drawn[slot_idx] = None;
             self.comfort_focus.reset();
             self.focus_aim = AimFilter::default();
             if let Some(f) = self.focus.as_mut() {
