@@ -824,10 +824,9 @@ impl App {
             .chain(stereo.map(|s| format!("{s:?}")))
             .collect();
         self.subs.visible = !cues.is_empty();
-        let d = s.subtitle_distance.clamp(0.5, 20.0);
-        let w = 0.9 * d;
-        self.subs.size = Vec2::new(w, w * 320.0 / 1600.0);
-        self.subs.pose = place(anchor, 0.0, d, -0.2 * d, 0.0);
+        let (d, size, y) = subtitle_placement(s);
+        self.subs.size = size;
+        self.subs.pose = place(anchor, 0.0, d, y, 0.0);
         if key != self.sub_key && self.subs.visible {
             self.sub_key = key;
             let textures = &mut self.sub_textures;
@@ -878,6 +877,17 @@ fn above_bar(bar: &Panel, picker: &Panel) -> Mat4 {
     let x = right + room.right as f32 * p - picker.size.x / 2.0;
     let y = top + picker.size.y / 2.0;
     bar.pose * Mat4::from_translation(Vec3::new(x, y, 0.0))
+}
+
+/// The subtitles' depth, size and the height of their middle, in metres.
+/// Text sits on the panel's bottom edge, so that edge stays put as the size
+/// changes.
+fn subtitle_placement(s: &fp_core::view::ViewSettings) -> (f32, Vec2, f32) {
+    let d = s.subtitle_distance.clamp(0.5, 20.0);
+    let w = 0.9 * d * s.subtitle_size.clamp(0.25, 4.0);
+    let size = Vec2::new(w, w * 320.0 / 1600.0);
+    let bottom = d * s.subtitle_height.clamp(-80.0, 80.0).to_radians().tan();
+    (d, size, bottom + size.y / 2.0)
 }
 
 /// Centred above the control bar's body, and above the picker, `above` metres
@@ -950,6 +960,36 @@ mod tests {
         assert_eq!(cinema.lights_at(PlayerState::Playing, true, 0.7), 0.0);
         assert!((cinema.lights_at(PlayerState::Paused, true, 0.35) - 0.5).abs() < 1e-6);
         assert_eq!(cinema.lights_at(PlayerState::Ended, true, 1.0), 1.0);
+    }
+
+    #[test]
+    fn subtitles_grow_up_from_their_bottom_and_keep_their_angles_at_any_depth() {
+        use fp_core::view::ViewSettings;
+        let s = ViewSettings::default();
+        let bottom = |(d, size, y): (f32, Vec2, f32)| ((y - size.y / 2.0) / d).atan().to_degrees();
+        let width = |(d, size, _): (f32, Vec2, f32)| size.x / d;
+        let usual = subtitle_placement(&s);
+        assert!((bottom(usual) - s.subtitle_height).abs() < 1e-3);
+
+        let big = subtitle_placement(&ViewSettings {
+            subtitle_size: 2.0,
+            ..s
+        });
+        assert!((width(big) - 2.0 * width(usual)).abs() < 1e-5);
+        assert!((bottom(big) - bottom(usual)).abs() < 1e-3);
+
+        let far = subtitle_placement(&ViewSettings {
+            subtitle_distance: 8.0,
+            ..s
+        });
+        assert!((width(far) - width(usual)).abs() < 1e-5);
+        assert!((bottom(far) - bottom(usual)).abs() < 1e-3);
+
+        let raised = subtitle_placement(&ViewSettings {
+            subtitle_height: 5.0,
+            ..s
+        });
+        assert!((bottom(raised) - 5.0).abs() < 1e-3);
     }
 
     #[test]

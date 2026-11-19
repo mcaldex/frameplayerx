@@ -800,8 +800,8 @@ little saturation to make room for them.
 controller) opens the adjust panel for the video playing. Its tabs are
 Format, Position, Stereo, Picture, Passthrough, Chapters and, with haptics
 on, Haptics; between them they hold the format, position, size, IPD/depth,
-stereo alignment, picture controls, subtitle depth and keyframes
-(adjustments that change smoothly along the video). **Save for this
+stereo alignment, picture controls, subtitle depth, size and height, and
+keyframes (adjustments that change smoothly along the video). **Save for this
 video** keeps the changes with that video; **Reset** puts the picture's
 own adjustments back.
 
@@ -812,7 +812,8 @@ one step, and holding repeats.
 
 Where videos start is set in Settings: **Video position** for the screen,
 zoom, height and background, **Picture** for the picture and a 3D video's
-depth and eye alignment, and Sound and subtitles for subtitle depth.
+depth and eye alignment, and Sound and subtitles for how far away, how
+big and how high subtitles show.
 
 A flat screen's **Distance**, **Width** and **Curvature** are on the
 Position tab. Its size is its width, so zooming a flat screen with the

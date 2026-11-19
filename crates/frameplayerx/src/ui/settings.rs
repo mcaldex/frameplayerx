@@ -592,7 +592,8 @@ fn sound(ui: &mut egui::Ui, v: &mut View) {
     super::subtitle_search::settings(ui, v);
 }
 
-/// Which subtitles videos start with, in which language, and how far away.
+/// Which subtitles videos start with, in which language, and how far away,
+/// how big and how high they show.
 fn subtitles(ui: &mut egui::Ui, s: &mut crate::settings::Settings, languages_open: &mut bool) {
     use crate::settings::SubtitleMode;
     heading(ui, tr!("settings-subtitles"));
@@ -656,6 +657,25 @@ fn subtitles(ui: &mut egui::Ui, s: &mut crate::settings::Settings, languages_ope
             2.5,
             " m",
             1,
+        );
+        let d = fp_core::view::ViewSettings::default();
+        r.slider(
+            tr!("settings-subtitle-size"),
+            Some(tr!("settings-subtitle-size-desc")),
+            &mut s.default_view.subtitle_size,
+            0.5..=2.0,
+            d.subtitle_size,
+            "×",
+            2,
+        );
+        r.slider(
+            tr!("settings-subtitle-height"),
+            Some(tr!("settings-subtitle-height-desc")),
+            &mut s.default_view.subtitle_height,
+            -40.0..=40.0,
+            d.subtitle_height,
+            "°",
+            0,
         );
     });
 }

@@ -1612,8 +1612,9 @@ fn position_tab(
     }
 }
 
-/// Depth, comfort focus and eye alignment, with subtitle depth unless
-/// `subtitles` is off (Settings has it with the subtitles).
+/// Depth, comfort focus and eye alignment, with the subtitles' depth, size
+/// and height unless `subtitles` is off (Settings has them with the
+/// subtitles).
 pub(super) fn stereo_tab(
     ui: &mut egui::Ui,
     s: &mut ViewSettings,
@@ -1683,6 +1684,24 @@ pub(super) fn stereo_tab(
                 d.subtitle_distance,
                 " m",
                 1,
+            );
+            r.slider(
+                tr!("settings-subtitle-size"),
+                None,
+                &mut s.subtitle_size,
+                0.5..=2.0,
+                d.subtitle_size,
+                "×",
+                2,
+            );
+            r.slider(
+                tr!("settings-subtitle-height"),
+                None,
+                &mut s.subtitle_height,
+                -40.0..=40.0,
+                d.subtitle_height,
+                "°",
+                0,
             );
         }
     });
