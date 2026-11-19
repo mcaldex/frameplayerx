@@ -139,14 +139,43 @@ impl App {
             }
             Cmd::Zoom(d) => {
                 if let Some(p) = &mut self.playback {
+                    let room = p.cinema_room(&self.settings, input.passthrough_available);
+                    // In a cinema, zooming in moves you a row forward: at
+                    // once, then again for each ROW_PULL held.
+                    if let Some(room) = room {
+                        let pull = &mut self.cinema;
+                        if input.time - pull.pulled_at > 0.2 {
+                            pull.row_pull = frame::ROW_PULL.copysign(d);
+                        } else {
+                            pull.row_pull += d;
+                        }
+                        pull.pulled_at = input.time;
+                        if pull.row_pull.abs() >= frame::ROW_PULL {
+                            pull.row_pull -= frame::ROW_PULL.copysign(pull.row_pull);
+                            let rows = room.rows();
+                            let now = p.cinema_row(&self.settings).min(rows);
+                            let row = if d > 0.0 {
+                                now.saturating_sub(1).max(1)
+                            } else {
+                                (now + 1).min(rows)
+                            };
+                            // At the front or back row there is nowhere to go.
+                            if row != now {
+                                p.settings.cinema_row = Some(row);
+                                p.settings_dirty = true;
+                                self.ui.toast(tr!("toast-row", row = row));
+                            }
+                        }
                     // A flat screen's size is its width.
-                    if p.format.projection == Projection::Flat {
-                        p.settings.screen_width =
-                            (p.settings.screen_width * (1.0 + d)).clamp(0.5, 30.0);
+                    } else if p.format.projection == Projection::Flat {
+                        let width = (p.settings.screen_width * (1.0 + d)).clamp(0.5, 30.0);
+                        p.settings_dirty |= width != p.settings.screen_width;
+                        p.settings.screen_width = width;
                     } else {
-                        p.settings.zoom = (p.settings.zoom + d).clamp(0.5, 2.5);
+                        let zoom = (p.settings.zoom + d).clamp(0.5, 2.5);
+                        p.settings_dirty |= zoom != p.settings.zoom;
+                        p.settings.zoom = zoom;
                     }
-                    p.settings_dirty = true;
                 }
             }
             Cmd::Height(d) => {
@@ -175,6 +204,7 @@ impl App {
                     ) = (d.yaw, d.pitch, d.roll, d.zoom, d.height, d.forward);
                     if p.format.projection == Projection::Flat {
                         p.settings.screen_width = d.screen_width;
+                        p.settings.cinema_row = None;
                     }
                     p.settings_dirty = true;
                     self.ui.toast(tr!("toast-view-reset"));
@@ -193,7 +223,8 @@ impl App {
                     // The picture follows the hand.
                     p.settings.yaw = y0 + yaw;
                     p.settings.pitch = (p0 + pitch).clamp(-90.0, 90.0);
-                    p.settings_dirty = true;
+                    // A flat screen's place isn't kept with the video.
+                    p.settings_dirty |= p.format.projection != Projection::Flat;
                 }
             }
             Cmd::DragEnd => self.drag_start = None,
@@ -258,7 +289,11 @@ impl App {
         }
         let playing = self.playback.is_some();
         if playing && self.ui.tracks_open && self.ui_visible && !self.show_browser {
-            self.ui.tracks_open = false;
+            if self.ui.subtitle_search.is_some() {
+                self.back_from_subtitle_search();
+            } else {
+                self.ui.tracks_open = false;
+            }
         } else if playing && self.ui.adjust_open && self.ui_visible && !self.show_browser {
             self.ui.adjust_open = false;
         } else if (!playing || self.show_browser) && self.ui.details.is_some() {

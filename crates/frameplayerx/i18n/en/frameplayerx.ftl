@@ -137,6 +137,16 @@ settings-height = Height
 settings-height-desc = Raise or lower yourself in videos without their own.
 settings-background = Background
 settings-background-desc = Around flat videos and the menus. Your room replaces it while it shows.
+settings-background-menus-desc = Around the menus and videos that aren't flat. Your room replaces it while it shows.
+# Short: a chip. The video follows Settings › Video position.
+background-use-global = Use global
+# Short: a chip.
+background-colour = Colour
+# Short: a chip. A traditional cinema room: walnut panels, red seats.
+background-classic = Classic
+# Short: a chip. A modern cinema room with neon lights and leather recliners.
+background-luxe = Luxe
+background-room-desc = Around flat videos as they play. Your room replaces it while it shows.
 # Short: a chip.
 background-black = Black
 # Short: a chip.
@@ -250,12 +260,14 @@ settings-about-headset = This headset
 settings-about-settings-file = Settings file
 settings-about-log = Log
 settings-about-links = Help and support
+settings-about-website = FramePlayerX website
+settings-about-guide = User guide
+settings-about-discord = FramePlayerX on Discord
 settings-about-github = FramePlayerX on GitHub
-settings-about-github-desc = News, releases and the source code.
 settings-about-issue = Report a problem
-settings-about-issue-desc = Open an issue on GitHub, choose Bug report and attach the log named above.
 settings-about-sponsor = Sponsor FramePlayerX
-settings-about-sponsor-desc = If FramePlayerX is useful to you, you can support its development on GitHub Sponsors.
+# Under the links.
+settings-about-issue-note = To report a problem, choose Bug report on GitHub's form and attach the log named below.
 settings-about-licences = Video decoding uses FFmpeg (LGPL 2.1+) and dav1d (BSD), shipped as separate libraries in lib/. Text is set in Inter (OFL) with Phosphor icons (MIT). Licences and the source offer are in the licenses/ folder.
 
 ## Language names, as subtitles and audio tracks name them
@@ -395,13 +407,17 @@ adjust-rim-stretch-desc = Like Edge stretch, but mostly at the very edge of the 
 adjust-lens-centre = Lens centre
 adjust-lens-centre-desc = Where each image circle's centre is, if not in the middle. Point at a slider and push the thumbstick left or right for fine steps.
 adjust-screen = Screen
+# Short: a slider's name. Which row of the cinema you sit in.
+adjust-row = Row
+adjust-row-desc = Row 1 is the front row, { $rows } the back row.
+adjust-cinema-curvature-desc = 0 is flat. At 1 the screen's edges come 0.8 m towards you.
 adjust-distance = Distance
 adjust-width = Width
 adjust-curvature = Curvature
 adjust-decoder = Decoder
 adjust-resolution = Resolution
 adjust-placement = Screen and panels
-adjust-placement-desc = Where a flat screen, the control bar, this panel, the browse panel and the performance overlay start.
+adjust-placement-start-desc = Where a flat screen, the control bar, this panel, the browse panel and the performance overlay start.
 adjust-put-back = Put back
 # Turning left or right.
 adjust-yaw = Yaw
@@ -412,6 +428,8 @@ adjust-roll = Roll
 adjust-zoom = Zoom
 adjust-height-desc = Raise or lower yourself in the scene.
 adjust-position-hint = Or hold a grip and the trigger and drag the picture; press the thumbstick to undo. Right grip and thumbstick up / down changes your height.
+adjust-comfort-focus = Comfort focus
+adjust-comfort-focus-desc = Keeps what you look at in one piece when you tilt your head or lie down, and softens its depth when it's close.
 adjust-depth = Depth
 adjust-depth-desc = Eye separation; lower if it's hard to fuse.
 adjust-vertical-align = Vertical align
@@ -554,7 +572,7 @@ sources-add = Add source
 sources-heading = On this device and your network
 # Short: a button.
 sources-unlock = Unlock
-# A tooltip.
+# A tooltip on Remove source.
 sources-remove = Remove (and forget its unwatched videos)
 # A tooltip.
 sources-edit = Edit
@@ -591,6 +609,10 @@ source-rebuild-thumbnails = Rebuild thumbnails
 source-rebuild-thumbnails-desc = Reads every video again.
 # Short: a button.
 source-rebuild = Rebuild
+# Short: a button at the top of a source's Edit page.
+source-remove = Remove source
+# Short: the button asks again before removing the source.
+source-remove-confirm = Remove it?
 source-retry-unreadable = Retry videos that couldn't be read
 # Short: a button.
 source-retry = Retry
@@ -609,11 +631,18 @@ source-key-passphrase = Key passphrase
 source-key-passphrase-desc = This key file is password-protected. Enter the passphrase it was saved with, not the account password.
 source-user-name = User name
 source-user-name-desc = If the server asks for one.
+source-nfs-uid = User ID
+source-nfs-gid = Group ID
+source-nfs-ids-desc = Numbers the server checks file permissions against. Blank uses this device’s.
 source-self-signed = Accept self-signed certificates
 source-self-signed-desc = For HTTPS servers on your own network.
 # A switch on a server's form, with the description below it.
 source-parallel-downloads = Parallel downloads
 source-parallel-downloads-desc = Downloads several parts of a video at once over separate connections, like a download manager. This helps if the server limits the speed of each connection. If it doesn't, it may gain nothing, and a server on hard drives can get slower.
+# A switch on a folder source's form, with the number beside it and the description below.
+source-play-all-limit = Limit videos from subfolders
+source-play-all-limit-desc = The most videos Play all takes when it includes subfolders. Off, it takes them all, and Cancel stops it.
+source-play-all-limit-invalid = Enter a whole number greater than zero for the video limit.
 source-passwords-note = Passwords are stored on this device only, in a file only you can read.
 quick-connect-code = Pairing code
 quick-connect-code-desc = Enter this code in your Jellyfin or Emby app under Quick Connect:
@@ -634,7 +663,9 @@ source-error-sftp = Use sftp://server/, sftp://server/~/folder or sftp://server/
 source-error-sftp-user = Enter the user name to sign in as
 source-error-sftp-sign-in = Enter a password or choose a key file
 source-error-key-passphrase = This key file is password-protected: enter its passphrase
+source-error-nfs = Use nfs://server, nfs://server/export or server:/export
 source-error-port = Bad port
+source-error-nfs-id = User and group IDs are numbers
 source-error-approve-code = Approve the code in your Jellyfin/Emby app
 # Get pairing code is the button above: use its translation.
 source-error-get-code = Click 'Get pairing code' to sign in
@@ -657,6 +688,7 @@ source-kind-heresphere = HereSphere API
 source-kind-smb = SMB share
 # Short: a kind of source; keep SFTP.
 source-kind-sftp = SFTP server
+source-kind-nfs = NFS share
 sources-library-not-inserted = Library · Not inserted
 # Short: after a source's address, it is unlocked until the app restarts.
 sources-unlocked = Unlocked
@@ -671,6 +703,7 @@ source-kind-webdav-desc = WebDAV share URL (Nextcloud, NAS), e.g. https://nas.lo
 source-kind-http-desc = Web server folder listing, e.g. http://192.168.1.10:8080/videos/
 source-kind-smb-desc = Windows / Samba server or share, e.g. smb://nas.local/ or smb://nas.local/videos
 source-kind-sftp-desc = A folder on any computer with SSH (Linux, macOS, many NAS), e.g. sftp://pc.local/~/Videos
+source-kind-nfs-desc = Linux / NAS NFS export, e.g. nfs://nas.local or nfs://nas.local/volume1/videos
 source-kind-dlna-desc = DLNA media server on your network (Plex, Jellyfin, Emby, Serviio)
 # A name field's hint.
 source-name-hint-jellyfin = Optional (e.g. Jellyfin)
@@ -901,6 +934,17 @@ library-file = File
 # A video's format, and where it came from (your choice, from the file name…).
 library-format-value = { $format } ({ $evidence })
 library-remove-from-history = Remove from history
+# A button: deletes the video's file from where it is kept, after asking.
+delete-file = Delete file
+# Short: the button asks again before deleting the file.
+delete-file-confirm = Delete for good?
+delete-deleting = Deleting…
+# $error says why, starting in lower case.
+delete-failed = Couldn't delete the file: { $error }
+# Why a delete failed: the server turned it away.
+delete-not-allowed = the server doesn't allow it
+# $title is the video's name.
+toast-deleted = Deleted { $title }
 # What a controller button does: nothing.
 action-nothing = Nothing
 action-play-pause = Play / pause
@@ -977,6 +1021,8 @@ toast-beginning = Beginning
 toast-last-chapter = Last chapter
 toast-no-subtitles = No subtitles in this video
 toast-subtitles-off = Subtitles off
+# Over the video, beside a spinner, when a jump past a part of the file that can't be read holds the picture for more than a second.
+player-skipping-damaged = Skipping damaged video…
 
 ## Dates, sizes and tracks
 
@@ -1018,6 +1064,7 @@ library-unreadable = Could not read the file: { $error }
 library-missing = The file is missing (drive unplugged?)
 toast-volume = Volume { $percent }%
 toast-height = Height { $metres } m
+toast-row = Row { $row }
 # Which video in the list is playing.
 toast-queue-position = { $at } of { $of }
 toast-subtitles = Subtitles: { $title }
@@ -1087,8 +1134,25 @@ sort-largest = Largest
 sort-smallest = Smallest
 folders-empty = No videos or folders here.
 folders-no-match = Nothing here matches.
+# Short: a chip beside Play all in a folder.
+folders-play-all-subfolders = Include subfolders
+folders-play-all-scanning = Looking for videos in subfolders…
+folders-play-all-waiting = Waiting for the previous folder listing to finish
+folders-play-all-unavailable = Some subfolders couldn’t be listed.
+# $limit is a number of videos.
+folders-play-all-limited-toast = Playing the first { $limit } videos found. Edit the source to change the limit.
+# $count is the limit Play all would have stopped at.
+folders-play-all-unlimited-toast = More than { $count } videos found, and still looking. This may take a while.
+# A button: plays the videos found, though some subfolders couldn't be read.
+folders-play-all-found =
+    { $count ->
+        [one] Play 1 video found
+       *[other] Play { $count } videos found
+    }
 # A tooltip on a video's ⋯ button.
 folders-more-tip = Play next, add to a queue or playlist
+# A tooltip on a video's ⋯ button, where its file can be deleted.
+folders-more-tip-delete = Play next, add to a queue or playlist, or delete
 # Very short: with the grip held, the button does what it does alone.
 controller-same = Same
 # Short: a chip, what the buttons do pressed alone.
@@ -1148,6 +1212,8 @@ scan-busy = { $name } is being scanned
 source-added = Added { $name }
 source-saved = Saved { $name }
 source-added-unsaved = Added { $name } until you quit: the sources couldn't be saved ({ $error })
+source-added-nfs-server = Added { $name } as { $address }, the server's list of exports: it has no / export
+source-saved-nfs-server = Saved { $name } as { $address }, the server's list of exports: it has no / export
 source-changed-unsaved = Changed { $name } until you quit: the sources couldn't be saved ({ $error })
 source-removed-unsaved = Removed until you quit: the sources couldn't be saved ({ $error })
 source-locked-toast = Locked { $name }
@@ -1256,6 +1322,12 @@ perf-first-read = first read { $secs } s
 perf-memory = Memory
 perf-memory-value = { $used } of { $total } GB
 notice-not-in-library = Adjustments apply until you close this video (it is not in the library).
+# The notice's tip, once playback has jumped past parts of a file that can't be read; $time is the video they held in all, as 0:42 or 1:02:03.
+notice-damaged =
+    { $count ->
+        [one] Part of this file can't be read, such as where a download hasn't finished: playback skipped it, { $time } of video.
+       *[other] Parts of this file can't be read, such as where a download hasn't finished: playback skipped { $count } of them, { $time } of video in all.
+    }
 # $quality is like 1440p.
 transcode-cannot-play = This file can't play here: the server is transcoding it to { $quality }
 # A bookmark's name, $time where it is.
@@ -1281,6 +1353,7 @@ decoder-pill-too-big = Too big for hardware
 decoder-pill-refused = Decoder refused it
 notice-pill-transcoding = Transcoding
 notice-pill-not-saved = Not saved
+notice-pill-damaged = Damaged video
 player-error-pill = Playback error
 decoder-notice-refused = The hardware decoder can't play this { $stream } ({ $size }), so it stutters in software
 open-not-inserted = This video is on a microSD card or USB drive that is not inserted.
@@ -1321,6 +1394,8 @@ error-sftp = SFTP error: { $error }
 error-sftp-unavailable = SFTP unavailable: { $error }
 error-host-key-changed = { $server } answered with a different identity key than when it was added. If the server was reinstalled, remove the source and add it again; otherwise another machine may be answering in its place.
 error-key-passphrase = { $file } is password-protected and the saved passphrase doesn't unlock it. Edit the source and enter the key's passphrase.
+error-nfs = NFS error: { $error }
+error-nfs-unavailable = NFS unavailable: { $error }
 error-config = invalid source configuration: { $error }
 # $context is what FFmpeg was doing, in English.
 error-ffmpeg = { $context }: { $error }
@@ -1433,3 +1508,55 @@ plex-connection-manual-local-desc = For an access token, use a LAN IP address wi
 plex-test-required = Connect to a server before saving.
 # Plex edit form: changing credentials keeps the existing source separate.
 plex-new-account-source = Linking again or replacing the token adds a separate source and keeps this one.
+
+## OpenSubtitles search and managed downloads
+subtitle-find = Find subtitles
+subtitle-title = Video title
+subtitle-refine = Refine search
+subtitle-no-results = No matching subtitles
+subtitle-search-title = Search by title
+subtitle-restore-identification = Use video identification
+subtitle-use = Use
+subtitle-download-use = Download & use
+subtitle-downloading = Downloading…
+subtitle-any-language = Any language
+subtitle-language-pt-br = Portuguese (Brazil)
+subtitle-movie = Movie
+subtitle-episode = Episode
+subtitle-year = Year
+subtitle-season = Season
+subtitle-any = Any
+subtitle-only = Only
+subtitle-exclude = Exclude
+subtitle-full = Full
+subtitle-include-translations = Include machine and AI translations
+subtitle-file-part = Part { $part } · { $name }
+subtitle-match-file = File match
+subtitle-match-identity = Same movie/episode
+subtitle-match-title = Title match
+subtitle-ai-translated = AI translated
+subtitle-machine-translated = Machine translated
+subtitle-account = Account
+subtitle-sign-in = Sign in
+subtitle-sign-out = Sign out
+subtitle-signed-in = Signed in
+subtitle-sign-in-note = Sign in to use your account’s download allowance. Sign-in is saved on this device.
+subtitle-username = Username
+subtitle-quota = Downloads left: { $count }
+subtitle-quota-reset = Downloads left: { $count } · Resets in { $hours } h { $minutes } min
+subtitle-quota-unknown = Allowance unknown
+subtitle-error-unconfigured = OpenSubtitles is unavailable in this build.
+subtitle-error-query = Enter a video title and check the episode details.
+subtitle-error-language = OpenSubtitles does not list this language. Choose another language.
+subtitle-error-credentials = OpenSubtitles rejected the sign-in. Check your username and password.
+subtitle-error-account = Sign in to OpenSubtitles to download this file.
+subtitle-error-allowance = Your OpenSubtitles download allowance is exhausted.
+subtitle-error-rate = Too many requests. Try again in { $seconds } s.
+subtitle-error-service = Could not reach OpenSubtitles. Try again.
+subtitle-error-invalid = This file has no usable subtitles.
+subtitle-error-storage = Could not save or update the subtitle download.
+subtitle-timing = Subtitle timing · { $delay } s
+subtitle-earlier = Earlier
+subtitle-later = Later
+subtitle-remove = Remove download
+subtitle-review = Check timing for this version

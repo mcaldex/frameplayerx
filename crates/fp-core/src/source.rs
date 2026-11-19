@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 /// Random-access read of a remote or local file. The media pipeline wraps
 /// this in an FFmpeg I/O context, so FFmpeg never touches the network.
@@ -15,6 +15,15 @@ use std::time::Duration;
 pub trait ByteSource: Send + Sync {
     /// Total size in bytes, when known. Seeking needs it for most containers.
     fn size(&self) -> Option<u64>;
+    /// Last modification time in Unix seconds, if the reader can determine it.
+    fn modified(&self) -> Option<i64> {
+        None
+    }
+    /// Arbitrary offsets can be read without consuming the bytes in between.
+    /// A reader that emulates seeks by streaming forward must leave this false.
+    fn efficient_random_access(&self) -> bool {
+        false
+    }
     /// Reads up to `buf.len()` bytes at `offset`. Returns 0 at end of file.
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize>;
     /// Human-readable description for logs and errors.
@@ -100,6 +109,16 @@ impl ByteSource for FileSource {
     fn size(&self) -> Option<u64> {
         Some(self.size)
     }
+    fn modified(&self) -> Option<i64> {
+        let modified = self.file.metadata().ok()?.modified().ok()?;
+        match modified.duration_since(UNIX_EPOCH) {
+            Ok(duration) => duration.as_secs().try_into().ok(),
+            Err(error) => Some(-i64::try_from(error.duration().as_secs()).ok()?),
+        }
+    }
+    fn efficient_random_access(&self) -> bool {
+        true
+    }
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         #[cfg(unix)]
         {
@@ -123,6 +142,9 @@ pub struct MemorySource(pub Vec<u8>);
 impl ByteSource for MemorySource {
     fn size(&self) -> Option<u64> {
         Some(self.0.len() as u64)
+    }
+    fn efficient_random_access(&self) -> bool {
+        true
     }
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
         let start = (offset as usize).min(self.0.len());
@@ -193,10 +215,31 @@ pub struct SubtitleFile {
     pub name: String,
     /// Location to open with the same source (or a URL for feeds).
     pub location: String,
-    /// Language tag from the name or the source (`en`, `de.forced`); see
-    /// [`crate::language::Tag`].
+    /// Language tag from the name or the source (`en`, `de.forced`, `pt-BR`).
+    /// See [`crate::language::Tag`] for base-language matching.
     #[serde(default)]
     pub language: Option<String>,
+    /// Display name supplied by a subtitle provider, including language variants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language_name: Option<String>,
+    #[serde(default, skip_serializing_if = "SubtitleFlags::is_empty")]
+    pub flags: SubtitleFlags,
+}
+
+/// Explicit attributes supplied with an external subtitle file.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SubtitleFlags {
+    pub forced: bool,
+    pub sdh: bool,
+    pub machine_translated: bool,
+    pub ai_translated: bool,
+}
+
+impl SubtitleFlags {
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 impl Entry {

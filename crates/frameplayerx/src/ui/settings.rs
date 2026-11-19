@@ -548,7 +548,7 @@ fn video_position(ui: &mut egui::Ui, v: &mut View) {
         );
     });
     heading(ui, tr!("settings-background"));
-    super::player::background_controls(ui, &mut d.background);
+    super::player::global_background(ui, v.settings);
 }
 
 /// How videos look until they are adjusted: the picture, and a 3D video's
@@ -559,7 +559,7 @@ fn picture(ui: &mut egui::Ui, v: &mut View) {
     heading(ui, tr!("settings-all-videos"));
     super::player::picture_tab(ui, d);
     heading(ui, tr!("settings-3d-videos"));
-    super::player::stereo_tab(ui, d, false);
+    super::player::stereo_tab(ui, d, None, true, false);
 }
 
 fn sound(ui: &mut egui::Ui, v: &mut View) {
@@ -589,6 +589,7 @@ fn sound(ui: &mut egui::Ui, v: &mut View) {
         );
     });
     subtitles(ui, s, &mut v.state.languages_open);
+    super::subtitle_search::settings(ui, v);
 }
 
 /// Which subtitles videos start with, in which language, and how far away.
@@ -1079,6 +1080,9 @@ fn about_text(text: &str) -> &str {
 }
 
 /// The project's pages, as About lists them.
+const WEBSITE: &str = "frameplayerx.org.uk";
+const GUIDE: &str = "frameplayerx.org.uk/guide";
+const DISCORD: &str = "discord.gg/tDZRuZDY7d";
 const GITHUB: &str = "github.com/remotesojourner/frameplayerx";
 const ISSUES: &str = "github.com/remotesojourner/frameplayerx/issues/new/choose";
 const SPONSOR: &str = "github.com/sponsors/remotesojourner";
@@ -1091,8 +1095,22 @@ fn about(ui: &mut egui::Ui, v: &mut View) {
         ))
         .color(theme::TEXT_2),
     );
+    heading(ui, tr!("settings-about-links"));
+    let tiles = [
+        (icons::GLOBE, tr!("settings-about-website"), WEBSITE),
+        (icons::BOOK_OPEN, tr!("settings-about-guide"), GUIDE),
+        (icons::DISCORD_LOGO, tr!("settings-about-discord"), DISCORD),
+        (icons::GITHUB_LOGO, tr!("settings-about-github"), GITHUB),
+        (icons::BUG, tr!("settings-about-issue"), ISSUES),
+        (icons::HEART, tr!("settings-about-sponsor"), SPONSOR),
+    ];
+    if let Some(i) = widgets::link_tiles(ui, &tiles) {
+        v.actions.push(Action::OpenWebPage(tiles[i].2.into()));
+    }
+    ui.add_space(6.0);
+    note(ui, tr!("settings-about-issue-note"));
     heading(ui, tr!("settings-about-headset"));
-    widgets::rows(ui, |r| {
+    widgets::rows_compact(ui, |r| {
         for (k, val) in &v.state.about {
             r.info(about_text(k), about_text(val));
         }
@@ -1104,42 +1122,6 @@ fn about(ui: &mut egui::Ui, v: &mut View) {
             tr!("settings-about-log"),
             &crate::logger::log_path().display().to_string(),
         );
-    });
-    heading(ui, tr!("settings-about-links"));
-    widgets::rows(ui, |r| {
-        for (title, desc, address) in [
-            (
-                tr!("settings-about-github"),
-                tr!("settings-about-github-desc"),
-                GITHUB,
-            ),
-            (
-                tr!("settings-about-issue"),
-                tr!("settings-about-issue-desc"),
-                ISSUES,
-            ),
-            (
-                tr!("settings-about-sponsor"),
-                tr!("settings-about-sponsor-desc"),
-                SPONSOR,
-            ),
-        ] {
-            r.row_with(
-                title,
-                Some(desc),
-                |ui| {
-                    let link = egui::Link::new(
-                        RichText::new(format!("{}  {address}", icons::LINK))
-                            .font(theme::font(Weight::Medium, 16.0))
-                            .color(theme::ACCENT_HOVER),
-                    );
-                    if ui.add(link).clicked() {
-                        v.actions.push(Action::OpenWebPage(address.into()));
-                    }
-                },
-                |_| {},
-            );
-        }
     });
     ui.add_space(6.0);
     note(ui, tr!("settings-about-licences"));

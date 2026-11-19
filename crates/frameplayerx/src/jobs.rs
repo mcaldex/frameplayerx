@@ -16,15 +16,24 @@ impl<T: Send + 'static> Jobs<T> {
 
     /// Runs `f` on a new thread; its result is delivered by [`Jobs::poll`].
     pub fn spawn(&self, name: &str, f: impl FnOnce() -> T + Send + 'static) {
+        if let Err(e) = self.try_spawn(name, f) {
+            log::error!("cannot start job thread: {e}");
+        }
+    }
+
+    /// Starts a job whose caller needs to handle a thread creation failure.
+    pub fn try_spawn(
+        &self,
+        name: &str,
+        f: impl FnOnce() -> T + Send + 'static,
+    ) -> std::io::Result<()> {
         let tx = self.tx.clone();
-        let r = std::thread::Builder::new()
+        std::thread::Builder::new()
             .name(format!("fp-job-{name}"))
             .spawn(move || {
                 let _ = tx.send(f());
-            });
-        if let Err(e) = r {
-            log::error!("cannot start job thread: {e}");
-        }
+            })
+            .map(drop)
     }
 
     /// Finished results, without blocking.

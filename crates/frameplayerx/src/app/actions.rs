@@ -7,10 +7,19 @@ impl App {
         match a {
             // Up next is this video alone.
             Action::Open(req) => {
+                self.cancel_folder_play_all();
                 self.queue.set(vec![req.clone()], 0);
                 self.open_request(req);
             }
             Action::PlayAll(list, pos) => self.play_all(list, pos),
+            Action::FolderPlayAll {
+                source,
+                location,
+                sort,
+                filter,
+            } => self.folder_play_all(source, location, sort, filter),
+            Action::CancelFolderPlayAll => self.cancel_folder_play_all(),
+            Action::PlayFoundFolderVideos => self.play_found_folder_videos(),
             Action::CatalogPlayAll { source, query } => self.catalog_play_all(source, query),
             Action::Queue { req, next } => self.queue_video(req, next),
             Action::QueueJump(i) => {
@@ -155,36 +164,8 @@ impl App {
             }
             Action::SelectSourceAudio(id) => self.play_source_track(Some(id), None),
             Action::SelectSourceSubtitles(id) => self.play_source_track(None, Some(id)),
-            Action::SelectSubtitles(pick) => {
-                if let crate::subtitles::Pick::File(i) = pick {
-                    self.select_subtitle_file(Some(i));
-                } else {
-                    self.select_subtitle_file(None);
-                    if let Some(p) = self.player() {
-                        p.select_subtitle(pick.stream());
-                    }
-                }
-                if let Some(p) = &mut self.playback {
-                    p.picked.subtitles = crate::subtitles::saved(pick, &p.subtitle_files);
-                    if !p.source_tracks.is_empty() {
-                        let track = p.source_tracks.iter().find(|t| {
-                            t.subtitle
-                                && match pick {
-                                    crate::subtitles::Pick::Stream(i) => t.index == Some(i),
-                                    crate::subtitles::Pick::File(i) => p
-                                        .subtitle_files
-                                        .get(i)
-                                        .is_some_and(|s| Some(&s.location) == t.location.as_ref()),
-                                    crate::subtitles::Pick::Off => false,
-                                }
-                        });
-                        p.request.source_subtitle = track.map(|t| t.id.clone()).or_else(|| {
-                            matches!(pick, crate::subtitles::Pick::Off).then(|| "0".into())
-                        });
-                    }
-                    p.save_tracks(&self.services.library);
-                }
-            }
+            Action::SelectSubtitles(pick) => self.select_subtitles(pick),
+            Action::SubtitleSearch(action) => self.subtitle_search_action(action),
             Action::SelectQuality(q) => self.play_quality(q),
             Action::ResetPlacement => self.reset_placement(),
             Action::SetFavorite(id, f) => {
@@ -228,8 +209,8 @@ impl App {
                     Job::Toast(tr!("toast-image-cache-cleared", mb = mb))
                 });
             }
-            Action::AddSource(cfg) => self.add_source(cfg),
-            Action::UpdateSource(cfg) => self.update_source(cfg),
+            Action::AddSource(cfg, play_all_limit) => self.add_source(cfg, play_all_limit),
+            Action::UpdateSource(cfg, play_all_limit) => self.update_source(cfg, play_all_limit),
             Action::RemoveSource(id) => self.remove_source(&id),
             Action::UnlockSource { source, pin } => self.unlock_source(source, &pin),
             Action::LockSource(id) => self.lock_source(&id),
@@ -268,6 +249,11 @@ impl App {
             } => self.queue_feed_scenes(&source, urls, front),
             Action::FeedScene { source, url } => self.load_feed_scene(source, url),
             Action::FeedFavorite { source, url, on } => self.mark_feed_favorite(&source, url, on),
+            Action::CheckDelete {
+                source_id,
+                location,
+            } => self.check_delete(source_id, location),
+            Action::DeleteFile(target) => self.delete_file(target),
             Action::DiscoverDlna => self.discover_dlna(),
             Action::QuickConnectInitiate {
                 address,
@@ -348,6 +334,7 @@ impl App {
 
     fn play_all(&mut self, list: Vec<OpenRequest>, pos: usize) {
         if let Some(req) = list.get(pos).cloned() {
+            self.cancel_folder_play_all();
             self.queue.set(list, pos);
             self.open_request(req);
         }
@@ -437,8 +424,52 @@ impl App {
         self.open_request(req);
     }
 
+    fn check_delete(&mut self, source_id: Option<String>, location: String) {
+        let opener = self.services.opener.clone();
+        self.jobs.spawn("delete-check", move || {
+            let allowed = match opener.ask_delete_allowed_in(source_id.as_deref(), &location) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    log::warn!("checking delete permission for {location}: {e}");
+                    None
+                }
+            };
+            Job::DeleteCheck {
+                source_id,
+                location,
+                allowed,
+            }
+        });
+    }
+
+    fn delete_file(&mut self, target: ui::DeleteTarget) {
+        if self.ui.deleting.is_some() {
+            return;
+        }
+        self.ui.deleting = Some(target.location.clone());
+        let keys = self.deleted_location_keys(target.source_id.as_deref(), &target.location);
+        let wait_playback = self
+            .playback
+            .as_ref()
+            .is_some_and(|p| keys.contains(&p.request.location));
+        if wait_playback {
+            self.close_playback();
+        }
+        let opener = self.services.opener.clone();
+        self.jobs.spawn("delete-file", move || {
+            if wait_playback {
+                let _ = playback::wait_closed(Duration::from_secs(5));
+            }
+            let result = opener.delete_in(target.source_id.as_deref(), &target.location);
+            Job::Deleted { target, result }
+        });
+    }
+
     /// Closes the video, and drops one still opening.
     pub(super) fn close_playback(&mut self) {
+        self.cancel_folder_play_all();
+        self.close_subtitle_search();
+        self.reopen_tracks = false;
         if let Some(p) = self.playback.take() {
             p.close(&self.services.library);
         }
@@ -522,24 +553,6 @@ impl App {
         self.ui.invalidate();
     }
 
-    fn select_subtitle_file(&mut self, i: Option<usize>) {
-        let Some(p) = &mut self.playback else { return };
-        p.player.clear_external_subtitles();
-        let picked = i.and_then(|i| p.subtitle_files.get(i).map(|f| (i, f.clone())));
-        p.active_subtitle_file = picked.as_ref().map(|(i, _)| *i);
-        let Some((index, file)) = picked else {
-            return;
-        };
-        // Read on a job: the file may be on a server.
-        let opener = self.services.opener.clone();
-        let seq = self.open_seq;
-        self.jobs.spawn("subtitles", move || Job::Subtitles {
-            seq,
-            index,
-            result: playback::read_subtitle_file(&opener, &file),
-        });
-    }
-
     fn clear_history(&mut self) {
         match self.services.library.clear_history() {
             Ok(()) => self.ui.toast(tr!("toast-history-cleared")),
@@ -576,7 +589,7 @@ impl App {
 
 /// The library's video for `req`, given a row from its entry when it has
 /// none yet, as opening it does.
-fn media_of(lib: &Library, req: &OpenRequest) -> Option<fp_library::MediaId> {
+pub(super) fn media_of(lib: &Library, req: &OpenRequest) -> Option<fp_library::MediaId> {
     let source_id = req.bound_source_id().ok()?;
     let location = fp_core::volume::stable(&req.location).into_owned();
     if let Ok(Some(r)) = lib.get_by_location(&location) {

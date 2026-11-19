@@ -29,6 +29,10 @@ split_commits = false
 # Sections come in the order of their names, so each starts with a hidden
 # number (stripped from the heading) to list them by importance to users.
 commit_parsers = [
+    # A merge repeats the commits it brings in, whatever it is called (GitHub
+    # can title one as its pull request). A squash merge is a single commit
+    # and stays.
+    { field = "merge_commit", pattern = "true", skip = true },
     { message = "^feat", group = "<!-- 0 -->🚀 Features" },
     { message = "^fix", group = "<!-- 1 -->🐛 Bug Fixes" },
     { message = "^perf", group = "<!-- 2 -->⚡ Performance" },
@@ -40,8 +44,6 @@ commit_parsers = [
     { message = "^chore", group = "<!-- 8 -->⚙️ Maintenance" },
     { message = "^ci", group = "<!-- 8 -->⚙️ Maintenance" },
     { message = "^build", group = "<!-- 8 -->⚙️ Maintenance" },
-    # A merge only repeats the commits it brings in.
-    { message = "^Merge (pull request|branch|remote-tracking branch) ", skip = true },
     # Catch-all: commits not following any convention still appear.
     { message = ".*", group = "<!-- 4 -->📦 Other" },
 ]

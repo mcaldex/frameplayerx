@@ -176,6 +176,19 @@ impl VideoFormat {
     pub fn alpha_pack_scale(&self) -> Option<f32> {
         (self.alpha_packed && self.stereo.is_side_by_side()).then_some(ALPHA_PACK_SCALE)
     }
+
+    /// Whether comfort focus can ease close depth in the two eye images: a
+    /// stereo 180° equirectangular or fisheye video, where the cameras sit
+    /// at two fixed side-by-side positions rather than on an omnidirectional
+    /// viewing circle.
+    pub fn can_comfort_focus(&self) -> bool {
+        self.stereo.is_stereo()
+            && matches!(
+                self.projection,
+                Projection::Equirect { h_fov, .. } if h_fov < 359.0
+            )
+            || (self.stereo.is_stereo() && matches!(self.projection, Projection::Fisheye { .. }))
+    }
 }
 
 /// Where a detected format came from, strongest first.
@@ -863,5 +876,14 @@ mod tests {
         ] {
             assert_eq!(layout.eye_pixel_aspect(pa), pa, "{layout:?} {pa}");
         }
+    }
+
+    #[test]
+    fn comfort_focus_applies_to_stereo_180_and_fisheye_only() {
+        assert!(VideoFormat::new(P::EQUIRECT_180, S::SideBySide).can_comfort_focus());
+        assert!(VideoFormat::new(P::fisheye(190.0), S::TopBottom).can_comfort_focus());
+        assert!(!VideoFormat::new(P::EQUIRECT_360, S::TopBottom).can_comfort_focus());
+        assert!(!VideoFormat::new(P::Flat, S::SideBySide).can_comfort_focus());
+        assert!(!VideoFormat::new(P::EQUIRECT_180, S::Mono).can_comfort_focus());
     }
 }

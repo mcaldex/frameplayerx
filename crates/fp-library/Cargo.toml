@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 fp-core.workspace = true
+getrandom.workspace = true
 percent-encoding = "2.3"
 rusqlite = { version = "0.41", features = ["bundled"] }
 serde.workspace = true
@@ -19,6 +20,4 @@ serde_json.workspace = true
 thiserror.workspace = true
 walkdir = "2"
 jpeg-encoder = "0.6"
-
-[dev-dependencies]
 tempfile.workspace = true

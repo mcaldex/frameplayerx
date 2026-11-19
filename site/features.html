@@ -54,6 +54,15 @@
       <p>Everything FramePlayerX does. The <a href="/guide">user guide</a> explains how to use each part.</p>
     </div>
 
+    <section class="section band" aria-labelledby="cinema-title">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 id="cinema-title">Cinema</h2>
+          <p>Watch flat videos in a full-size cinema instead of on a floating screen: the Classic, a stadium hall with red velvet seats, or the Luxe, an open room with neon lights and leather recliners. Pick your row and how much the screen curves around you, and the house lights dim as the film starts and come up when you pause.</p>
+        </div>
+      </div>
+    </section>
+
     <section class="section" aria-labelledby="playback-title">
       <div class="wrap">
         <h2 id="playback-title">Playback</h2>
@@ -64,7 +73,7 @@
           </div>
           <div>
             <h3>Hardware decoding</h3>
-            <p>HEVC (H.265) in 8 and 10 bits and H.264, up to 8K, play on the Frame's own video decoder; AV1, VP9, interlaced video and anything else play with software decoding.</p>
+            <p>HEVC (H.265) in 8 and 10 bits and H.264, up to 8K, play on the Frame's own video decoder, even past a damaged stretch of a file; AV1, VP9, interlaced video and anything else play with software decoding.</p>
           </div>
           <div>
             <h3>Performance</h3>
@@ -80,7 +89,7 @@
           </div>
           <div>
             <h3>Subtitles and spatial audio</h3>
-            <p>Subtitles from a file or inside the video, picked in your language and shown in any script, and 360° audio that follows your head.</p>
+            <p>Subtitles from a file, inside the video or found on OpenSubtitles from the player and kept on your headset with their timing set for each video, picked in your language and shown in any script, and 360° audio that follows your head.</p>
           </div>
         </div>
       </div>
@@ -100,11 +109,11 @@
             </div>
             <div>
               <dt>Media servers</dt>
-              <dd>Browse and play from Jellyfin, Emby and Plex, which can transcode while you watch and sync watch state; any server with a DeoVR feed or HereSphere API, transcoding when it offers that and, with HereSphere, syncing watch state; and network shares (SMB), SFTP servers, WebDAV, DLNA servers and web folders.</dd>
+              <dd>Browse and play from Jellyfin, Emby and Plex, which can transcode while you watch and sync watch state; any server with a DeoVR feed or HereSphere API, transcoding when it offers that and, with HereSphere, syncing watch state; and network shares (SMB, NFS), SFTP servers, WebDAV, DLNA servers and web folders.</dd>
             </div>
             <div>
               <dt>Watch history, Up next and playlists</dt>
-              <dd>Carry on where you left off, queue videos to play one after another, in order or shuffled, and loop the queue or a single video; keep playlists of videos from any source, and mark favorites and ratings.</dd>
+              <dd>Carry on where you left off, queue videos to play one after another, a folder's subfolders included, in order or shuffled, and loop the queue or a single video; keep playlists of videos from any source, mark favorites and ratings, and delete the files of videos you're done with.</dd>
             </div>
             <div>
               <dt>PIN locks</dt>
@@ -125,7 +134,7 @@
           <dl class="feature-list">
             <div>
               <dt>Adjustments</dt>
-              <dd>Position, zoom, depth, picture settings and fisheye lens calibration, kept for each video or saved as presets to use on any video, and a screen that follows your head for watching lying down.</dd>
+              <dd>Position, zoom, depth, comfort focus to keep what you look at whole as you tilt your head or lie down and ease its depth up close, picture settings and fisheye lens calibration, kept for each video or saved as presets to use on any video, and a screen that follows your head for watching lying down.</dd>
             </div>
             <div>
               <dt>Custom controls</dt>
@@ -158,7 +167,7 @@
           </div>
           <div>
             <h3>No FramePlayerX account or tracking</h3>
-            <p>It connects to the servers you add, to Plex's account services if you link Plex (to sign in, find your servers and renew access) and to GitHub to check for updates, and sends nothing after a crash unless you choose to send the report, which you can read first (no video names, folders or server addresses).</p>
+            <p>It connects to the servers you add, to Plex's account services if you link Plex (to sign in, find your servers and renew access), to OpenSubtitles when you use Find subtitles or sign in to it (the video's title, year, episode and IDs, and a fingerprint of the file) and to GitHub to check for updates, and sends nothing after a crash unless you choose to send the report, which you can read first (no video names, folders or server addresses).</p>
           </div>
         </div>
       </div>

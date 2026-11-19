@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 56" width="220" height="56">
+  <!-- The README's link to frameplayerx.org.uk, one of a pair with
+       discord-button: the install buttons' shape and type, on the site's
+       blue. -->
+  <title>Website: frameplayerx.org.uk</title>
+  <rect x="1" y="1" width="218" height="54" rx="12" fill="#161A26" stroke="#2563EB" stroke-width="2"/>
+  <circle cx="30" cy="28" r="18" fill="#2563EB"/>
+  <g fill="none" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round">
+    <circle cx="30" cy="28" r="9"/>
+    <ellipse cx="30" cy="28" rx="3.9" ry="9"/>
+    <path d="M21 28h18M22.5 23.2h15M22.5 32.8h15"/>
+  </g>
+  <g font-family="Inter, 'Segoe UI', 'Noto Sans', 'DejaVu Sans', Helvetica, Arial, sans-serif">
+    <text x="58" y="25" fill="#FFFFFF" font-size="16" font-weight="700">Website</text>
+    <text x="58" y="42" fill="#A9B1C3" font-size="12.5">frameplayerx.org.uk</text>
+  </g>
+</svg>

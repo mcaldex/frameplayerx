@@ -1,6 +1,6 @@
 //! Folders of a source that only has files and folders (SMB, WebDAV, HTTP,
 //! DLNA, local folders): searched within the folder, sorted by name, date or
-//! size, played one at a time or all in order.
+//! size, played one at a time or queued with the folder's playback options.
 
 use super::page;
 use super::theme::{self, Weight};
@@ -11,9 +11,26 @@ use egui::{Align2, Color32, Sense, Vec2};
 use fp_core::source::{Entry, EntryKind};
 use fp_sources::EntrySort;
 
+#[derive(Clone, Copy)]
+pub enum PlayAllStatus {
+    Scanning,
+    /// Done, past a subfolder that couldn't be read, with this many videos.
+    Partial {
+        count: usize,
+    },
+}
+
 /// A folder listing of `b` under `title` (the source), the folder it is in
-/// (`root` at the top) underneath; true when Back was clicked.
-pub fn page(ui: &mut egui::Ui, v: &mut View, title: &str, root: &str, b: &mut Browse) -> bool {
+/// underneath: `address` when the source gives one, else `root` at the top
+/// and the folder's location below it; true when Back was clicked.
+pub fn page(
+    ui: &mut egui::Ui,
+    v: &mut View,
+    title: &str,
+    root: &str,
+    address: Option<String>,
+    b: &mut Browse,
+) -> bool {
     let words: Vec<String> = b.filter.split_whitespace().map(str::to_lowercase).collect();
     let shown: Vec<Entry> = b
         .entries
@@ -29,32 +46,54 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, title: &str, root: &str, b: &mut Br
         .iter()
         .filter(|e| e.kind == EntryKind::Video)
         .collect();
-    let subtitle = match &b.location {
-        Some(l) => short_location(l),
-        None => root.to_string(),
+    let has_subfolders = b.entries.iter().any(|e| e.kind == EntryKind::Directory);
+    let subtitle = match (address, &b.location) {
+        (Some(address), _) => shorten(&address),
+        (None, Some(l)) => short_location(l),
+        (None, None) => root.to_string(),
     };
     let (mut refresh, mut play_all) = (false, false);
     let back = page::header(ui, title, Some(&subtitle), |ui| {
         refresh = widgets::icon_button(ui, icons::ARROWS_CLOCKWISE, 44.0, false)
             .tip(tr!("feed-refresh"))
             .clicked();
-        if !videos.is_empty() {
-            play_all = widgets::button_sized(
-                ui,
-                Some(icons::PLAY),
-                tr!("common-play-all"),
-                Kind::Secondary,
-                44.0,
-            )
-            .clicked();
+        if v.folder_play_all.is_none()
+            && !b.loading
+            && b.error.is_none()
+            && (has_subfolders || !videos.is_empty())
+        {
+            let can_play = !videos.is_empty() || (b.include_subfolders && has_subfolders);
+            play_all = ui
+                .add_enabled_ui(can_play, |ui| {
+                    widgets::button_sized(
+                        ui,
+                        Some(icons::PLAY),
+                        tr!("common-play-all"),
+                        Kind::Secondary,
+                        44.0,
+                    )
+                })
+                .inner
+                .clicked();
+            if has_subfolders
+                && widgets::chip_icon(
+                    ui,
+                    Some(icons::FOLDERS),
+                    tr!("folders-play-all-subfolders"),
+                    b.include_subfolders,
+                )
+                .clicked()
+            {
+                b.include_subfolders = !b.include_subfolders;
+            }
         }
     });
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        page::search_field(ui, &mut b.filter, tr!("folders-search"), 200.0);
+        let filter_changed = page::search_field(ui, &mut b.filter, tr!("folders-search"), 200.0);
         ui.add_space(12.0);
         let mut sort = v.settings.browse_sort;
-        if page::sort_bar(
+        let sort_changed = page::sort_bar(
             ui,
             &[
                 (EntrySort::Name, tr!("sort-name")),
@@ -64,14 +103,21 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, title: &str, root: &str, b: &mut Br
                 (EntrySort::Smallest, tr!("sort-smallest")),
             ],
             &mut sort,
-        ) {
+        );
+        if sort_changed {
             v.settings.browse_sort = sort;
             fp_sources::sort_entries_by(&mut b.entries, sort);
+        }
+        if v.folder_play_all.is_some() && (filter_changed || sort_changed) {
+            v.actions.push(Action::CancelFolderPlayAll);
         }
         page::count_label(ui, &counts(&shown));
     });
     ui.add_space(6.0);
     page::status(ui, b.loading, b.error.as_deref());
+    if let Some(status) = v.folder_play_all {
+        play_all_status(ui, v, status);
+    }
 
     let queue = |videos: &[&Entry]| -> Vec<OpenRequest> {
         videos
@@ -87,7 +133,16 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, title: &str, root: &str, b: &mut Br
             .collect()
     };
     if play_all {
-        v.actions.push(Action::PlayAll(queue(&videos), 0));
+        if b.include_subfolders && has_subfolders {
+            v.actions.push(Action::FolderPlayAll {
+                source: b.source.clone(),
+                location: b.location.clone(),
+                sort: v.settings.browse_sort,
+                filter: b.filter.clone(),
+            });
+        } else {
+            v.actions.push(Action::PlayAll(queue(&videos), 0));
+        }
     }
     if refresh {
         v.actions.push(Action::Browse {
@@ -116,6 +171,7 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, title: &str, root: &str, b: &mut Br
                     v.state.picking = Some(super::Picking {
                         reqs: queue(&[e]),
                         title: e.name.clone(),
+                        with_delete: true,
                     });
                 } else if open {
                     match e.kind {
@@ -140,6 +196,42 @@ pub fn page(ui: &mut egui::Ui, v: &mut View, title: &str, root: &str, b: &mut Br
         });
     }
     back
+}
+
+fn play_all_status(ui: &mut egui::Ui, v: &mut View, status: PlayAllStatus) {
+    ui.horizontal(|ui| {
+        let dismiss = match status {
+            PlayAllStatus::Scanning => {
+                ui.spinner();
+                ui.label(
+                    egui::RichText::new(tr!("folders-play-all-scanning")).color(theme::TEXT_2),
+                );
+                tr!("common-cancel")
+            }
+            PlayAllStatus::Partial { count } => {
+                ui.label(
+                    egui::RichText::new(tr!("folders-play-all-unavailable")).color(theme::TEXT_2),
+                );
+                if count > 0 {
+                    let label = tr!("folders-play-all-found", count = count);
+                    if widgets::button_sized(ui, Some(icons::PLAY), &label, Kind::Secondary, 40.0)
+                        .clicked()
+                    {
+                        v.actions.push(Action::PlayFoundFolderVideos);
+                    }
+                    tr!("common-cancel")
+                } else {
+                    ui.label(
+                        egui::RichText::new(tr!("toast-nothing-to-play")).color(theme::TEXT_2),
+                    );
+                    tr!("library-dismiss")
+                }
+            }
+        };
+        if widgets::button_sized(ui, None, dismiss, Kind::Ghost, 40.0).clicked() {
+            v.actions.push(Action::CancelFolderPlayAll);
+        }
+    });
 }
 
 /// "3 folders · 12 videos".
@@ -268,14 +360,23 @@ fn row(ui: &mut egui::Ui, v: &mut View, e: &Entry) -> (bool, bool) {
             theme::icon(24.0),
             theme::TEXT_2.lerp_to_gamma(Color32::WHITE, h.max(t * 0.6)),
         );
-        more = m.tip(tr!("folders-more-tip")).clicked();
+        let tip = if v.services.opener.delete_allowed_in(None, &e.location) == Some(true) {
+            tr!("folders-more-tip-delete")
+        } else {
+            tr!("folders-more-tip")
+        };
+        more = m.tip(tip).clicked();
     }
     (resp.clicked() && !more, more)
 }
 
 fn short_location(l: &str) -> String {
     let l = crate::libraries::display_location(l);
-    let l = l.split('#').next().unwrap_or(&l);
+    shorten(l.split('#').next().unwrap_or(&l))
+}
+
+/// `l`, or its last 57 characters after an ellipsis when longer than 60.
+fn shorten(l: &str) -> String {
     if l.chars().count() > 60 {
         let tail: String = l
             .chars()

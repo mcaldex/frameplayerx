@@ -22,6 +22,7 @@ pub mod premium;
 pub mod queue;
 pub mod settings;
 pub mod sources;
+pub mod subtitle_search;
 pub mod subtitle_text;
 pub mod theme;
 pub mod thumbs;
@@ -220,6 +221,15 @@ pub enum Action {
     Open(OpenRequest),
     /// Makes the list Up next and plays it from `.1` (Play all, a playlist).
     PlayAll(Vec<OpenRequest>, usize),
+    /// Lists the current folder and its subfolders before starting playback.
+    FolderPlayAll {
+        source: String,
+        location: Option<String>,
+        sort: fp_sources::EntrySort,
+        filter: String,
+    },
+    CancelFolderPlayAll,
+    PlayFoundFolderVideos,
     /// A server grid's Play all when its first videos aren't all loaded:
     /// fetches them by `query`, then plays them as Play all does.
     CatalogPlayAll {
@@ -281,6 +291,7 @@ pub enum Action {
     SelectSourceSubtitles(Option<String>),
     /// Shows these subtitles, and keeps them as this video's pick.
     SelectSubtitles(crate::subtitles::Pick),
+    SubtitleSearch(subtitle_search::Action),
     /// Plays the file as it is, or transcoded by the server, from where it
     /// is.
     SelectQuality(crate::playback::Quality),
@@ -301,9 +312,9 @@ pub enum Action {
     ClearHistory,
     /// Deletes the server pictures kept on the headset.
     ClearImageCache,
-    AddSource(SourceConfig),
+    AddSource(SourceConfig, Option<usize>),
     /// Saves an edited source (the same id).
-    UpdateSource(SourceConfig),
+    UpdateSource(SourceConfig, Option<usize>),
     RemoveSource(String),
     /// Unlock a source with its PIN (the form says when it is wrong).
     UnlockSource {
@@ -372,6 +383,13 @@ pub enum Action {
         url: String,
         on: bool,
     },
+    /// Asks a file's server whether it may be deleted.
+    CheckDelete {
+        source_id: Option<String>,
+        location: String,
+    },
+    /// Deletes a file for good (Delete file was pressed twice).
+    DeleteFile(DeleteTarget),
     DiscoverDlna,
     /// Request a Quick Connect code from a Jellyfin/Emby server.
     QuickConnectInitiate {
@@ -476,6 +494,8 @@ pub struct Browse {
     pub error: Option<String>,
     /// Words the names shown must contain.
     pub filter: String,
+    /// Play all takes in the videos of every folder below this one.
+    pub include_subfolders: bool,
 }
 
 /// A source being browsed, in the browser its kind gets.
@@ -488,7 +508,7 @@ pub struct SourceView {
 }
 
 pub enum SourcePage {
-    /// Files and folders (SMB, WebDAV, HTTP, DLNA, local folders).
+    /// Files and folders (SMB, NFS, WebDAV, HTTP, DLNA, local folders).
     Folders(Browse),
     /// The headset's folders and drives.
     Local(local::LocalView),
@@ -684,11 +704,19 @@ pub struct SourceForm {
     pub key_locked: Option<(String, Option<bool>)>,
     pub insecure_tls: bool,
     pub parallel_downloads: bool,
+    /// The user and group IDs an NFS source sends; blank for this device's.
+    pub nfs_uid: String,
+    pub nfs_gid: String,
+    pub limit_play_all: bool,
+    pub play_all_limit: String,
     /// Signing in to a Jellyfin/Emby server with Quick Connect rather than a
     /// password.
     pub use_quick_connect: bool,
     pub quick_connect: QuickConnect,
     pub plex: plex::Connect,
+    /// Remove source was pressed once: pressing again within 4 seconds
+    /// removes the source.
+    pub remove_armed: Option<std::time::Instant>,
 }
 
 /// Signing in to a Jellyfin/Emby server with Quick Connect.
@@ -727,9 +755,14 @@ impl Default for SourceForm {
             key_locked: None,
             insecure_tls: false,
             parallel_downloads: false,
+            nfs_uid: String::new(),
+            nfs_gid: String::new(),
+            limit_play_all: true,
+            play_all_limit: crate::settings::DEFAULT_PLAY_ALL_LIMIT.to_string(),
             use_quick_connect: true,
             quick_connect: QuickConnect::Idle,
             plex: plex::Connect::default(),
+            remove_armed: None,
         }
     }
 }
@@ -785,6 +818,8 @@ impl RemapSlot {
 pub struct Picking {
     pub reqs: Vec<OpenRequest>,
     pub title: String,
+    /// Opened from a folder row's ⋯, which offers Delete file too.
+    pub with_delete: bool,
 }
 
 /// View-local UI state.
@@ -850,10 +885,22 @@ pub struct UiState {
     pub adjust_tab: usize,
     /// The audio and subtitles picker shows above the control bar.
     pub tracks_open: bool,
+    pub subtitle_search: Option<subtitle_search::Search>,
+    pub subtitle_account: subtitle_search::Account,
     /// The last run crashed: asks whether to send a report.
     pub crash: Option<crash::CrashPrompt>,
+    /// The file whose Delete file was pressed once, and when: a second
+    /// press within 4 seconds deletes it.
+    pub delete_file_armed: Option<(String, std::time::Instant)>,
+    /// The file being deleted.
+    pub deleting: Option<String>,
+    /// Whether files may be deleted, as their servers answered.
+    pub delete_checks: std::collections::HashMap<(Option<String>, String), DeleteCheck>,
     pub open_error: Option<String>,
     pub opening: Option<String>,
+    /// A jump over a damaged stretch of video has held the picture long
+    /// enough to notice.
+    pub skipping_damaged: bool,
     pub toast: Option<(String, std::time::Instant)>,
     /// Hide the seek-preview while scrubbing has not moved.
     pub scrub: Option<f64>,
@@ -864,6 +911,17 @@ pub struct UiState {
     pub keyboard_symbols: bool,
     /// Facts for the About tab (runtime, GPU, decoder...).
     pub about: Vec<(String, String)>,
+}
+
+/// A file Delete file deletes.
+#[derive(Clone, Debug)]
+pub struct DeleteTarget {
+    /// The video's name, for the toast.
+    pub title: String,
+    pub location: String,
+    pub source_id: Option<String>,
+    /// The item's id, when it is on a media server's pages.
+    pub catalog_item_id: Option<String>,
 }
 
 pub struct HomeRows {
@@ -913,9 +971,15 @@ impl Default for UiState {
             adjust_open: false,
             adjust_tab: 0,
             tracks_open: false,
+            subtitle_search: None,
+            subtitle_account: Default::default(),
             crash: None,
+            delete_file_armed: None,
+            deleting: None,
+            delete_checks: Default::default(),
             open_error: None,
             opening: None,
+            skipping_damaged: false,
             toast: None,
             scrub: None,
             unmute_volume: None,
@@ -1005,6 +1069,7 @@ impl UiState {
 pub struct View<'a> {
     pub state: &'a mut UiState,
     pub queue: &'a crate::queue::Queue,
+    pub folder_play_all: Option<folders::PlayAllStatus>,
     pub settings: &'a mut crate::settings::Settings,
     pub services: &'a crate::services::Services,
     pub thumbs: &'a mut thumbs::Thumbs,
@@ -1012,6 +1077,107 @@ pub struct View<'a> {
     pub actions: &'a mut Vec<Action>,
     pub passthrough_available: bool,
     pub devices: &'a [fp_haptics::DeviceStatus],
+}
+
+/// What a server said about deleting a file.
+#[derive(Clone, Copy, Debug)]
+pub enum DeleteCheck {
+    Asking,
+    Answered(bool),
+    /// It couldn't be asked, at this time: it is asked again after
+    /// [`DELETE_CHECK_RETRY`].
+    Failed(std::time::Instant),
+}
+
+/// How long a delete check that couldn't reach its server waits before it
+/// asks again.
+const DELETE_CHECK_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Returns whether `location` in `source_id` can be deleted right now, queueing
+/// a single background check when the source must ask its server first.
+pub(super) fn can_delete_entry(v: &mut View<'_>, source_id: Option<&str>, location: &str) -> bool {
+    if let Some(allowed) = v.services.opener.delete_allowed_in(source_id, location) {
+        return allowed;
+    }
+    let key = (source_id.map(str::to_owned), location.to_string());
+    match v.state.delete_checks.get(&key) {
+        Some(DeleteCheck::Answered(allowed)) => *allowed,
+        Some(DeleteCheck::Asking) => false,
+        Some(DeleteCheck::Failed(at)) if at.elapsed() < DELETE_CHECK_RETRY => false,
+        _ => {
+            v.state.delete_checks.insert(key, DeleteCheck::Asking);
+            v.actions.push(Action::CheckDelete {
+                source_id: source_id.map(str::to_owned),
+                location: location.to_string(),
+            });
+            false
+        }
+    }
+}
+
+/// Delete file for the file at `location`, which asks again: pressed once
+/// it turns red as "Delete for good?" for 4 seconds. Whether it was pressed
+/// again, so the file is to be deleted.
+pub(super) fn delete_button(ui: &mut egui::Ui, state: &mut UiState, location: &str) -> bool {
+    use widgets::Kind;
+    if state.deleting.as_deref() == Some(location) {
+        ui.add_enabled_ui(false, |ui| {
+            widgets::button(
+                ui,
+                Some(icons::TRASH),
+                tr!("delete-deleting"),
+                Kind::Secondary,
+            )
+        });
+        return false;
+    }
+    let before = state
+        .delete_file_armed
+        .as_ref()
+        .filter(|(l, _)| l == location)
+        .map(|&(_, at)| at);
+    let mut at = before;
+    let confirmed = confirm_button(
+        ui,
+        &mut at,
+        tr!("delete-file"),
+        tr!("delete-file-confirm"),
+        |ui, label, kind| widgets::button(ui, Some(icons::TRASH), label, kind),
+    );
+    // Only a press changes it, and makes it this video's.
+    if at != before {
+        state.delete_file_armed = at.map(|at| (location.to_string(), at));
+    }
+    confirmed
+}
+
+/// How long a button that asks again waits for its second press.
+const CONFIRM_WINDOW: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// A button that asks again: pressed once, at `armed`, it shows `confirm`
+/// in red for [`CONFIRM_WINDOW`]. Whether it was pressed again in that time.
+fn confirm_button(
+    ui: &mut egui::Ui,
+    armed: &mut Option<std::time::Instant>,
+    idle: &str,
+    confirm: &str,
+    button: impl FnOnce(&mut egui::Ui, &str, widgets::Kind) -> egui::Response,
+) -> bool {
+    let left = armed.and_then(|at| CONFIRM_WINDOW.checked_sub(at.elapsed()));
+    let on = left.is_some_and(|d| !d.is_zero());
+    let (label, kind) = if on {
+        (confirm, widgets::Kind::Danger)
+    } else {
+        (idle, widgets::Kind::Secondary)
+    };
+    let pressed = button(ui, label, kind).clicked();
+    if let Some(left) = left.filter(|_| on) {
+        ui.ctx().request_repaint_after(left);
+    }
+    if pressed {
+        *armed = (!on).then(std::time::Instant::now);
+    }
+    pressed && on
 }
 
 #[cfg(test)]

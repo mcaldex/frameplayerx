@@ -27,6 +27,7 @@ mod query;
 mod record;
 mod scan;
 mod schema;
+mod user_subtitles;
 mod worker;
 
 pub use error::{Error, Result};
@@ -45,6 +46,10 @@ pub use scan::{
     SCRIPT_AXES, ScanError, ScanOptions, ScanPhase, ScanProgress, ScanReport, script_axis,
 };
 pub use schema::SCHEMA_VERSION;
+pub use user_subtitles::{
+    MAX_SUBTITLE_BYTES, MediaAttachmentTarget, NewUserSubtitle, OriginalSubtitleSignature,
+    SUBTITLE_SCHEME, StagedSubtitle, SubtitleStore, UserSubtitle,
+};
 pub use worker::{
     MediaProber, MetadataWorker, ProbeInfo, ThumbnailCrop, WorkerEvent, WorkerOptions, WorkerStats,
     process_pending,

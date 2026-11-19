@@ -1,6 +1,6 @@
-<p align="center">
-  <img src="assets/logo.svg" alt="FramePlayerX Logo" width="160" />
-</p>
+<div align="center">
+
+<img src="assets/logo.svg" alt="FramePlayerX Logo" width="160" />
 
 # FramePlayerX
 
@@ -11,30 +11,33 @@
 
 A VR video player for the Valve Steam Frame. It plays flat, 180°, 360° and fisheye videos, in 2D or 3D, from the headset, a microSD card, a USB drive or a media server. It runs natively on the headset and plays 8K video smoothly with the display at 120 Hz.
 
-<a href="https://frameplayerx.org.uk/"><img src="assets/website-icon.svg" alt="Website" title="Website" width="32" /></a>&nbsp;
-<a href="https://discord.gg/tDZRuZDY7d"><img src="assets/discord-icon.svg" alt="Discord" title="Discord" width="32" /></a>
+<a href="https://frameplayerx.org.uk/"><img src="assets/website-button.svg" alt="Website: frameplayerx.org.uk" width="220" /></a>&nbsp;&nbsp;
+<a href="https://discord.gg/tDZRuZDY7d"><img src="assets/discord-button.svg" alt="Discord: join the server" width="220" /></a>
+
+</div>
 
 ---
 
 ## Features
 
 - **Video formats**: 180°, 360°, fisheye, flat and interlaced (1080i, DVD) videos, in 2D or 3D: side by side or top/bottom at full or half size, frame sequential, and 3D Blu-ray (disc images, MKV rips and `.ssif` files) in full 3D. The format is detected automatically, and you can change it for any video
-- **Hardware decoding**: HEVC (H.265) in 8 and 10 bits and H.264, up to 8K, play on the Frame's own video decoder; AV1, VP9, interlaced video and anything else play with software decoding
+- **Cinema**: watch flat videos in a full-size cinema instead of on a floating screen: the Classic, a stadium hall with red velvet seats, or the Luxe, an open room with neon lights and leather recliners. Pick your row and how much the screen curves around you, and the house lights dim as the film starts and come up when you pause
+- **Hardware decoding**: HEVC (H.265) in 8 and 10 bits and H.264, up to 8K, play on the Frame's own video decoder, even past a damaged stretch of a file; AV1, VP9, interlaced video and anything else play with software decoding
 - **Performance**: out of the box, 8K 60 fps video, 10-bit included, plays at full frame rate with the display at 120 Hz and 3744 pixels per eye, and the CPU stays almost idle: the decoder's pictures are drawn without being copied, and foveated rendering that follows your eyes keeps full detail where you look. Refresh rate, resolution and foveation can be changed in Settings, even while a video plays
 - **HDR**: HDR10 and HLG videos are fitted to the Frame's screen scene by scene, and colours it can't show are toned down instead of cut off
-- **Adjustments**: position, zoom, depth, picture settings and fisheye lens calibration, kept for each video or saved as presets to use on any video, and a screen that follows your head for watching lying down
+- **Adjustments**: position, zoom, depth, comfort focus to keep what you look at whole as you tilt your head or lie down and ease its depth up close, picture settings and fisheye lens calibration, kept for each video or saved as presets to use on any video, and a screen that follows your head for watching lying down
 - **Passthrough videos**: see your room around the people in passthrough videos, and behind green or blue screens
-- **Subtitles and spatial audio**: subtitles from a file or inside the video, picked in your language and shown in any script, and 360° audio that follows your head
+- **Subtitles and spatial audio**: subtitles from a file, inside the video or found on OpenSubtitles from the player and kept on your headset with their timing set for each video, picked in your language and shown in any script, and 360° audio that follows your head
 - **Videos on the headset**: browse any folder on the headset, a microSD card or a USB drive, including cards formatted on Windows or a Mac, and make libraries of your folders, with thumbnails, filters and sorting
-- **Media servers**: browse and play from Jellyfin, Emby and Plex, which can transcode while you watch and sync watch state; any server with a DeoVR feed or HereSphere API, transcoding when it offers that and, with HereSphere, syncing watch state; and network shares (SMB), SFTP servers, WebDAV, DLNA servers and web folders
-- **Watch history, Up next and playlists**: carry on where you left off, queue videos to play one after another, in order or shuffled, and loop the queue or a single video; keep playlists of videos from any source, and mark favorites and ratings
+- **Media servers**: browse and play from Jellyfin, Emby and Plex, which can transcode while you watch and sync watch state; any server with a DeoVR feed or HereSphere API, transcoding when it offers that and, with HereSphere, syncing watch state; and network shares (SMB, NFS), SFTP servers, WebDAV, DLNA servers and web folders
+- **Watch history, Up next and playlists**: carry on where you left off, queue videos to play one after another, a folder's subfolders included, in order or shuffled, and loop the queue or a single video; keep playlists of videos from any source, mark favorites and ratings, and delete the files of videos you're done with
 - **PIN locks**: hide a source behind a PIN until you unlock it
 - **Haptic devices**: optional, off until turned on; syncs supported haptic devices with videos that have scripts
 - **Phone remote**: control the player from your phone's browser, which pairs with a code the headset shows and can type into the headset too, or from apps made for DeoVR's remote
 - **Custom controls**: choose what each controller button does
 - **Languages**: English, German, Spanish, French, Japanese and Simplified Chinese, following the language Steam is set to; the phone remote follows the headset
 - **Updates**: checks for a new version when it starts, and installs it from Settings when you choose to, on a Stable or a Beta channel
-- **No FramePlayerX account or tracking**: it connects to the servers you add, to Plex's account services if you link Plex (to sign in, find your servers and renew access) and to GitHub to check for updates, and sends nothing after a crash unless you choose to send the report, which you can read first (no video names, folders or server addresses)
+- **No FramePlayerX account or tracking**: it connects to the servers you add, to Plex's account services if you link Plex (to sign in, find your servers and renew access), to OpenSubtitles when you use Find subtitles or sign in to it (the video's title, year, episode and IDs, and a fingerprint of the file) and to GitHub to check for updates, and sends nothing after a crash unless you choose to send the report, which you can read first (no video names, folders or server addresses)
 
 ---
 
@@ -80,7 +83,7 @@ To update later, open **Settings › Updates** and press **Download and install*
 
 | Guide | What's in it |
 |---|---|
-| [User guide](docs/USER-GUIDE.md), also [on the website](https://frameplayerx.org.uk/guide) | Installing, updating and uninstalling, sources, browsing, PIN locks, video formats, display settings, controls, passthrough, haptics, remote control and troubleshooting |
+| [User guide](docs/USER-GUIDE.md), also [on the website](https://frameplayerx.org.uk/guide) | Installing, updating and uninstalling, sources, browsing and playlists, video formats and adjustments, subtitles, hardware decoding, display settings, controls, passthrough, haptics, remote control and troubleshooting |
 | [Development](docs/DEVELOPMENT.md) | Building and testing, how the code is organised, running without a headset (Monado and the preview harness), and releasing |
 | [Contributing](CONTRIBUTING.md) | What to do before opening a pull request, what it has to say and how to test it |
 
@@ -132,6 +135,7 @@ FramePlayerX began as a fork of [FramePlayer](https://github.com/yellkell/framep
 - [Frame Control](https://github.com/saphid/frame-control) by saphid installs FramePlayerX from a PC, and FramePlayerX's install links follow its format
 - The DeoVR remote API, the DeoVR feed and the HereSphere API come from those players; FramePlayerX implements them so the servers and phone apps made for them work with it
 - [FFmpeg](https://ffmpeg.org) and [dav1d](https://code.videolan.org/videolan/dav1d) decode the video, and the libraries and fonts in [Technology Stack](#technology-stack) do much of the rest. FramePlayerX uses code of FFmpeg licensed under the LGPL 2.1 or later; where to download its source, and every bundled component with its licence, is in [packaging/licenses](packaging/licenses/THIRD-PARTY.txt)
+- The Luxe cinema's recliners are [Recliner Brown_Leather](https://sketchfab.com/3d-models/recliner-brown-leather-4e3e06cf74fe48c8b7472a3549f6b5d2) by [Puneet Sharma](https://sketchfab.com/Eshi_Nito), licensed under [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/)
 - The pictures and videos in the screenshots are AI-generated
 
 ### Players that inspired FramePlayerX
@@ -159,7 +163,7 @@ HEVC (H.265) and H.264: the Frame's hardware decoder plays them smoothly up to 8
 
 ### Does it work with my media server or NAS?
 
-Yes, if it offers one of these: Jellyfin (sign in with Quick Connect or a password), Emby (a password), Plex (sign in with a linking code or an access token), a DeoVR feed or HereSphere API, SMB, SFTP, WebDAV or DLNA. Add it under Sources › Add source.
+Yes, if it offers one of these: Jellyfin (sign in with Quick Connect or a password), Emby (a password), Plex (sign in with a linking code or an access token), a DeoVR feed or HereSphere API, SMB, SFTP, NFS, WebDAV or DLNA. Add it under Sources › Add source.
 
 ---
 

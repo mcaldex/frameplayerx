@@ -19,6 +19,7 @@ use crate::xml;
 use crate::{Source, dir_entry, file_entry, sort_entries};
 use fp_core::source::{ByteSource, Entry};
 use std::sync::Arc;
+use std::time::Instant;
 
 /// Properties requested for each child.
 const PROPFIND_BODY: &str = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -84,6 +85,63 @@ impl WebDavSource {
         }
         Ok(webdav_to_http(value))
     }
+
+    /// Whether the server says `url` is a folder. An answer that doesn't say
+    /// what it is fails: DELETE would take a folder whole.
+    fn is_folder(&self, url: &str) -> Result<bool> {
+        let reply = self
+            .client
+            .request(
+                "PROPFIND",
+                url,
+                &[
+                    ("Depth", "0"),
+                    ("Content-Type", "application/xml; charset=utf-8"),
+                ],
+                Some(PROPFIND_BODY.as_bytes()),
+                1 << 20,
+            )?
+            .error_for_status(url)?;
+        let doc = xml::parse(&reply.text())?;
+        let ms = doc
+            .find("multistatus")
+            .ok_or_else(|| Error::parse("WebDAV response", "no multistatus element"))?;
+        ms.children_named("response")
+            .flat_map(|r| r.children_named("propstat"))
+            .filter(|ps| propstat_ok(ps))
+            .find_map(|ps| ps.child("prop").and_then(|p| p.child("resourcetype")))
+            .map(|rt| rt.child("collection").is_some())
+            .ok_or_else(|| {
+                Error::Unsupported(format!(
+                    "{} didn't say whether this is a folder",
+                    redact(url)
+                ))
+            })
+    }
+}
+
+/// Whether a `propstat` holds properties the server could read: a 2xx
+/// status, or none given.
+fn propstat_ok(ps: &xml::Element) -> bool {
+    ps.child_text("status").is_none_or(|s| {
+        s.split_whitespace()
+            .nth(1)
+            .is_some_and(|c| c.starts_with('2'))
+    })
+}
+
+/// Where an `href` in an answer for `request_url` leads, on the server that
+/// answered: one behind a proxy can name another host, so only an HTTP
+/// address's path counts, and any other scheme (`file:` too) is refused.
+fn href_location(request_url: &str, href: &str) -> Option<String> {
+    let joined = url::Url::parse(&resolve(request_url, href).ok()?).ok()?;
+    if !matches!(joined.scheme(), "http" | "https") {
+        return None;
+    }
+    let mut location = url::Url::parse(request_url).ok()?;
+    location.set_path(joined.path());
+    location.set_query(joined.query());
+    Some(location.to_string())
 }
 
 impl Source for WebDavSource {
@@ -131,17 +189,32 @@ impl Source for WebDavSource {
             });
         }
         let mut entries = parse_multistatus(&reply.text(), &url)?;
-        for entry in &mut entries {
-            if let Some(location) = self.canonical_location(&entry.location) {
+        // What the server lists outside this source isn't its to offer.
+        entries.retain_mut(|entry| match self.canonical_location(&entry.location) {
+            Some(location) => {
                 entry.location = location;
+                true
             }
-        }
+            None => false,
+        });
         sort_entries(&mut entries);
         Ok(entries)
     }
 
     fn open(&self, location: &str) -> Result<Arc<dyn ByteSource>> {
         Ok(Arc::new(self.client.open(&self.current_url(location)?)?))
+    }
+
+    fn open_original(
+        &self,
+        video: &Entry,
+        deadline: Instant,
+    ) -> Result<Option<Arc<dyn ByteSource>>> {
+        let Some(location) = self.canonical_location(&video.location) else {
+            return Ok(None);
+        };
+        self.client
+            .open_original(&self.current_url(&location)?, deadline)
     }
 
     fn picture_request(&self, location: &str) -> Option<(HttpClient, String)> {
@@ -156,6 +229,31 @@ impl Source for WebDavSource {
         let mut video = video.clone();
         video.location = self.current_url(&video.location)?;
         crate::sidecars_from_folder(self, &video)
+    }
+
+    fn can_delete(&self) -> bool {
+        true
+    }
+
+    fn delete(&self, location: &str) -> Result<()> {
+        let url = self.current_url(location)?;
+        // DELETE takes a folder with everything in it, and a folder's address
+        // needn't end in a slash, so the server is asked what it is first.
+        if url.ends_with('/') || with_trailing_slash(&url) == self.root || self.is_folder(&url)? {
+            return Err(Error::invalid(location, "a folder cannot be deleted"));
+        }
+        let reply = self
+            .client
+            .request_no_status_retry("DELETE", &url, &[], None, 64 << 10)?
+            .error_for_status(&url)?;
+        // A Multi-Status answer lists what couldn't be deleted.
+        if reply.status == 207 {
+            return Err(Error::HttpStatus {
+                status: reply.status,
+                url: redact(&url),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -181,7 +279,7 @@ pub fn parse_multistatus(xml_text: &str, request_url: &str) -> Result<Vec<Entry>
         let Some(href) = resp.child_text("href") else {
             continue;
         };
-        let Ok(location) = resolve(request_url, href) else {
+        let Some(location) = href_location(request_url, href) else {
             log::debug!("skipping unusable WebDAV href {href:?}");
             continue;
         };
@@ -193,12 +291,7 @@ pub fn parse_multistatus(xml_text: &str, request_url: &str) -> Result<Vec<Entry>
         let mut modified = None;
         let mut display = None;
         for ps in resp.children_named("propstat") {
-            let ok = ps.child_text("status").is_none_or(|s| {
-                s.split_whitespace()
-                    .nth(1)
-                    .is_some_and(|c| c.starts_with('2'))
-            });
-            if !ok {
+            if !propstat_ok(ps) {
                 continue;
             }
             let Some(prop) = ps.child("prop") else {
@@ -330,5 +423,132 @@ mod tests {
         assert_eq!(s.root(), "https://nas:5006/vr/");
         assert!(!s.describe().contains("secret"));
         assert!(!format!("{s:?}").contains("secret"));
+    }
+
+    #[test]
+    fn deletes_files_over_http_and_refuses_collections() {
+        use crate::test_server::{TestServer, resp};
+
+        let status = |kind: &str| {
+            format!(
+                r#"<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"><d:response><d:href>/x</d:href>
+<d:propstat><d:prop><d:resourcetype>{kind}</d:resourcetype></d:prop>
+<d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#
+            )
+        };
+        let server = TestServer::start(move |r| match (r.method.as_str(), r.path()) {
+            ("PROPFIND", "/dav/Clip%201.mp4" | "/dav/locked.mp4") => {
+                assert_eq!(r.header("Depth"), Some("0"));
+                resp(207, status(""), &[])
+            }
+            // A folder whose address has no slash at the end.
+            ("PROPFIND", "/dav/Sub") => resp(207, status("<d:collection/>"), &[]),
+            ("PROPFIND", "/dav/missing.mp4") => resp(404, Vec::new(), &[]),
+            // Its type isn't readable: it may be a folder.
+            ("PROPFIND", "/dav/unknown.mp4") => resp(
+                207,
+                status("").replace("HTTP/1.1 200 OK", "HTTP/1.1 403 Forbidden"),
+                &[],
+            ),
+            // A file, which a Multi-Status answer then fails to delete.
+            ("PROPFIND" | "DELETE", "/dav/partial.mp4") => resp(207, status(""), &[]),
+            ("DELETE", "/dav/Clip%201.mp4") => resp(204, Vec::new(), &[]),
+            ("DELETE", "/dav/locked.mp4") => resp(403, Vec::new(), &[]),
+            _ => resp(500, Vec::new(), &[]),
+        });
+        let source = WebDavSource::new(&HttpConfig {
+            id: "w".into(),
+            name: "WebDAV".into(),
+            url: format!("{}/dav/", server.base),
+            credentials: None,
+            insecure_tls: false,
+            parallel_downloads: false,
+        })
+        .unwrap();
+        assert!(source.can_delete());
+
+        let file = location::encode("w", "webdav", "Clip%201.mp4");
+        source.delete(&file).unwrap();
+
+        let locked = location::encode("w", "webdav", "locked.mp4");
+        assert!(matches!(source.delete(&locked), Err(Error::Auth(_))));
+
+        let missing = location::encode("w", "webdav", "missing.mp4");
+        assert!(matches!(source.delete(&missing), Err(Error::NotFound(_))));
+
+        let unknown = location::encode("w", "webdav", "unknown.mp4");
+        assert!(matches!(
+            source.delete(&unknown),
+            Err(Error::Unsupported(_))
+        ));
+
+        let partial = location::encode("w", "webdav", "partial.mp4");
+        assert!(matches!(
+            source.delete(&partial),
+            Err(Error::HttpStatus { status: 207, .. })
+        ));
+
+        for folder in [
+            location::encode("w", "webdav", "Sub/"),
+            location::encode("w", "webdav", "Sub"),
+            format!("{}/dav", server.base),
+        ] {
+            assert!(
+                matches!(source.delete(&folder), Err(Error::InvalidLocation { .. })),
+                "{folder}"
+            );
+        }
+        assert_eq!(server.count(|r| r.method == "DELETE"), 3);
+        assert_eq!(
+            server.count(|r| r.method == "DELETE" && r.path() == "/dav/unknown.mp4"),
+            0
+        );
+    }
+
+    #[test]
+    fn a_listing_offers_only_what_is_in_the_source() {
+        use crate::test_server::{TestServer, resp};
+
+        let server = TestServer::start(|r| {
+            let entry = |href: &str| {
+                format!(
+                    "<d:response><d:href>{href}</d:href><d:propstat><d:prop>\
+                     <d:resourcetype/><d:getcontentlength>5</d:getcontentlength></d:prop>\
+                     <d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>"
+                )
+            };
+            let body = format!(
+                r#"<?xml version="1.0"?><d:multistatus xmlns:d="DAV:">{}{}{}{}{}</d:multistatus>"#,
+                entry("/dav/"),
+                entry("/dav/here.mp4"),
+                // A server behind a proxy, naming its own address.
+                entry("http://internal:8080/dav/proxied.mp4"),
+                entry("file:///home/steamos/local.mp4"),
+                entry("/elsewhere/outside.mp4"),
+            );
+            match (r.method.as_str(), r.path()) {
+                ("PROPFIND", "/dav/") => resp(207, body, &[]),
+                _ => resp(500, Vec::new(), &[]),
+            }
+        });
+        let source = WebDavSource::new(&HttpConfig {
+            id: "w".into(),
+            name: "WebDAV".into(),
+            url: format!("{}/dav/", server.base),
+            credentials: None,
+            insecure_tls: false,
+            parallel_downloads: false,
+        })
+        .unwrap();
+        let listed = source.list(None).unwrap();
+        let names: Vec<_> = listed.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["here.mp4", "proxied.mp4"]);
+        for e in &listed {
+            assert!(
+                crate::location_owner(&e.location).as_deref() == Some("w"),
+                "{}",
+                e.location
+            );
+        }
     }
 }

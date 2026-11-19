@@ -32,6 +32,12 @@ pub(super) enum Job {
     },
     /// The videos a server grid's Play all fetched, for Up next.
     PlayAll(Result<Vec<OpenRequest>, String>),
+    /// A folder tree's queue, identified by the cancellation flag of its scan.
+    FolderPlayAll {
+        cancel: Arc<AtomicBool>,
+        result: sources::FolderPlayAllResult,
+    },
+    FolderPlayAllLarge(Arc<AtomicBool>),
     /// A scene feed's listing; `cached`: the one saved last time, shown
     /// while the server answers.
     FeedLibrary {
@@ -50,6 +56,18 @@ pub(super) enum Job {
         url: String,
         full: bool,
         result: Box<Result<fp_sources::SceneInfo, String>>,
+    },
+    /// Whether a file may be deleted, as its server answered; `None` when
+    /// it couldn't be asked.
+    DeleteCheck {
+        source_id: Option<String>,
+        location: String,
+        allowed: Option<bool>,
+    },
+    /// A file deleted, or why it couldn't be.
+    Deleted {
+        target: ui::DeleteTarget,
+        result: Result<(), String>,
     },
     Toast(String),
     /// Nothing to show (a server took a change).
@@ -70,6 +88,9 @@ pub(super) enum Job {
     QuickConnectInitiated(u64, Result<fp_sources::QuickConnectState, String>),
     /// The answer to a poll with secret `.0`.
     QuickConnectPolled(String, Result<Option<(String, String)>, String>),
+    /// Whether the server of an NFS source being added, or saved when
+    /// `.2`, exports `/`.
+    NfsRootChecked(Box<fp_sources::NfsConfig>, Result<bool, String>, bool),
     PlexInitiated(u64, Result<fp_sources::plex::auth::PlexPin, String>),
     PlexPolled(u64, Box<Result<PlexLink, String>>),
     PlexConnected(u64, Box<Result<fp_sources::PlexConfig, String>>),
@@ -78,10 +99,13 @@ pub(super) enum Job {
     CrashSent(Result<(), String>),
     /// Steam was asked to open a web page.
     WebPageOpened(Result<(), String>),
-    /// Subtitle file `index` of the video opened as `seq`, read.
+    SubtitleSearch(Box<subtitle_search::Job>),
+    /// A subtitle file read for a particular playback and selection.
     Subtitles {
         seq: u64,
-        index: usize,
+        selection: u64,
+        search: Option<u64>,
+        location: String,
         result: Result<Vec<fp_media::Cue>, String>,
     },
 }
@@ -355,6 +379,7 @@ impl App {
 
     /// Takes in finished background work and the metadata worker's progress.
     pub(super) fn poll_jobs(&mut self) {
+        self.check_folder_play_all();
         self.services.poll_source_updates();
         for job in self.jobs.poll() {
             self.on_job(job);
@@ -394,6 +419,10 @@ impl App {
                 Ok(_) => self.ui.toast(tr!("toast-nothing-to-play")),
                 Err(e) => self.ui.toast(e),
             },
+            Job::FolderPlayAll { cancel, result } => {
+                self.folder_play_all_done(&cancel, result);
+            }
+            Job::FolderPlayAllLarge(cancel) => self.folder_play_all_large(&cancel),
             Job::FeedLibrary {
                 source,
                 result,
@@ -438,25 +467,29 @@ impl App {
                     });
                 }
             }
+            Job::DeleteCheck {
+                source_id,
+                location,
+                allowed,
+            } => {
+                let check = match allowed {
+                    Some(allowed) => ui::DeleteCheck::Answered(allowed),
+                    None => ui::DeleteCheck::Failed(Instant::now()),
+                };
+                self.ui.delete_checks.insert((source_id, location), check);
+                self.panels[MAIN].request_repaint();
+            }
+            Job::Deleted { target, result } => self.on_deleted(target, result),
             Job::Toast(t) => self.ui.toast(t),
             Job::Done | Job::WebPageOpened(Ok(())) => {}
-            Job::Subtitles { seq, index, result } => {
-                // Only for the same video, and the file still picked.
-                let Some(p) = self.playback.as_mut().filter(|_| seq == self.open_seq) else {
-                    return;
-                };
-                if p.active_subtitle_file != Some(index) {
-                    return;
-                }
-                match result {
-                    Ok(cues) => p.player.set_external_subtitles(cues),
-                    Err(e) => {
-                        p.active_subtitle_file = None;
-                        self.ui.toast(tr!("toast-subtitles", title = e.to_string()));
-                    }
-                }
-                self.ui.invalidate();
-            }
+            Job::SubtitleSearch(job) => self.subtitle_search_finished(*job),
+            Job::Subtitles {
+                seq,
+                selection,
+                search,
+                location,
+                result,
+            } => self.subtitle_file_finished(seq, selection, search, location, result),
             Job::Dlna(r) => {
                 self.ui.dlna_searching = false;
                 match r {
@@ -504,6 +537,7 @@ impl App {
             }
             Job::QuickConnectInitiated(seq, r) => self.quick_connect_code(seq, r),
             Job::QuickConnectPolled(secret, r) => self.quick_connect_answer(&secret, r),
+            Job::NfsRootChecked(c, r, saved) => self.nfs_root_checked(*c, r, saved),
             Job::PlexInitiated(generation, result) => self.plex_initiated(generation, result),
             Job::PlexPolled(generation, result) => self.plex_polled(generation, *result),
             Job::PlexConnected(generation, result) => self.plex_connected(generation, *result),
@@ -527,6 +561,184 @@ impl App {
                 self.ui.toast(tr!("error-open-page", error = e));
             }
         }
+    }
+
+    /// Location aliases (raw path, `volume://` stable URI, canonical URI) that
+    /// may refer to the deleted item across queue, library, playback and pages.
+    pub(super) fn deleted_location_keys(
+        &self,
+        source_id: Option<&str>,
+        location: &str,
+    ) -> Vec<String> {
+        let mut keys = Vec::new();
+        let mut push = |s: &str| {
+            if !s.is_empty() && !keys.iter().any(|k| k == s) {
+                keys.push(s.to_string());
+            }
+        };
+        push(location);
+        let stable = fp_core::volume::stable(location);
+        push(stable.as_ref());
+        if let Some(resolved) = fp_core::volume::resolve(location) {
+            push(&resolved);
+        }
+        if let Some(stripped) = location.strip_prefix("file://") {
+            push(stripped);
+            push(fp_core::volume::stable(stripped).as_ref());
+        }
+        let owner = fp_sources::location_owner(location).or_else(|| source_id.map(str::to_owned));
+        if let Some(src) = owner
+            .as_deref()
+            .and_then(|id| self.services.opener.source(id))
+        {
+            if let Some(c) = src.canonical_location(location) {
+                push(&c);
+            }
+            if let Some(resolved) = fp_core::volume::resolve(location)
+                && let Some(c) = src.canonical_location(&resolved)
+            {
+                push(&c);
+            }
+        }
+        keys
+    }
+
+    fn on_deleted(&mut self, target: ui::DeleteTarget, result: Result<(), String>) {
+        self.ui.deleting = None;
+        self.panels[MAIN].request_repaint();
+        if let Err(e) = result {
+            self.ui.toast(tr!("delete-failed", error = e.as_str()));
+            return;
+        }
+        let ui::DeleteTarget {
+            title,
+            location,
+            source_id,
+            catalog_item_id,
+        } = target;
+        let keys = self.deleted_location_keys(source_id.as_deref(), &location);
+        self.ui.delete_checks.clear();
+
+        if self
+            .playback
+            .as_ref()
+            .is_some_and(|p| keys.contains(&p.request.location))
+        {
+            self.close_playback();
+        }
+        self.queue.remove_where(|r| keys.contains(&r.location));
+        if self
+            .ui
+            .picking
+            .as_ref()
+            .is_some_and(|p| p.reqs.iter().any(|r| keys.contains(&r.location)))
+        {
+            self.ui.picking = None;
+        }
+        if let Some(scan) = &mut self.folder_play_all {
+            if let FolderPlayAllState::Partial { requests, .. } = &mut scan.state {
+                requests.retain(|r| !keys.contains(&r.location));
+            }
+            scan.deleted.extend(keys.iter().cloned());
+        }
+
+        for k in &keys {
+            self.thumbs.forget(k);
+            if let Ok(Some(rec)) = self.services.library.get_by_location(k) {
+                if let Some(pic) = rec.picture() {
+                    self.thumbs.forget(&pic);
+                }
+                for p in [rec.thumbnail.as_ref(), rec.resume_thumbnail.as_ref()]
+                    .into_iter()
+                    .flatten()
+                {
+                    self.thumbs.forget(&p.to_string_lossy());
+                }
+                if let Some(url) = &rec.thumbnail_url {
+                    self.thumbs.forget(url);
+                }
+                if self.ui.details == Some(rec.id) {
+                    self.ui.details = None;
+                }
+                if self.ui.format_drawer == Some(rec.id) {
+                    self.ui.format_drawer = None;
+                }
+                if let Err(e) = self.services.library.remove_media(rec.id) {
+                    log::warn!("removing deleted media {} from library: {e}", rec.location);
+                }
+            }
+        }
+
+        let mut feed_saved = false;
+        if let Some(sv) = self.ui.source.as_mut() {
+            // A media server's item ids are its own: another server can
+            // have the same one.
+            let own_source = source_id.as_deref() == Some(sv.source.as_str());
+            match &mut sv.page {
+                SourcePage::Folders(b) => remove_from_browse(b, &keys, &mut self.thumbs),
+                SourcePage::Local(l) => {
+                    if let Some(b) = &mut l.folder {
+                        remove_from_browse(b, &keys, &mut self.thumbs);
+                    }
+                }
+                SourcePage::Library(l) => {
+                    if let Some(b) = &mut l.folder {
+                        remove_from_browse(b, &keys, &mut self.thumbs);
+                    }
+                }
+                SourcePage::Catalog(j) => {
+                    let id = catalog_item_id.as_deref().filter(|_| own_source);
+                    for thumb in j.remove_item(id, &keys) {
+                        self.thumbs.forget(&thumb);
+                    }
+                }
+                SourcePage::Feed(f) => {
+                    let (changed, forgotten) = f.remove_scene(&keys);
+                    for thumb in forgotten {
+                        self.thumbs.forget(&thumb);
+                    }
+                    if changed && let Some(src) = source_id.clone() {
+                        f.unsaved = 0;
+                        feed_saved = true;
+                        let lib = f.library();
+                        self.jobs.spawn("feed-save", move || {
+                            let path = fp_sources::FeedLibrary::cache_path(&src);
+                            if let Err(e) = lib.save(&path) {
+                                log::warn!("saving the listing of {src}: {e}");
+                            }
+                            Job::Done
+                        });
+                    }
+                }
+            }
+        }
+        // A feed opens from its saved listing, so a video deleted elsewhere
+        // leaves that too.
+        if !feed_saved
+            && let Some(src) = source_id
+            && self
+                .services
+                .opener
+                .source(&src)
+                .is_some_and(|s| s.as_scene_feed().is_some())
+        {
+            let keys = keys.clone();
+            self.jobs.spawn("feed-save", move || {
+                let path = fp_sources::FeedLibrary::cache_path(&src);
+                if let Some(mut lib) = fp_sources::FeedLibrary::load(&path)
+                    && lib.remove(&keys)
+                    && let Err(e) = lib.save(&path)
+                {
+                    log::warn!("saving the listing of {src}: {e}");
+                }
+                Job::Done
+            });
+        }
+
+        self.ui.invalidate();
+        let shown = ui::widgets::display_title(&title);
+        self.ui.toast(tr!("toast-deleted", title = shown.as_str()));
+        self.panels[MAIN].request_repaint();
     }
 
     /// A video finished opening; one asked for before the latest is closed.
@@ -559,8 +771,13 @@ impl App {
                 }
                 self.ui.open_error = None;
                 self.ui.adjust_open = false;
-                self.ui.tracks_open = false;
-                self.show_browser = false;
+                self.ui.tracks_open = self.reopen_tracks;
+                // An earlier open or autoplay can complete during a scan.
+                // Keep the scan controls visible.
+                self.show_browser = self
+                    .folder_play_all
+                    .as_ref()
+                    .is_some_and(|scan| scan.state.status().is_some());
                 self.ui_visible = true;
                 self.last_activity = Instant::now();
                 self.sub_key.clear();
@@ -813,6 +1030,7 @@ impl App {
                 .and_then(|t| t.index);
         }
         if let Some(subtitle) = &subtitle {
+            self.subtitle_search.selection += 1;
             p.picked.subtitles =
                 playback::picked_source_subtitles(subtitle.as_deref(), &p.source_tracks);
         }
@@ -841,6 +1059,8 @@ impl App {
             self.ask_pin(&source);
             return;
         }
+        self.close_subtitle_search();
+        self.reopen_tracks = false;
         // Close the current video first: it holds a hardware decoder session,
         // and with Steam holding others the new video could not get one, fell
         // back to software and stuttered ("Hardware decoder busy"). It
@@ -885,4 +1105,17 @@ impl App {
         ));
         self.ui.invalidate();
     }
+}
+
+fn remove_from_browse(b: &mut Browse, keys: &[String], thumbs: &mut ui::thumbs::Thumbs) {
+    b.entries.retain(|e| {
+        if keys.contains(&e.location) {
+            if let Some(t) = &e.thumbnail_url {
+                thumbs.forget(t);
+            }
+            false
+        } else {
+            true
+        }
+    });
 }

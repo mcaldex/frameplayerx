@@ -13,6 +13,7 @@ use fp_core::source::{ByteSource, Entry, FileSource};
 use fp_core::volume;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 /// A local folder or a library.
 #[derive(Clone, Debug)]
@@ -48,6 +49,15 @@ impl LocalSource {
     /// The location listed by `list(None)`.
     pub fn root(&self) -> &str {
         &self.root
+    }
+
+    /// Permanently deletes a local file at `path`, rejecting folders.
+    pub fn delete_path(path: &Path) -> Result<()> {
+        let meta = std::fs::symlink_metadata(path).map_err(|e| not_found_or_io(e, path))?;
+        if meta.is_dir() {
+            return Err(Error::Unsupported("folders cannot be deleted".into()));
+        }
+        std::fs::remove_file(path).map_err(|e| not_found_or_io(e, path))
     }
 }
 
@@ -127,6 +137,27 @@ impl Source for LocalSource {
         let path = path_of(location)?;
         let file = FileSource::open(&path).map_err(|e| not_found_or_io(e, &path))?;
         Ok(Arc::new(file))
+    }
+
+    fn can_delete(&self) -> bool {
+        true
+    }
+
+    fn delete(&self, location: &str) -> Result<()> {
+        Self::delete_path(&path_of(location)?)
+    }
+
+    fn open_original(
+        &self,
+        video: &Entry,
+        deadline: Instant,
+    ) -> Result<Option<Arc<dyn ByteSource>>> {
+        let path = path_of(&video.location)?;
+        if Instant::now() >= deadline || !path.is_file() {
+            return Ok(None);
+        }
+        let file = FileSource::open(&path).map_err(|e| not_found_or_io(e, &path))?;
+        Ok(Some(Arc::new(file)))
     }
 
     fn parent(&self, location: &str) -> Option<String> {
@@ -256,5 +287,35 @@ mod tests {
             Some("volume:FFFF-0000")
         );
         assert_eq!(src.parent("volume:FFFF-0000"), None, "not mounted");
+        assert!(src.can_delete());
+        assert!(matches!(
+            src.delete("volume:FFFF-0000/Clips/a.mp4"),
+            Err(Error::NotInserted)
+        ));
+    }
+
+    #[test]
+    fn deletes_files_and_refuses_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let folder = root.join("Sub");
+        let clip = root.join("Clip.mp4");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(&clip, b"data").unwrap();
+        let src = source(root);
+        assert!(src.can_delete());
+
+        assert!(matches!(
+            src.delete(folder.to_str().unwrap()),
+            Err(Error::Unsupported(_))
+        ));
+        assert!(folder.exists());
+
+        src.delete(clip.to_str().unwrap()).unwrap();
+        assert!(!clip.exists());
+        assert!(matches!(
+            src.delete(clip.to_str().unwrap()),
+            Err(Error::NotFound(_))
+        ));
     }
 }

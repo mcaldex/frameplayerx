@@ -14,6 +14,9 @@ use crate::dir_entry;
 use crate::error::{Error, Result};
 use crate::http::{HttpClient, HttpOptions, HttpReply};
 use crate::json::{array, boolean, get, num, text, uint};
+use crate::media_identity::{
+    MediaIdentity, MediaKind, display_title, external_id, release_basename,
+};
 use crate::sidecar::Sidecars;
 use crate::transcode::{self, Streamed, TranscodeTarget};
 use crate::urlutil::{encode_form_value, redact};
@@ -25,6 +28,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 mod catalog;
 pub use catalog::{MbFacets, MbFilter, MbHome, MbItem, MbKind, MbPage, MbQuery, MbSort, MbVersion};
@@ -355,6 +359,45 @@ pub(crate) fn item_to_entry(v: &Value, base_url: &str) -> Option<Entry> {
     }
 }
 
+fn provider_id(item: &Value, provider: &str) -> Option<u64> {
+    let ids = get(item, "ProviderIds")?;
+    let (key, _) = ids
+        .as_object()?
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(provider))?;
+    text(ids, key).and_then(|id| external_id(&id))
+}
+
+fn source_media_identity(item: &Value, version: Option<&Value>) -> MediaIdentity {
+    let kind = match text(item, "Type").as_deref() {
+        Some("Movie") => Some(MediaKind::Movie),
+        Some("Episode") => Some(MediaKind::Episode),
+        _ => None,
+    };
+    let coordinate = |key| {
+        text(item, key)
+            .filter(|_| kind == Some(MediaKind::Episode))?
+            .parse()
+            .ok()
+    };
+    let release = match version {
+        Some(version) => text(version, "Path"),
+        None => text(item, "Path"),
+    };
+    MediaIdentity {
+        title: text(item, "Name").and_then(|name| display_title(&name)),
+        year: uint(item, "ProductionYear"),
+        kind,
+        series_title: text(item, "SeriesName").and_then(|name| display_title(&name)),
+        season: coordinate("ParentIndexNumber"),
+        episode: coordinate("IndexNumber"),
+        imdb_id: provider_id(item, "imdb"),
+        tmdb_id: provider_id(item, "tmdb"),
+        release_basename: release.and_then(|name| release_basename(&name)),
+        ..Default::default()
+    }
+}
+
 /// Parses 3D video layout from Jellyfin / Emby item or stream metadata.
 fn video_3d_format(v: &Value) -> Option<VideoFormat> {
     let mode = text(v, "Video3DFormat").or_else(|| {
@@ -499,10 +542,12 @@ pub struct MediaBrowserSource {
     auth: Mutex<Option<AuthState>>,
     parents: Mutex<HashMap<String, String>>,
     /// The server's tags and when they were read.
-    tags: Mutex<Option<(std::time::Instant, Vec<String>)>>,
+    tags: Mutex<Option<(Instant, Vec<String>)>>,
     /// The version chosen for an item (item id to media source id), kept
     /// while the app runs.
     versions: Mutex<HashMap<String, String>>,
+    /// Per-item `CanDelete` cached from server listings and details.
+    deletable: Mutex<HashMap<String, bool>>,
     /// The play session of the transcode the server is encoding for us.
     encoding: Arc<Mutex<Option<String>>>,
 }
@@ -635,8 +680,27 @@ impl MediaBrowserSource {
             parents: Mutex::new(HashMap::new()),
             tags: Mutex::new(None),
             versions: Mutex::new(HashMap::new()),
+            deletable: Mutex::new(HashMap::new()),
             encoding: Arc::default(),
         })
+    }
+
+    pub(crate) fn record_deletable(&self, id: &str, can_delete: bool) {
+        if id.is_empty() {
+            return;
+        }
+        let mut cache = lock(&self.deletable);
+        if cache.len() >= 4096 {
+            cache.clear();
+        }
+        cache.insert(id.to_string(), can_delete);
+    }
+
+    fn delete_item_by_id(&self, id: &str) -> Result<()> {
+        let path = format!("/Items/{}", encode_form_value(id));
+        self.api_send("DELETE", &path, None, false)?;
+        lock(&self.deletable).remove(id);
+        Ok(())
     }
 
     /// The media source of `location` that plays: the version it names,
@@ -787,6 +851,16 @@ impl MediaBrowserSource {
         path_and_query: &str,
         body: Option<&[u8]>,
     ) -> Result<HttpReply> {
+        self.api_send(method, path_and_query, body, true)
+    }
+
+    fn api_send(
+        &self,
+        method: &str,
+        path_and_query: &str,
+        body: Option<&[u8]>,
+        retry_status: bool,
+    ) -> Result<HttpReply> {
         let (client, _) = self.client()?;
         let url = format!("{}{}", self.base_url, path_and_query);
         let headers: &[(&str, &str)] = if body.is_some() {
@@ -797,7 +871,14 @@ impl MediaBrowserSource {
         } else {
             &[("Accept", "application/json")]
         };
-        let reply = client.request(method, &url, headers, body, JSON_LIMIT)?;
+        let send = |client: &HttpClient| {
+            if retry_status {
+                client.request(method, &url, headers, body, JSON_LIMIT)
+            } else {
+                client.request_no_status_retry(method, &url, headers, body, JSON_LIMIT)
+            }
+        };
+        let reply = send(&client)?;
         if reply.status == 401 {
             log::debug!("MediaBrowser 401 at {}, re-authenticating", redact(&url));
             {
@@ -809,7 +890,7 @@ impl MediaBrowserSource {
             }
             self.authenticate()?;
             let (client, _) = self.client()?;
-            let reply = client.request(method, &url, headers, body, JSON_LIMIT)?;
+            let reply = send(&client)?;
             return reply.error_for_status(&url);
         }
         reply.error_for_status(&url)
@@ -1093,12 +1174,18 @@ impl Source for MediaBrowserSource {
                 loop {
                     let query = format!(
                         "/Users/{user_id}/Items?ParentId={id}&Recursive=false\
-                        &Fields=Path,MediaSources,Overview,DateCreated&SortBy=SortName&SortOrder=Ascending\
+                        &Fields=Path,MediaSources,Overview,DateCreated,CanDelete&SortBy=SortName&SortOrder=Ascending\
                         &StartIndex={start_index}&Limit={PAGE_SIZE}"
                     );
                     let v = self.api_get_json(&query)?;
                     // The page as sent: one of only photos still goes on.
-                    let count = array(&v, "Items").len();
+                    let raw_items = array(&v, "Items");
+                    let count = raw_items.len();
+                    for raw in raw_items {
+                        if let Some(item) = catalog::parse_item(raw, &self.base_url) {
+                            self.record_deletable(&item.id, item.can_delete);
+                        }
+                    }
                     let mut entries = parse_items(&v, &self.base_url);
                     for entry in &mut entries {
                         self.stable_entry(entry);
@@ -1165,6 +1252,105 @@ impl Source for MediaBrowserSource {
         Ok(Arc::new(client.open(&url)?))
     }
 
+    fn media_identity(&self, video: &Entry) -> Result<Option<MediaIdentity>> {
+        let resolved = self.resolved_location(&video.location)?;
+        let Some(("item", id)) = decode_location(&resolved) else {
+            return Ok(None);
+        };
+        let Some((client, user_id)) = lock(&self.auth)
+            .as_ref()
+            .map(|auth| (auth.client.clone(), encode_form_value(&auth.user_id)))
+        else {
+            return Ok(None);
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let item_url = |id: &str, fields: &str| {
+            format!(
+                "{}/Users/{user_id}/Items/{}?Fields={fields}",
+                self.base_url,
+                encode_form_value(id)
+            )
+        };
+        let fields = "ProviderIds,Path,MediaSources";
+        let Some(item) = client.get_before(&item_url(id, fields), deadline, 2 << 20)? else {
+            return Ok(None);
+        };
+        let item: Value = serde_json::from_slice(&item)?;
+        let version = self.playing_version(&video.location, &item);
+        let mut identity = source_media_identity(&item, version.as_ref());
+        if identity.season.is_some()
+            && identity.episode.is_some()
+            && identity.imdb_id.is_none()
+            && identity.tmdb_id.is_none()
+            && let Some(series_id) = text(&item, "SeriesId")
+            && let Ok(Some(series)) =
+                client.get_before(&item_url(&series_id, "ProviderIds"), deadline, 2 << 20)
+            && let Ok(series) = serde_json::from_slice::<Value>(&series)
+        {
+            identity.series_imdb_id = provider_id(&series, "imdb");
+            identity.series_tmdb_id = provider_id(&series, "tmdb");
+        }
+        Ok(Some(identity))
+    }
+
+    fn open_original(
+        &self,
+        video: &Entry,
+        deadline: Instant,
+    ) -> Result<Option<Arc<dyn ByteSource>>> {
+        let resolved = self.resolved_location(&video.location)?;
+        let Some(("item", id)) = decode_location(&resolved) else {
+            return Ok(None);
+        };
+        // Use the authenticated client already established by playback.
+        let Some((client, user_id)) = lock(&self.auth)
+            .as_ref()
+            .map(|auth| (auth.client.clone(), auth.user_id.clone()))
+        else {
+            return Ok(None);
+        };
+        let url = format!(
+            "{}/Users/{}/Items/{}?Fields=MediaSources,Path",
+            self.base_url,
+            encode_form_value(&user_id),
+            encode_form_value(id)
+        );
+        let Some(bytes) = client.get_before(&url, deadline, 2 << 20)? else {
+            return Ok(None);
+        };
+        let item: Value = serde_json::from_slice(&bytes)?;
+        let Some(version) = self.playing_version(&video.location, &item) else {
+            return Ok(None);
+        };
+        let Some(version_id) = text(&version, "Id") else {
+            return Ok(None);
+        };
+        let local_file = matches!(text(&version, "Protocol").as_deref(), Some("File" | "0"));
+        if !local_file
+            || ["RequiresOpening", "IsInfiniteStream", "IsRemote"]
+                .iter()
+                .any(|field| boolean(&version, field) == Some(true))
+            || boolean(&version, "SupportsDirectPlay") == Some(false)
+            || location_version(&resolved).is_some_and(|selected| selected != version_id)
+            || text(&version, "Path")
+                .and_then(|path| release_basename(&path))
+                .is_none()
+        {
+            return Ok(None);
+        }
+        let url = format!(
+            "{}/Videos/{}/stream?static=true&MediaSourceId={}",
+            self.base_url,
+            encode_form_value(id),
+            encode_form_value(&version_id)
+        );
+        let original = client.open_original(&url, deadline)?;
+        let size = text(&version, "Size")
+            .and_then(|s| s.parse::<u64>().ok())
+            .filter(|&size| size > 0);
+        Ok(original.filter(|file| size.is_none_or(|size| file.size() == Some(size))))
+    }
+
     fn picture_request(&self, location: &str) -> Option<(HttpClient, String)> {
         let reference = crate::location::decode(location)?;
         if reference.source_id != self.id || reference.kind != "mb-asset" {
@@ -1185,9 +1371,13 @@ impl Source for MediaBrowserSource {
             return Ok(entry.clone());
         };
         let (_, user_id) = self.client()?;
-        let path =
-            format!("/Users/{user_id}/Items/{id}?Fields=MediaSources,Chapters,Path,Overview,Tags");
+        let path = format!(
+            "/Users/{user_id}/Items/{id}?Fields=MediaSources,Chapters,Path,Overview,Tags,CanDelete"
+        );
         let v = self.api_get_json(&path)?;
+        if let Some(parsed) = catalog::parse_item(&v, &self.base_url) {
+            self.record_deletable(&parsed.id, parsed.can_delete);
+        }
         let mut out = entry.clone();
         let chosen = location_version(&resolved)
             .map(str::to_string)
@@ -1321,6 +1511,48 @@ impl Source for MediaBrowserSource {
     fn as_catalog(&self) -> Option<&dyn crate::Catalog> {
         Some(self)
     }
+
+    fn can_delete(&self) -> bool {
+        true
+    }
+
+    fn delete_allowed(&self, location: &str) -> Option<bool> {
+        let resolved = self.resolved_location(location).ok()?;
+        let (kind, id) = decode_location(&resolved)?;
+        if kind != "item" {
+            return Some(false);
+        }
+        lock(&self.deletable).get(id).copied()
+    }
+
+    fn ask_delete_allowed(&self, location: &str) -> Result<bool> {
+        let resolved = self.resolved_location(location)?;
+        let Some((kind, id)) = decode_location(&resolved) else {
+            return Err(Error::invalid(location, "not a MediaBrowser location"));
+        };
+        if kind != "item" {
+            return Ok(false);
+        }
+        if let Some(can) = lock(&self.deletable).get(id).copied() {
+            return Ok(can);
+        }
+        Ok(self.item(id)?.can_delete)
+    }
+
+    fn delete(&self, location: &str) -> Result<()> {
+        let resolved = self.resolved_location(location)?;
+        let Some((kind, id)) = decode_location(&resolved) else {
+            return Err(Error::invalid(location, "not a MediaBrowser location"));
+        };
+        // A series or a season would take every episode's files with it.
+        if kind != "item" || !self.item(id)?.kind.playable() {
+            return Err(Error::invalid(
+                location,
+                "only a video's files can be deleted",
+            ));
+        }
+        self.delete_item_by_id(id)
+    }
 }
 
 /// Initiates Quick Connect for a server URL.
@@ -1377,7 +1609,104 @@ impl fmt::Debug for MediaBrowserSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::media_identity::movie_hash;
+    use crate::test_server::{TestServer, resp, serve_bytes};
     use serde_json::json;
+
+    #[test]
+    fn fingerprints_only_the_permitted_selected_original() {
+        let server = TestServer::start(|req| {
+            assert_eq!(req.header("X-Emby-Token"), Some("source-token"));
+            if req.path() == "/Users/u/Items/item" {
+                let item = json!({"Id":"item", "MediaSources":[
+                    {"Id":"a", "Path":"/private/A.mkv", "Protocol":"File", "Size":200000},
+                    {"Id":"b", "Path":"/private/B.mkv", "Protocol":"File", "Size":200000},
+                    {"Id":"live", "Path":"/private/Live.mkv", "Protocol":"File", "IsInfiniteStream":true}
+                ]});
+                return resp(200, serde_json::to_vec(&item).unwrap(), &[]);
+            }
+            assert_eq!(req.path(), "/Videos/item/stream");
+            assert!(req.url.contains("static=true"));
+            if req.url.contains("MediaSourceId=b") {
+                return resp(403, "", &[]);
+            }
+            assert!(req.url.contains("MediaSourceId=a"));
+            serve_bytes(req, &vec![0; 200_000], true)
+        });
+        let source = MediaBrowserSource::new(&MediaBrowserConfig {
+            id: "library".into(),
+            name: "Jellyfin".into(),
+            url: server.base.clone(),
+            credentials: None,
+            insecure_tls: false,
+            parallel_downloads: true,
+            max_height: None,
+            access_token: Some("source-token".into()),
+            user_id: Some("u".into()),
+        })
+        .unwrap();
+        let entry = |version| {
+            Entry::new(
+                "Film",
+                encode_version_location(&server.base, "item", version),
+                EntryKind::Video,
+            )
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let file = source
+            .open_original(&entry("a"), deadline)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            movie_hash(&*file, deadline, || false)
+                .unwrap()
+                .unwrap()
+                .size,
+            200_000
+        );
+        assert!(
+            source
+                .open_original(&entry("b"), deadline)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            source
+                .open_original(&entry("live"), deadline)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            source
+                .open_original(&entry("missing"), deadline)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(server.count(|req| req.path() == "/Videos/item/stream"), 3);
+        assert_eq!(server.count(|req| req.url.contains("MediaSourceId=b")), 1);
+    }
+
+    #[test]
+    fn subtitle_matching_keeps_episode_ids_and_the_playing_release() {
+        let item = json!({
+            "Name":"Episode title", "ProductionYear":2022, "Type":"Episode",
+            "SeriesName":"Series title", "ParentIndexNumber":0, "IndexNumber":2,
+            "ProviderIds":{"Imdb":"tt0012345","Tmdb":123},
+            "Path":"/srv/first/First.release.mkv"
+        });
+        let version = json!({"Path":"C:\\series\\Second.release.mkv"});
+        let identity = source_media_identity(&item, Some(&version));
+        assert_eq!(identity.kind, Some(MediaKind::Episode));
+        assert_eq!(identity.series_title.as_deref(), Some("Series title"));
+        assert_eq!((identity.season, identity.episode), (Some(0), Some(2)));
+        assert_eq!(identity.imdb_id, Some(12345));
+        assert_eq!(identity.tmdb_id, Some(123));
+        assert_eq!(identity.series_imdb_id, None);
+        assert_eq!(
+            identity.release_basename.as_deref(),
+            Some("Second.release.mkv")
+        );
+    }
 
     #[test]
     fn test_location_roundtrip() {
@@ -1955,6 +2284,82 @@ mod tests {
         assert_eq!(
             video_3d_format(&v_stream),
             Some(VideoFormat::new(Projection::Flat, StereoLayout::SideBySide))
+        );
+    }
+
+    #[test]
+    fn deletes_playable_items_and_checks_can_delete_permission() {
+        use crate::test_server::{TestServer, resp};
+
+        let server = TestServer::start(|r| match (r.method.as_str(), r.path()) {
+            ("GET", "/Users/u1/Items/del1") => resp(
+                200,
+                serde_json::to_vec(&json!({
+                    "Id": "del1", "Name": "Allowed", "Type": "Movie", "CanDelete": true
+                }))
+                .unwrap(),
+                &[("Content-Type", "application/json")],
+            ),
+            ("GET", "/Users/u1/Items/nodel1") => resp(
+                200,
+                serde_json::to_vec(&json!({
+                    "Id": "nodel1", "Name": "Locked", "Type": "Movie", "CanDelete": false
+                }))
+                .unwrap(),
+                &[("Content-Type", "application/json")],
+            ),
+            ("GET", "/Users/u1/Items/ser1") => resp(
+                200,
+                serde_json::to_vec(&json!({
+                    "Id": "ser1", "Name": "Series", "Type": "Series", "CanDelete": true
+                }))
+                .unwrap(),
+                &[("Content-Type", "application/json")],
+            ),
+            ("DELETE", "/Items/del1" | "/Items/ser1") => resp(204, Vec::new(), &[]),
+            ("DELETE", "/Items/nodel1") => resp(403, Vec::new(), &[]),
+            _ => resp(404, Vec::new(), &[]),
+        });
+        let source = MediaBrowserSource::new(&MediaBrowserConfig {
+            id: "jf".into(),
+            name: "Jellyfin".into(),
+            url: server.base.clone(),
+            credentials: None,
+            user_id: Some("u1".into()),
+            access_token: Some("tok".into()),
+            insecure_tls: false,
+            parallel_downloads: false,
+            max_height: None,
+        })
+        .unwrap();
+        assert!(source.can_delete());
+
+        let allowed_loc = crate::location::encode("jf", "mb", "item=del1");
+        let locked_loc = crate::location::encode("jf", "mb", "item=nodel1");
+        let folder_loc = crate::location::encode("jf", "mb", "folder=f1");
+
+        let series_loc = crate::location::encode("jf", "mb", "item=ser1");
+
+        assert_eq!(source.delete_allowed(&folder_loc), Some(false));
+        assert_eq!(source.delete_allowed(&allowed_loc), None);
+        assert!(source.ask_delete_allowed(&allowed_loc).unwrap());
+        assert_eq!(source.delete_allowed(&allowed_loc), Some(true));
+        assert!(!source.ask_delete_allowed(&locked_loc).unwrap());
+        assert_eq!(source.delete_allowed(&locked_loc), Some(false));
+        assert!(!source.ask_delete_allowed(&series_loc).unwrap());
+
+        source.delete(&allowed_loc).unwrap();
+        assert!(matches!(source.delete(&locked_loc), Err(Error::Auth(_))));
+        for refused in [&folder_loc, &series_loc] {
+            assert!(matches!(
+                source.delete(refused),
+                Err(Error::InvalidLocation { .. })
+            ));
+        }
+        assert_eq!(
+            server.count(|r| r.method == "DELETE" && r.path() == "/Items/ser1"),
+            0,
+            "a series is never deleted"
         );
     }
 }

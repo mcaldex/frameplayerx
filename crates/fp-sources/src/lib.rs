@@ -16,6 +16,7 @@
 //! | DeoVR / HereSphere feeds | [`feed`] | feed and scene URLs |
 //! | SMB2/3 | [`smb`] | `smb://host/share/path` |
 //! | SFTP | [`sftp`] | `source:` locations relative to its folder |
+//! | NFSv3 | [`nfs`] | `nfs://host/export/path` |
 //! | Jellyfin / Emby | [`mediabrowser`] | `mb:<url>#<kind>=<id>` |
 //! | Plex | [`plex`] | `plex://source/<source>/<machine>/<kind>/<id>` |
 //!
@@ -34,7 +35,10 @@ pub mod httpdir;
 mod json;
 pub mod local;
 pub mod location;
+pub mod media_identity;
 pub mod mediabrowser;
+pub mod nfs;
+pub mod opensubtitles;
 pub mod plex;
 pub mod sftp;
 pub mod sidecar;
@@ -56,7 +60,7 @@ pub use catalog::{
 };
 pub use config::{
     CardRef, Credentials, DlnaConfig, FeedConfig, HttpConfig, LibraryConfig, LocalConfig,
-    MediaBrowserConfig, PlexConfig, SftpConfig, SmbConfig, SourceConfig, SourceKind,
+    MediaBrowserConfig, NfsConfig, PlexConfig, SftpConfig, SmbConfig, SourceConfig, SourceKind,
     default_config_path, load_configs, save_configs,
 };
 pub use dlna::{DlnaDevice, DlnaSource, SsdpResponse, discover};
@@ -69,6 +73,7 @@ pub use mediabrowser::{
     MbFacets, MbFilter, MbHome, MbItem, MbKind, MbPage, MbQuery, MbSort, MbVersion,
     MediaBrowserSource, QuickConnectState, quick_connect_initiate_url, quick_connect_poll_url,
 };
+pub use nfs::NfsSource;
 pub use sftp::SftpSource;
 pub use sidecar::{ScriptFile, Sidecars, SubtitleFile, match_sidecars};
 pub use smb::SmbSource;
@@ -103,6 +108,14 @@ pub trait Source: Send + Sync {
         None
     }
 
+    /// Where the folder at `location` (`None`: the root) really is, for a
+    /// source whose listings follow links: a walk through subfolders visits
+    /// each folder once, however many links lead to it. May ask the server;
+    /// `None` when the location says where it is.
+    fn folder_identity(&self, _location: Option<&str>) -> Option<String> {
+        None
+    }
+
     /// Lists a folder. `None` lists the root of the source.
     fn list(&self, location: Option<&str>) -> Result<Vec<Entry>>;
 
@@ -118,6 +131,23 @@ pub trait Source: Send + Sync {
         self.open(location)
     }
 
+    /// Matching metadata for the selected video and media version. May use
+    /// the source's item details endpoint, so call this off the frame loop.
+    fn media_identity(&self, _video: &Entry) -> Result<Option<media_identity::MediaIdentity>> {
+        Ok(None)
+    }
+
+    /// Opens a separate reader for the selected original file, when the
+    /// adapter can establish that playback is permitted and that the bytes
+    /// are the original. The same deadline covers opening and reading.
+    fn open_original(
+        &self,
+        _video: &Entry,
+        _deadline: std::time::Instant,
+    ) -> Result<Option<Arc<dyn ByteSource>>> {
+        Ok(None)
+    }
+
     /// A refreshed configuration to persist; taking it performs no network I/O.
     fn updated_config(&self) -> Option<SourceConfig> {
         None
@@ -128,6 +158,13 @@ pub trait Source: Send + Sync {
     /// picture changed, where opening it could only download it again. `None`
     /// for one that isn't over HTTP.
     fn picture_request(&self, _location: &str) -> Option<(HttpClient, String)> {
+        None
+    }
+
+    /// Where a folder of this source is (its root for `None`), for people
+    /// to read while browsing it. `None` when the source has no address
+    /// worth showing. Performs no I/O.
+    fn display_location(&self, _location: Option<&str>) -> Option<String> {
         None
     }
 
@@ -226,6 +263,32 @@ pub trait Source: Send + Sync {
     fn as_catalog(&self) -> Option<&dyn Catalog> {
         None
     }
+
+    /// Whether this source can delete files at all. Folders never are.
+    fn can_delete(&self) -> bool {
+        false
+    }
+
+    /// Whether the file at `location` may be deleted, when that is known
+    /// without asking the server; `None` when only
+    /// [`Source::ask_delete_allowed`] can tell.
+    fn delete_allowed(&self, _location: &str) -> Option<bool> {
+        Some(self.can_delete())
+    }
+
+    /// Whether the file at `location` may be deleted, asking the server when
+    /// [`Source::delete_allowed`] can't tell.
+    fn ask_delete_allowed(&self, location: &str) -> Result<bool> {
+        Ok(self.delete_allowed(location).unwrap_or(false))
+    }
+
+    /// Deletes the file at `location` for good. A folder is refused.
+    fn delete(&self, _location: &str) -> Result<()> {
+        Err(Error::Unsupported(format!(
+            "{} does not support deleting files",
+            self.name()
+        )))
+    }
 }
 
 /// Whether a location binds its resource to one configured source.
@@ -268,6 +331,7 @@ pub fn build(config: &SourceConfig) -> Result<Box<dyn Source>> {
         SourceConfig::HereSphere(c) => Box::new(FeedSource::heresphere(c)?),
         SourceConfig::Smb(c) => Box::new(SmbSource::new(c)?),
         SourceConfig::Sftp(c) => Box::new(SftpSource::new(c)?),
+        SourceConfig::Nfs(c) => Box::new(NfsSource::new(c)?),
         SourceConfig::MediaBrowser(c) => Box::new(MediaBrowserSource::new(c)?),
         SourceConfig::Plex(c) => Box::new(plex::PlexSource::new(c)?),
     })

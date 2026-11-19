@@ -229,3 +229,235 @@ fn looking_around_finds_the_coloured_markers() {
         "right should be yellow: {right:?}"
     );
 }
+
+/// A side-by-side 180° stereo frame: a bright textured disc 20° in radius
+/// straight ahead at per-eye disparity `disc` (radians), in front of a dark
+/// textured background at per-eye disparity `back`.
+fn stereo_disc(disc: f32, back: f32) -> Arc<fp_media::VideoFrame> {
+    use std::f32::consts::PI;
+    const EYE: usize = 512;
+    let noise = |a: f32, b: f32, seed: u32| {
+        // ~1° cells of hashed grey.
+        let (i, j) = (
+            (a.to_degrees() + 400.0) as u32,
+            (b.to_degrees() + 400.0) as u32,
+        );
+        let mut h = i.wrapping_mul(73_856_093) ^ j.wrapping_mul(19_349_663) ^ seed;
+        h ^= h >> 13;
+        h = h.wrapping_mul(0x5bd1_e995);
+        h ^= h >> 15;
+        (h & 0xff) as f32 / 255.0
+    };
+    let mut rgba = vec![0u8; EYE * 2 * EYE * 4];
+    for eye in 0..2 {
+        // The left camera sees nearer things further right than the
+        // cyclopean eye does, the right camera further left.
+        let side = if eye == 0 { 1.0 } else { -1.0 };
+        for y in 0..EYE {
+            for x in 0..EYE {
+                let lon = ((x as f32 + 0.5) / EYE as f32 - 0.5) * PI;
+                let lat = (0.5 - (y as f32 + 0.5) / EYE as f32) * PI;
+                let dl = lon - side * disc;
+                let g = if (dl * dl + lat * lat).sqrt() < 20f32.to_radians() {
+                    140.0 + 100.0 * noise(dl, lat, 7)
+                } else {
+                    20.0 + 80.0 * noise(lon - side * back, lat, 3)
+                };
+                let i = (y * EYE * 2 + eye * EYE + x) * 4;
+                rgba[i..i + 4].copy_from_slice(&[g as u8, g as u8, g as u8, 255]);
+            }
+        }
+    }
+    Arc::new(fp_media::VideoFrame::from_rgba((EYE * 2) as u32, EYE as u32, &rgba).expect("frame"))
+}
+
+/// Horizontal centroid (pixels from the image centre) of the bright disc.
+fn disc_centroid(img: &[u8]) -> f32 {
+    let s = SIZE as usize;
+    let (mut sum, mut n) = (0.0f32, 0.0f32);
+    for y in 0..s {
+        for x in 0..s {
+            if img[(y * s + x) * 4] > 120 {
+                sum += x as f32 + 0.5;
+                n += 1.0;
+            }
+        }
+    }
+    sum / n - s as f32 / 2.0
+}
+
+/// Both eyes' views from a head turned by `q`, its eyes 64 mm apart along
+/// its own sideways axis.
+fn render_both(
+    rig: &mut Rig,
+    frame: &Arc<fp_media::VideoFrame>,
+    params: &VideoParams,
+    q: Quat,
+) -> [Vec<u8>; 2] {
+    let ev = |x: f32| EyeView {
+        view: view(Vec3::new(0.0, 1.6, 0.0) + q * Vec3::new(x, 0.0, 0.0), q),
+        proj: projection(Fov::symmetric(90.0), 0.05, 100.0),
+    };
+    let eyes = [ev(-0.032), ev(0.032)];
+    rig.r.begin_frame().unwrap();
+    rig.r.set_video(Some(frame)).unwrap();
+    rig.r.draw(&rig.eyes.targets(), &eyes, params, &[]).unwrap();
+    rig.r.end_frame().unwrap();
+    [0, 1].map(|eye| rig.eyes.read(&rig.r, eye).unwrap())
+}
+
+/// Where (pixels across, down) the bright disc's middle is in an eye's view.
+fn disc_centre(img: &[u8]) -> (f32, f32) {
+    let s = SIZE as usize;
+    let (mut sx, mut sy, mut n) = (0.0f32, 0.0f32, 0.0f32);
+    for y in 0..s {
+        for x in 0..s {
+            if img[(y * s + x) * 4] > 120 {
+                sx += x as f32 + 0.5;
+                sy += y as f32 + 0.5;
+                n += 1.0;
+            }
+        }
+    }
+    (sx / n, sy / n)
+}
+
+/// Draws frames until comfort focus has had 1.5 s to settle, and returns the
+/// last. Its tracker takes at most 0.1 s from any one frame, so a stall (a
+/// shader compiled on first use, a busy machine) must not use up the wait.
+fn settle<T>(mut frame: impl FnMut() -> T) -> T {
+    let mut last = std::time::Instant::now();
+    let mut settled = 0.0;
+    loop {
+        let out = frame();
+        let now = std::time::Instant::now();
+        settled += (now - last).as_secs_f32().min(0.1);
+        last = now;
+        if settled >= 1.5 {
+            return out;
+        }
+    }
+}
+
+#[test]
+fn comfort_focus_keeps_what_is_looked_at_in_one_piece_with_the_head_on_its_side() {
+    let Some(mut rig) = rig() else { return };
+    let k = |d: f32| (0.0325 / d).atan();
+    let frame = stereo_disc(k(0.4), k(3.0));
+    // Lying on the right side: the left eye above the right.
+    let side = Quat::from_rotation_z(-90f32.to_radians());
+    rig.r.set_gaze(None);
+    rig.r.set_foveation(fp_render::Foveation::Off);
+    let mut p = params(Projection::EQUIRECT_180, StereoLayout::SideBySide);
+    // How far apart the eyes see the disc's middle, across and up/down
+    // their own views: a real thing is only ever apart across them.
+    let apart = |views: &[Vec<u8>; 2]| {
+        let (l, r) = (disc_centre(&views[0]), disc_centre(&views[1]));
+        (l.0 - r.0, l.1 - r.1)
+    };
+    let off = apart(&render_both(&mut rig, &frame, &p, side));
+    p.settings.comfort_focus = true;
+    let on = apart(&settle(|| render_both(&mut rig, &frame, &p, side)));
+    rig.eyes.destroy(&rig.r);
+
+    // 0.4 m away is 9.3° of disparity: ~20 pixels, up/down the eyes' views
+    // when the video is drawn as filmed.
+    eprintln!("disc apart (across, up/down): off {off:?}, on {on:?} px");
+    assert!(
+        off.1.abs() > 12.0,
+        "as filmed, apart up/down by {} px",
+        off.1
+    );
+    assert!(
+        on.1.abs() < 1.5,
+        "with comfort focus, still apart up/down by {} px",
+        on.1
+    );
+    assert!(
+        on.0.abs() > 5.0,
+        "with comfort focus, no depth left: {} px",
+        on.0
+    );
+}
+
+/// How far (pixels) comfort focus moves the disc towards the centre of the
+/// left eye's view once settled (~1.5 s) with the head turned `yaw` degrees
+/// and the eyes on `gaze` (play space, followed as foveation does), and
+/// where it was without.
+fn comfort_shift(
+    rig: &mut Rig,
+    frame: &Arc<fp_media::VideoFrame>,
+    yaw: f32,
+    gaze: Option<Vec3>,
+) -> (f32, f32) {
+    comfort_shift_pitched(rig, frame, yaw, 0.0, gaze)
+}
+
+/// [`comfort_shift`] with the video pitched `pitch` degrees by its Position
+/// setting, and the head pitched as much to look at it.
+fn comfort_shift_pitched(
+    rig: &mut Rig,
+    frame: &Arc<fp_media::VideoFrame>,
+    yaw: f32,
+    pitch: f32,
+    gaze: Option<Vec3>,
+) -> (f32, f32) {
+    let mut p = params(Projection::EQUIRECT_180, StereoLayout::SideBySide);
+    p.settings.pitch = pitch;
+    rig.r.set_gaze(gaze);
+    rig.r.set_foveation(if gaze.is_some() {
+        fp_render::Foveation::High
+    } else {
+        fp_render::Foveation::Off
+    });
+    let off = render(rig, frame, &p, yaw, pitch, 0);
+    p.settings.comfort_focus = true;
+    let on = settle(|| render(rig, frame, &p, yaw, pitch, 0));
+    let c_off = disc_centroid(&off);
+    (c_off - disc_centroid(&on), c_off)
+}
+
+#[test]
+fn comfort_focus_eases_what_is_looked_at_only_when_it_is_close() {
+    let Some(mut rig) = rig() else { return };
+    // Per-eye disparity of something `d` metres away (65 mm baseline).
+    let k = |d: f32| (0.0325 / d).atan();
+    let near = stereo_disc(k(0.4), k(3.0));
+    // 35° right of ahead: the back wall, past the disc's 20° edge.
+    let aside = Quat::from_rotation_y(-35f32.to_radians()) * Vec3::NEG_Z;
+
+    // A disc 1.6 m away in a room (3 m), looked at: nothing changes.
+    let (far, _) = comfort_shift(&mut rig, &stereo_disc(k(1.6), k(3.0)), 0.0, None);
+    // 0.4 m away in a room, looked at: eased in full.
+    let (room, at) = comfort_shift(&mut rig, &near, 0.0, None);
+    // 0.4 m away against the sky: the same, as the sky isn't looked at.
+    let (sky, _) = comfort_shift(&mut rig, &stereo_disc(k(0.4), 0.0), 0.0, None);
+    // The head turned to the wall beside it: left alone.
+    let (turned, _) = comfort_shift(&mut rig, &near, 35.0, None);
+    // The head on the disc but the eyes on the wall: left alone.
+    let (glance, _) = comfort_shift(&mut rig, &near, 0.0, Some(aside));
+    // The video pitched 40° up and looked at there: measured in its own
+    // frame, eased as much as level.
+    let (pitched, _) = comfort_shift_pitched(&mut rig, &near, 0.0, 40.0, None);
+    rig.eyes.destroy(&rig.r);
+
+    // 90° across 192 pixels: ~2.1 px per degree near the centre, and 0.4 m
+    // is eased by 1.7° per eye.
+    eprintln!(
+        "disc at {at:.2} px; shifts: far {far:.2}, room {room:.2}, sky {sky:.2}, \
+         turned {turned:.2}, glance {glance:.2}, pitched {pitched:.2} px"
+    );
+    assert!(
+        (pitched - room).abs() < 0.5,
+        "pitched shift {pitched} px, room {room} px"
+    );
+    assert!(at > 5.0, "disc should start right of centre: {at}");
+    assert!(far.abs() < 0.2, "far scene moved {far} px");
+    assert!(room > 2.8 && room < 4.4, "room shift {room} px");
+    assert!(
+        (sky - room).abs() < 0.5,
+        "sky shift {sky} px, room {room} px"
+    );
+    assert!(turned.abs() < 0.2, "turned to the wall, moved {turned} px");
+    assert!(glance.abs() < 0.2, "looking at the wall, moved {glance} px");
+}

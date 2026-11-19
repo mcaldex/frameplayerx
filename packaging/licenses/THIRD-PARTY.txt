@@ -49,3 +49,10 @@ Steam Frame controllers (Settings > Controller): renders of Valve's own
   models are Valve Corporation's; these pictures are not covered by
   FramePlayerX's Apache-2.0 licence. Steam and the Steam logo are
   trademarks of Valve Corporation.
+
+The Luxe cinema room's seats: based on "Recliner Brown_Leather"
+  (https://sketchfab.com/3d-models/recliner-brown-leather-4e3e06cf74fe48c8b7472a3549f6b5d2)
+  by Puneet Sharma (https://sketchfab.com/Eshi_Nito), licensed under
+  CC-BY 4.0 (http://creativecommons.org/licenses/by/4.0/). Changed: turned
+  round, simplified, its texture lightened and lighting baked into it
+  (crates/fp-render/rooms/luxe).

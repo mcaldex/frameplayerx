@@ -607,6 +607,66 @@ impl SceneFeed for FeedSource {
     }
 }
 
+impl FeedSource {
+    /// HereSphere asks for a video's files to be deleted with `"deleteFile":
+    /// true` posted to its own URL. A server that doesn't let players delete
+    /// may still answer as usual, so the video is asked for again: it is
+    /// deleted only once it's gone or has no media left.
+    fn delete_scene(&self, url: &str) -> Result<()> {
+        let resolved = self.resolved_location(url)?;
+        let scene_url = resolved.as_str();
+        if self.protocol != Protocol::HereSphere {
+            return Err(Error::Unsupported(
+                "a DeoVR feed cannot delete files".into(),
+            ));
+        }
+        if split_group(scene_url).is_some() || is_direct_file(scene_url) {
+            return Err(Error::invalid(url, "not a HereSphere video"));
+        }
+        let mut body = self.heresphere_body(scene_url);
+        body.insert("deleteFile".into(), Value::Bool(true));
+        body.insert("needsMediaSource".into(), Value::Bool(false));
+        let bytes = serde_json::to_vec(&Value::Object(body))?;
+        self.client
+            .request_no_status_retry(
+                "POST",
+                scene_url,
+                &[
+                    ("Accept", "application/json"),
+                    ("Content-Type", "application/json"),
+                ],
+                Some(&bytes),
+                JSON_LIMIT,
+            )?
+            .error_for_status(scene_url)?;
+        match self.scene(url, true) {
+            Ok(info) if !info.sources.is_empty() => {
+                return Err(Error::Auth(format!("{} kept the file", redact(scene_url))));
+            }
+            Ok(_) | Err(Error::NotFound(_)) => {}
+            // A server that doesn't let players delete answers as usual, so
+            // only this says the file went.
+            Err(e) => {
+                log::warn!("{}: couldn't check the delete: {e}", redact(scene_url));
+                return Err(e);
+            }
+        }
+        lock(&self.event_servers).remove(scene_url);
+        let mut links = lock(&self.scene_links);
+        links.entries.remove(url);
+        links.entries.remove(scene_url);
+        if let Some(stable) = links.by_url.remove(scene_url) {
+            links.by_reference.remove(&stable);
+            links.entries.remove(&stable);
+        }
+        if let Some(raw) = links.by_reference.remove(url) {
+            links.by_url.remove(&raw);
+            links.entries.remove(&raw);
+        }
+        Ok(())
+    }
+}
+
 impl Source for FeedSource {
     fn canonical_location(&self, location: &str) -> Option<String> {
         if crate::is_source_location(location) {
@@ -813,6 +873,14 @@ impl Source for FeedSource {
     fn as_scene_feed(&self) -> Option<&dyn SceneFeed> {
         Some(self)
     }
+
+    fn can_delete(&self) -> bool {
+        self.protocol == Protocol::HereSphere
+    }
+
+    fn delete(&self, location: &str) -> Result<()> {
+        self.delete_scene(location)
+    }
 }
 
 fn find_group(groups: Vec<SceneGroup>, name: &str, location: &str) -> Result<Vec<Entry>> {
@@ -984,5 +1052,94 @@ mod tests {
         );
         assert!(is_direct_file("http://h/a/b.mp4?x=1"));
         assert!(!is_direct_file("http://h/deovr/12"));
+    }
+
+    #[test]
+    fn heresphere_deletes_once_the_video_is_gone_and_deovr_refuses() {
+        let requests = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen = requests.clone();
+        let server = test_server::TestServer::start(move |r| {
+            lock(&seen).push(format!("{} {} {}", r.method, r.path(), r.body));
+            let json = |v: &str| {
+                test_server::resp(200, v.as_bytes(), &[("Content-Type", "application/json")])
+            };
+            let deleting = r.body.contains("deleteFile");
+            match (r.method.as_str(), r.path(), deleting) {
+                ("POST", "/heresphere/denied", _) => test_server::resp(403, Vec::new(), &[]),
+                // The delete, answered with nothing or with the video.
+                ("POST", "/heresphere/gone", true) => test_server::resp(200, Vec::new(), &[]),
+                ("POST", _, true) => json(r#"{"title":"Clip"}"#),
+                // The video asked for again.
+                ("POST", "/heresphere/emptied", false) => json(r#"{"title":"Clip","media":[]}"#),
+                ("POST", "/heresphere/kept", false) => json(
+                    r#"{"title":"Clip","media":[{"name":"h264","sources":[{"resolution":1080,"url":"http://x/clip.mp4"}]}]}"#,
+                ),
+                // The check fails: nothing says the file went.
+                ("POST", "/heresphere/unsure", false) => test_server::resp(500, Vec::new(), &[]),
+                _ => test_server::resp(404, Vec::new(), &[]),
+            }
+        });
+        let hs = FeedSource::heresphere(&FeedConfig {
+            id: "hs".into(),
+            name: "HS".into(),
+            url: server.url("/heresphere"),
+            credentials: Some(Credentials::new("alice", String::new())),
+            insecure_tls: false,
+            parallel_downloads: false,
+            max_height: None,
+        })
+        .unwrap();
+        assert!(hs.can_delete());
+
+        hs.delete(&server.url("/heresphere/gone")).unwrap();
+        hs.delete(&server.url("/heresphere/emptied")).unwrap();
+        assert!(matches!(
+            hs.delete(&server.url("/heresphere/kept")),
+            Err(Error::Auth(_))
+        ));
+        assert!(matches!(
+            hs.delete(&server.url("/heresphere/denied")),
+            Err(Error::Auth(_))
+        ));
+        assert!(matches!(
+            hs.delete(&server.url("/heresphere/video.mp4")),
+            Err(Error::InvalidLocation { .. })
+        ));
+
+        let posted = lock(&requests);
+        let delete: Value = serde_json::from_str(
+            posted[0]
+                .strip_prefix("POST /heresphere/gone ")
+                .expect("POST path prefix"),
+        )
+        .unwrap();
+        assert_eq!(delete["deleteFile"], Value::Bool(true));
+        assert_eq!(delete["needsMediaSource"], Value::Bool(false));
+        assert_eq!(delete["username"], Value::String("alice".into()));
+        let check: Value =
+            serde_json::from_str(posted[1].strip_prefix("POST /heresphere/gone ").unwrap())
+                .unwrap();
+        assert_eq!(check.get("deleteFile"), None, "the check deletes nothing");
+        assert_eq!(check["needsMediaSource"], Value::Bool(true));
+        // Two requests for each of the three deletes, one refused at once.
+        assert_eq!(posted.len(), 7, "{posted:?}");
+        drop(posted);
+        assert!(hs.delete(&server.url("/heresphere/unsure")).is_err());
+
+        let deo = FeedSource::deovr(&FeedConfig {
+            id: "deo".into(),
+            name: "DeoVR".into(),
+            url: server.url("/deovr"),
+            credentials: None,
+            insecure_tls: false,
+            parallel_downloads: false,
+            max_height: None,
+        })
+        .unwrap();
+        assert!(!deo.can_delete());
+        assert!(matches!(
+            deo.delete(&server.url("/heresphere/gone")),
+            Err(Error::Unsupported(_))
+        ));
     }
 }

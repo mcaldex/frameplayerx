@@ -602,6 +602,99 @@ impl CatalogView {
             }
         }
     }
+
+    /// Removes a deleted item from every open page, dropping an open item
+    /// details page for it if needed, and returns picture URLs to forget.
+    pub fn remove_item(&mut self, id: Option<&str>, locations: &[String]) -> Vec<String> {
+        let matches = |item: &CatalogItem| {
+            id.is_some_and(|i| item.id == i) || locations.contains(&item.location)
+        };
+        let mut forgotten = Vec::new();
+        fn push_thumbs(item: &CatalogItem, forgotten: &mut Vec<String>) {
+            for p in [
+                item.poster.as_deref(),
+                item.landscape.as_deref(),
+                item.backdrop.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                forgotten.push(p.to_string());
+            }
+        }
+        fn drop_from(
+            items: &mut Vec<CatalogItem>,
+            id: Option<&str>,
+            locations: &[String],
+            forgotten: &mut Vec<String>,
+        ) {
+            items.retain(|i| {
+                let hit = id.is_some_and(|x| i.id == x) || locations.contains(&i.location);
+                if hit {
+                    push_thumbs(i, forgotten);
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        self.pages.retain_mut(|p| match &mut p.body {
+            Body::Home { home: Some(h), .. } => {
+                drop_from(&mut h.resume, id, locations, &mut forgotten);
+                drop_from(&mut h.next_up, id, locations, &mut forgotten);
+                for (_, items) in &mut h.latest {
+                    drop_from(items, id, locations, &mut forgotten);
+                }
+                true
+            }
+            Body::Home { home: None, .. } => true,
+            Body::Search { results, .. } => {
+                for (_, items) in results {
+                    drop_from(items, id, locations, &mut forgotten);
+                }
+                true
+            }
+            Body::Grid(g) => {
+                // A shuffle pages through its order by the items shown, so
+                // whatever leaves those leaves the order too.
+                let gone: Vec<String> = g
+                    .items
+                    .iter()
+                    .filter(|i| matches(i))
+                    .map(|i| i.id.clone())
+                    .collect();
+                let before = g.items.len();
+                drop_from(&mut g.items, id, locations, &mut forgotten);
+                let removed = before.saturating_sub(g.items.len());
+                g.total = g.total.saturating_sub(removed);
+                if let Some(order) = &mut g.order {
+                    order.retain(|oid| id != Some(oid.as_str()) && !gone.contains(oid));
+                }
+                true
+            }
+            Body::Series {
+                episodes, next_up, ..
+            } => {
+                drop_from(episodes, id, locations, &mut forgotten);
+                if let Some(n) = next_up.as_deref()
+                    && matches(n)
+                {
+                    push_thumbs(n, &mut forgotten);
+                    *next_up = None;
+                }
+                true
+            }
+            Body::Item { item } => {
+                if matches(item) {
+                    push_thumbs(item, &mut forgotten);
+                    false
+                } else {
+                    true
+                }
+            }
+        });
+        forgotten
+    }
 }
 
 /// What the page asked for while it was drawn.
@@ -618,6 +711,7 @@ enum Go {
     /// Play next (`true`) or Add to queue.
     Queue(CatalogItem, bool),
     AddToPlaylist(CatalogItem),
+    Delete(CatalogItem),
     /// Everything on the server with this tag.
     Tag(String),
     Details(CatalogItem),
@@ -799,8 +893,15 @@ fn follow(v: &mut View, source: &str, j: &mut CatalogView, go: Go) {
             v.state.picking = Some(super::Picking {
                 reqs: vec![request(source, &item, false)],
                 title: item.name.clone(),
+                with_delete: false,
             });
         }
+        Go::Delete(item) => v.actions.push(Action::DeleteFile(super::DeleteTarget {
+            title: item.name,
+            location: item.location,
+            source_id: Some(source.to_string()),
+            catalog_item_id: Some(item.id),
+        })),
         Go::Mark(id, mark, on) => {
             j.mark(&id, mark, on);
             v.actions.push(Action::CatalogMark {
@@ -1776,6 +1877,9 @@ fn details(
                 if button(ui, icons::PLAYLIST, tr!("jf-add-to-playlist")) {
                     go = Some(Go::AddToPlaylist(item.clone()));
                 }
+                if item.can_delete && super::delete_button(ui, v.state, &item.location) {
+                    go = Some(Go::Delete(item.clone()));
+                }
             });
         }
         inner.add_space(8.0);
@@ -2322,5 +2426,79 @@ mod tests {
         assert_eq!(r.entry.unwrap().location, "mb:http://jf#item=m1");
         assert_eq!(clip("one two three four", 9), "one two…");
         assert_eq!(clip("short", 9), "short");
+    }
+
+    #[test]
+    fn remove_item_clears_pages_and_pops_item_details() {
+        let mut m1 = item("m1", CatalogKind::Movie);
+        m1.location = "fp-source://jf/mediabrowser/m1".into();
+        m1.poster = Some("https://jf/m1/poster".into());
+        let mut m2 = item("m2", CatalogKind::Movie);
+        m2.location = "fp-source://jf/mediabrowser/m2".into();
+
+        let mut j = CatalogView::new(1);
+        let mut grid = Grid::new("Movies".into(), CatalogQuery::default());
+        grid.items = vec![m1.clone(), m2.clone()];
+        grid.total = 2;
+        grid.order = Some(vec!["m1".into(), "m2".into()]);
+        j.pages.push(Page {
+            seq: 2,
+            request_seq: None,
+            loading: false,
+            error: None,
+            body: Body::Grid(Box::new(grid)),
+        });
+        j.pages.push(Page {
+            seq: 3,
+            request_seq: None,
+            loading: false,
+            error: None,
+            body: Body::Item { item: Box::new(m1) },
+        });
+
+        let forgotten = j.remove_item(Some("m1"), &["fp-source://jf/mediabrowser/m1".into()]);
+        assert_eq!(
+            forgotten,
+            vec![
+                "https://jf/m1/poster".to_string(),
+                "https://jf/m1/poster".to_string()
+            ]
+        );
+        assert_eq!(j.pages.len(), 2, "home + grid kept, details popped");
+        let Body::Grid(g) = &j.pages[1].body else {
+            panic!()
+        };
+        assert_eq!(g.items.len(), 1);
+        assert_eq!(g.items[0].id, "m2");
+        assert_eq!(g.total, 1);
+        assert_eq!(g.order.as_deref(), Some(&["m2".into()][..]));
+    }
+
+    #[test]
+    fn a_video_deleted_by_location_leaves_a_shuffles_order() {
+        let mut m1 = item("m1", CatalogKind::Movie);
+        m1.location = "fp-source://jf/mediabrowser/m1".into();
+        let mut m2 = item("m2", CatalogKind::Movie);
+        m2.location = "fp-source://jf/mediabrowser/m2".into();
+        let mut j = CatalogView::new(1);
+        let mut grid = Grid::new("Movies".into(), CatalogQuery::default());
+        grid.items = vec![m1, m2];
+        grid.total = 3;
+        grid.order = Some(vec!["m1".into(), "m2".into(), "m3".into()]);
+        j.pages.push(Page {
+            seq: 2,
+            request_seq: None,
+            loading: false,
+            error: None,
+            body: Body::Grid(Box::new(grid)),
+        });
+        // From history: the location alone.
+        j.remove_item(None, &["fp-source://jf/mediabrowser/m1".into()]);
+        let Body::Grid(g) = &j.pages[1].body else {
+            panic!()
+        };
+        assert_eq!(g.order.as_deref(), Some(&["m2".into(), "m3".into()][..]));
+        // The next page starts after what is shown.
+        assert_eq!(g.next_page().ids, ["m3"]);
     }
 }

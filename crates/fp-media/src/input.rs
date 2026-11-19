@@ -9,9 +9,23 @@ use crate::{Result, check};
 use fp_core::ByteSource;
 use fp_ffmpeg_sys as ff;
 use std::collections::VecDeque;
-use std::ffi::{CString, c_int, c_void};
+use std::ffi::{CStr, CString, c_int, c_void};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Flags of FFmpeg's index entries.
+const INDEX_KEYFRAME: c_int = 1;
+const INDEX_DISCARD: c_int = 2;
+/// A skip looks for a keyframe the index leaves out only when the listed
+/// one is at least this far before its target, in seconds: a file listing
+/// every keyframe of 2 s GOPs is never looked into.
+const UNLISTED_GAP_SECS: f64 = 2.0;
+/// And over a network, only when the listed keyframes are this many bytes
+/// apart, as each look is a request.
+const UNLISTED_GAP_REMOTE: u64 = 4 << 20;
+/// Looks in a row that find nothing before a file is taken to list all its
+/// keyframes.
+const UNLISTED_MISSES: u8 = 2;
 
 pub struct Input {
     pub(crate) fmt: *mut ff::AVFormatContext,
@@ -38,6 +52,52 @@ pub struct Input {
     pair: Option<Pair>,
     /// A Blu-ray title, of which this input reads the first clip itself.
     title: Option<Box<Playing>>,
+    unlisted: Unlisted,
+}
+
+/// What looking for keyframes its index leaves out has learned of a file.
+#[derive(Default)]
+struct Unlisted {
+    /// Its Matroska video track, once read (`Some(None)`: none to use).
+    matroska_track: Option<Option<u64>>,
+    /// Looks in a row that found nothing.
+    misses: u8,
+}
+
+/// The stretch of a video stream's index from the keyframe listed before a
+/// skip's target to the next one listed.
+struct Gap {
+    stream: usize,
+    matroska: bool,
+    /// The listed keyframe's entry, position and timestamp.
+    anchor: usize,
+    anchor_pos: u64,
+    anchor_ts: i64,
+    /// The last entry no later than the target: in MP4, whose index places
+    /// every sample, there are entries between.
+    last: usize,
+    /// The entries after it, up to the next listed keyframe.
+    after: std::ops::Range<usize>,
+    /// Where the next listed keyframe starts, or the file ends.
+    end: u64,
+    /// The target, in the stream's time base.
+    target: i64,
+}
+
+/// A keyframe to add to the index.
+struct NewKey {
+    pos: i64,
+    timestamp: i64,
+    size: c_int,
+}
+
+/// What one look into a [`Gap`] found.
+enum Look {
+    Key(NewKey),
+    /// None before the target, but one after it: the target is early
+    /// between two keyframes, and the index does leave some out.
+    Later,
+    Nothing,
 }
 
 /// A title being played clip after clip.
@@ -173,6 +233,7 @@ impl Input {
                 deinterlace: None,
                 pair: None,
                 title: None,
+                unlisted: Unlisted::default(),
             };
             check(
                 ff::avformat_find_stream_info(fmt, std::ptr::null_mut()),
@@ -398,6 +459,219 @@ impl Input {
         }
     }
 
+    /// Seeks for playback, as [`Input::seek`] does, but when the index lists
+    /// the keyframe before `seconds` far back, first looks for a nearer one
+    /// it leaves out, so the skip fetches and decodes less.
+    pub(crate) fn seek_playback(
+        &mut self,
+        seconds: f64,
+        video: Option<usize>,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<()> {
+        // Also loads Matroska's Cues, when they come late.
+        self.seek(seconds)?;
+        if let Some(vi) = video
+            && self.list_nearer_key(vi, seconds, &cancelled)
+            && !cancelled()
+        {
+            self.seek(seconds)?;
+        }
+        Ok(())
+    }
+
+    /// Adds to the index a keyframe of video stream `vi` that it leaves
+    /// out, nearer `seconds` than the listed one before it. False when there
+    /// is none, or it isn't worth looking.
+    fn list_nearer_key(&mut self, vi: usize, seconds: f64, cancelled: &impl Fn() -> bool) -> bool {
+        if self.unlisted.misses >= UNLISTED_MISSES {
+            return false;
+        }
+        let Some(gap) = self.listed_gap(vi, seconds) else {
+            return false;
+        };
+        let look = if gap.matroska {
+            self.unlisted_cluster(&gap, cancelled)
+        } else {
+            self.unlisted_sample(&gap, cancelled)
+        };
+        if cancelled() {
+            return false;
+        }
+        let key = match look {
+            Look::Key(key) => key,
+            Look::Later => {
+                self.unlisted.misses = 0;
+                return false;
+            }
+            Look::Nothing => {
+                self.unlisted.misses += 1;
+                return false;
+            }
+        };
+        self.unlisted.misses = 0;
+        let st = self.streams()[gap.stream];
+        // SAFETY: the stream belongs to the open format, and no pointer into
+        // its index is held across this, which can move it.
+        unsafe {
+            ff::av_add_index_entry(st, key.pos, key.timestamp, key.size, 0, INDEX_KEYFRAME) >= 0
+        }
+    }
+
+    /// The gap in video stream `vi`'s index before `seconds`, when it is
+    /// long enough to look into.
+    fn listed_gap(&self, vi: usize, seconds: f64) -> Option<Gap> {
+        let src = self._io.source();
+        if self.title.is_some() || self.pair.is_some() || !src.efficient_random_access() {
+            return None;
+        }
+        // SAFETY: the format, its streams and their index are valid while
+        // it is open, and looking entries up changes nothing.
+        unsafe {
+            let matroska = match CStr::from_ptr((*(*self.fmt).iformat).name).to_bytes() {
+                b"matroska,webm" => true,
+                b"mov,mp4,m4a,3gp,3g2,mj2" => false,
+                _ => return None,
+            };
+            let st = *self.streams().get(vi)?;
+            if !matches!(
+                (*(*st).codecpar).codec_id,
+                ff::AV_CODEC_ID_H264 | ff::AV_CODEC_ID_HEVC
+            ) {
+                return None;
+            }
+            let units = crate::q2d((*st).time_base);
+            if units <= 0.0 {
+                return None;
+            }
+            let target = ((seconds.max(0.0) + self.origin) / units).floor() as i64;
+            let backward = ff::AVSEEK_FLAG_BACKWARD as c_int;
+            let anchor = ff::av_index_search_timestamp(st, target, backward);
+            let a = ff::avformat_index_get_entry(st, anchor).as_ref()?;
+            if (target - a.timestamp) as f64 * units < UNLISTED_GAP_SECS {
+                return None;
+            }
+            let last =
+                ff::av_index_search_timestamp(st, target, backward | ff::AVSEEK_FLAG_ANY as c_int);
+            let after_target = target.checked_add(1)?;
+            let next = ff::avformat_index_get_entry_from_timestamp(st, after_target, 0);
+            let next_index = match ff::av_index_search_timestamp(st, after_target, 0) {
+                i if i >= 0 && !next.is_null() => i as usize,
+                _ => ff::avformat_index_get_entries_count(st).max(0) as usize,
+            };
+            let anchor_pos = u64::try_from(a.pos).ok()?;
+            let end = match next.as_ref() {
+                Some(n) => u64::try_from(n.pos).ok()?,
+                None => src.size()?,
+            };
+            if end <= anchor_pos || src.remote() && end - anchor_pos < UNLISTED_GAP_REMOTE {
+                return None;
+            }
+            Some(Gap {
+                stream: vi,
+                matroska,
+                anchor: anchor as usize,
+                anchor_pos,
+                anchor_ts: a.timestamp,
+                last: last.max(anchor) as usize,
+                after: (last.max(anchor) as usize + 1)..next_index,
+                end,
+                target,
+            })
+        }
+    }
+
+    /// A sample in an MP4's `gap` that decoding can start at, before its
+    /// target or else after it.
+    fn unlisted_sample(&self, gap: &Gap, cancelled: &impl Fn() -> bool) -> Look {
+        let st = self.streams()[gap.stream];
+        // SAFETY: as in `listed_gap`; the extradata has extradata_size bytes.
+        let reader = unsafe {
+            let par = &*(*st).codecpar;
+            let extradata = if par.extradata.is_null() {
+                &[][..]
+            } else {
+                std::slice::from_raw_parts(par.extradata, par.extradata_size as usize)
+            };
+            NalReader::new(par.codec_id, extradata)
+        };
+        let Some(reader) = reader else {
+            return Look::Nothing;
+        };
+        let src = self._io.source();
+        let key_in = |entries: std::ops::Range<usize>| {
+            // SAFETY: as in `listed_gap`.
+            let samples = entries
+                .filter_map(|i| unsafe {
+                    let e = ff::avformat_index_get_entry(st, i as c_int).as_ref()?;
+                    let pos = u64::try_from(e.pos).ok()?;
+                    (e.flags() & INDEX_DISCARD == 0).then_some((i, pos, e.size() as usize))
+                })
+                .collect();
+            crate::unlisted_keys::sample_key(&*src, &reader, samples, cancelled)
+        };
+        match key_in(gap.anchor + 1..gap.last + 1) {
+            Some(i) => self.new_sample_key(gap, i).map_or(Look::Nothing, Look::Key),
+            None if !cancelled() && key_in(gap.after.clone()).is_some() => Look::Later,
+            None => Look::Nothing,
+        }
+    }
+
+    /// Index entry `i` of `gap`'s stream as a keyframe to add.
+    fn new_sample_key(&self, gap: &Gap, i: usize) -> Option<NewKey> {
+        let st = self.streams()[gap.stream];
+        let i = i as c_int;
+        // SAFETY: as in `listed_gap`.
+        unsafe {
+            let e = ff::avformat_index_get_entry(st, i).as_ref()?;
+            // FFmpeg updates the first entry with this timestamp: it must be
+            // this one.
+            let before = ff::avformat_index_get_entry(st, i - 1).as_ref()?;
+            (before.timestamp < e.timestamp).then_some(NewKey {
+                pos: e.pos,
+                timestamp: e.timestamp,
+                size: e.size(),
+            })
+        }
+    }
+
+    /// A cluster in a Matroska file's `gap` that opens with a keyframe.
+    fn unlisted_cluster(&mut self, gap: &Gap, cancelled: &impl Fn() -> bool) -> Look {
+        let src = self._io.source();
+        let Some(start) =
+            crate::unlisted_keys::next_cluster(&*src, gap.anchor_pos, gap.end, cancelled)
+        else {
+            return Look::Nothing;
+        };
+        let track = match self.unlisted.matroska_track {
+            Some(track) => track,
+            None => {
+                let track = crate::unlisted_keys::matroska_track(&*src, cancelled);
+                if !cancelled() {
+                    self.unlisted.matroska_track = Some(track);
+                }
+                track
+            }
+        };
+        let Some(track) = track else {
+            return Look::Nothing;
+        };
+        let (key, later) =
+            crate::unlisted_keys::cluster_key(&*src, track, start, gap.end, gap.target, cancelled);
+        match key {
+            Some((pos, timestamp)) if timestamp > gap.anchor_ts => {
+                i64::try_from(pos).map_or(Look::Nothing, |pos| {
+                    Look::Key(NewKey {
+                        pos,
+                        timestamp,
+                        size: 0,
+                    })
+                })
+            }
+            _ if later => Look::Later,
+            _ => Look::Nothing,
+        }
+    }
+
     /// Seeks so the next packets start at the first keyframe after
     /// `seconds`.
     pub(crate) fn seek_after(&mut self, seconds: f64) -> Result<()> {
@@ -491,6 +765,7 @@ impl Input {
     }
 
     fn seek_after_file(&mut self, seconds: f64) -> Result<()> {
+        self.peeked.clear();
         let ts = ((seconds.max(0.0) + self.origin) * ff::AV_TIME_BASE as f64) as i64;
         let (stream, ts) = self.seek_stream(ts);
         // SAFETY: fmt is open.
@@ -500,6 +775,89 @@ impl Input {
                 "seek",
             )?;
         }
+        Ok(())
+    }
+
+    /// Raw stream-timebase timestamps of all indexed keyframes in `stream_index`
+    /// strictly after `after_dts` (or `after_pos` when `after_dts` is unknown).
+    pub(crate) fn video_keyframes_after(
+        &self,
+        stream_index: usize,
+        after_dts: i64,
+        after_pos: i64,
+    ) -> Vec<i64> {
+        if self.title.is_some() {
+            return Vec::new();
+        }
+        let Some(&st) = self.streams().get(stream_index) else {
+            return Vec::new();
+        };
+        // SAFETY: `st` is a valid stream of the open format context.
+        unsafe {
+            let n = ff::avformat_index_get_entries_count(st);
+            let mut out = Vec::new();
+            for i in 0..n {
+                let e = ff::avformat_index_get_entry(st, i);
+                if e.is_null() {
+                    continue;
+                }
+                let e = &*e;
+                if e.flags() & INDEX_KEYFRAME == 0 {
+                    continue;
+                }
+                // With no timestamp, the damaged packet's place in the file
+                // says what comes after it.
+                if after_pos >= 0
+                    && (e.pos == after_pos || after_dts == ff::AV_NOPTS_VALUE && e.pos < after_pos)
+                {
+                    continue;
+                }
+                if after_dts != ff::AV_NOPTS_VALUE && e.timestamp <= after_dts {
+                    continue;
+                }
+                if e.timestamp != ff::AV_NOPTS_VALUE {
+                    out.push(e.timestamp);
+                }
+            }
+            out
+        }
+    }
+
+    /// Seeks `stream_index` directly to an indexed keyframe at `timestamp`
+    /// (in the stream's own time base, avoiding microsecond rounding drift).
+    pub(crate) fn seek_video_timestamp(
+        &mut self,
+        stream_index: usize,
+        timestamp: i64,
+    ) -> Result<()> {
+        self.peeked.clear();
+        if let Some(p) = &mut self.pair {
+            p.view.seek();
+        }
+        // SAFETY: `self.fmt` is open and `stream_index` is valid.
+        let r = unsafe {
+            let r = ff::avformat_seek_file(
+                self.fmt,
+                stream_index as c_int,
+                timestamp,
+                timestamp,
+                i64::MAX,
+                0,
+            );
+            if r < 0 {
+                ff::avformat_seek_file(
+                    self.fmt,
+                    stream_index as c_int,
+                    i64::MIN,
+                    timestamp,
+                    i64::MAX,
+                    ff::AVSEEK_FLAG_BACKWARD as c_int,
+                )
+            } else {
+                r
+            }
+        };
+        check(r, "seek")?;
         Ok(())
     }
 
@@ -659,5 +1017,163 @@ impl Drop for Input {
         // SAFETY: closes the context opened in open(); the custom pb is freed
         // afterwards by IoContext's Drop.
         unsafe { ff::avformat_close_input(&mut self.fmt) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fp_core::source::FileSource;
+    use std::sync::atomic::AtomicUsize;
+
+    /// A test file, counting its reads.
+    struct Counted {
+        file: FileSource,
+        reads: Arc<AtomicUsize>,
+    }
+
+    impl ByteSource for Counted {
+        fn size(&self) -> Option<u64> {
+            self.file.size()
+        }
+        fn efficient_random_access(&self) -> bool {
+            true
+        }
+        fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            self.file.read_at(offset, buf)
+        }
+        fn describe(&self) -> String {
+            self.file.describe()
+        }
+    }
+
+    fn open_counted(file: &str) -> (Input, Arc<AtomicUsize>) {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/data")
+            .join(file);
+        let reads = Arc::new(AtomicUsize::new(0));
+        let src = Counted {
+            file: FileSource::open(&path).unwrap(),
+            reads: reads.clone(),
+        };
+        let input = Input::open(Arc::new(src), file, Arc::new(AtomicBool::new(false))).unwrap();
+        (input, reads)
+    }
+
+    /// Where the video starts after a skip to `seconds`, made as playback
+    /// makes it or as an ordinary seek, and whether that is a keyframe.
+    fn skip_lands(file: &str, seconds: f64, playback: bool, cancelled: bool) -> f64 {
+        let (mut input, _) = open_counted(file);
+        let vi = input.best_stream(ff::AVMEDIA_TYPE_VIDEO).unwrap();
+        if playback {
+            input
+                .seek_playback(seconds, Some(vi), || cancelled)
+                .unwrap();
+        } else {
+            input.seek(seconds).unwrap();
+        }
+        let mut pkt = Packet::new();
+        while input.read(pkt.as_ptr()).unwrap() {
+            if pkt.stream_index() == vi {
+                // SAFETY: a packet just read, and a stream of this input.
+                let (pts, tb, key) = unsafe {
+                    let p = &*pkt.as_ptr();
+                    let key = p.flags & ff::AV_PKT_FLAG_KEY as c_int != 0;
+                    (p.pts, (*input.streams()[vi]).time_base, key)
+                };
+                assert!(key, "{file} starts at a picture that isn't a keyframe");
+                return (pts as f64 * crate::q2d(tb) * 1000.0).round() / 1000.0;
+            }
+            pkt.unref();
+        }
+        panic!("{file}: no video after the skip");
+    }
+
+    #[test]
+    fn skips_start_at_keyframes_the_index_leaves_out() {
+        // Pictures decoding can start at every 2 s, listed only every 6 s:
+        // H.264 IDRs, HEVC CRAs, and in Matroska clusters opening with one.
+        for file in [
+            "h264_sparse_stss.mp4",
+            "hevc_sparse_stss.mp4",
+            "h264_sparse_cues.mkv",
+        ] {
+            assert_eq!(skip_lands(file, 10.8, false, false), 6.0, "{file}");
+            assert_eq!(skip_lands(file, 10.8, true, false), 10.0, "{file}");
+            assert_eq!(
+                skip_lands(file, 10.8, true, true),
+                6.0,
+                "{file}, called off"
+            );
+            assert_eq!(
+                skip_lands(file, 7.0, true, false),
+                6.0,
+                "{file}, near a listed one"
+            );
+        }
+        assert_eq!(skip_lands("h264_dense_cues.mkv", 10.8, true, false), 10.0);
+        // Keyframes 6 s apart, all listed.
+        assert_eq!(skip_lands("h264_long_gop.mp4", 10.8, true, false), 6.0);
+    }
+
+    #[test]
+    fn a_file_listing_all_its_keyframes_is_soon_left_alone() {
+        let (mut input, reads) = open_counted("h264_long_gop.mp4");
+        let vi = input.best_stream(ff::AVMEDIA_TYPE_VIDEO);
+        let mut looks = Vec::new();
+        for _ in 0..3 {
+            let before = reads.load(Ordering::Relaxed);
+            input.seek_playback(10.8, vi, || false).unwrap();
+            looks.push(reads.load(Ordering::Relaxed) - before);
+        }
+        assert!(looks[0] > 0 && looks[1] > 0, "{looks:?}");
+        assert_eq!(looks[2], 0, "{looks:?}");
+    }
+
+    #[test]
+    fn video_keyframes_after_and_seek_video_timestamp_land_on_second_keyframe() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/h264_aac_180_LR.mp4");
+        let mut input = Input::open(
+            Arc::new(FileSource::open(&path).unwrap()),
+            "h264_aac_180_LR.mp4",
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        let vi = input.best_stream(ff::AVMEDIA_TYPE_VIDEO).unwrap();
+        let all = input.video_keyframes_after(vi, i64::MIN, -1);
+        assert!(all.len() >= 2, "expected >= 2 keyframes, got {all:?}");
+        assert!(all.windows(2).all(|w| w[0] < w[1]));
+
+        // Seeking directly to the second keyframe lands on it rather than
+        // sliding back to keyframe 0 (even with B-frame PTS > DTS).
+        input.seek_video_timestamp(vi, all[1]).unwrap();
+        let mut pkt = Packet::new();
+        let mut second = -1;
+        while input.read(pkt.as_ptr()).unwrap() {
+            if pkt.stream_index() == vi {
+                // SAFETY: valid packet read from `input`.
+                let (dts, pos, flags) = unsafe {
+                    let p = &*pkt.as_ptr();
+                    (p.dts, p.pos, p.flags)
+                };
+                assert_ne!(flags & ff::AV_PKT_FLAG_KEY as i32, 0);
+                assert_eq!(dts, all[1], "pos={pos}");
+                second = pos;
+                break;
+            }
+            pkt.unref();
+        }
+
+        // Excluding the first keyframe starts from the second.
+        let tail = input.video_keyframes_after(vi, all[0], i64::MAX);
+        assert_eq!(tail.first().copied(), Some(all[1]));
+        // With no timestamp, by place in the file: none before it.
+        let after = input.video_keyframes_after(vi, ff::AV_NOPTS_VALUE, second);
+        assert!(
+            !after.contains(&all[0]) && !after.contains(&all[1]),
+            "{after:?}"
+        );
     }
 }

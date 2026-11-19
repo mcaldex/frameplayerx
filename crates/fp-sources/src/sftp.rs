@@ -364,6 +364,10 @@ impl Source for SftpSource {
         Some(self.location(&segments, value.ends_with('/')))
     }
 
+    fn folder_identity(&self, location: Option<&str>) -> Option<String> {
+        self.real_path(&self.segments(location).ok()?).ok()
+    }
+
     fn list(&self, location: Option<&str>) -> Result<Vec<Entry>> {
         let segments = self.segments(location)?;
         let mut out = Vec::new();
@@ -414,6 +418,20 @@ impl Source for SftpSource {
     fn sidecars(&self, video: &Entry) -> Result<crate::Sidecars> {
         crate::sidecars_from_folder(self, video)
     }
+
+    fn can_delete(&self) -> bool {
+        cfg!(feature = "sftp")
+    }
+
+    fn delete(&self, location: &str) -> Result<()> {
+        let is_folder = location.ends_with('/')
+            || crate::location::decode(location).is_some_and(|l| l.key.ends_with('/'));
+        let segments = self.segments(Some(location))?;
+        if segments.is_empty() || is_folder {
+            return Err(Error::invalid(location, "a folder cannot be deleted"));
+        }
+        self.remove_file(&segments)
+    }
 }
 
 /// One folder entry as the server reports it, a link as what it points at.
@@ -434,6 +452,18 @@ impl SftpSource {
     }
 
     fn open_file(&self, _segments: &[String]) -> Result<Arc<dyn ByteSource>> {
+        Err(Error::SftpUnavailable(
+            "compiled without SFTP support".into(),
+        ))
+    }
+
+    fn remove_file(&self, _segments: &[String]) -> Result<()> {
+        Err(Error::SftpUnavailable(
+            "compiled without SFTP support".into(),
+        ))
+    }
+
+    fn real_path(&self, _segments: &[String]) -> Result<String> {
         Err(Error::SftpUnavailable(
             "compiled without SFTP support".into(),
         ))
@@ -847,11 +877,52 @@ mod imp {
                 })
             })
         }
+
+        /// The path the server resolves `segments` to, links followed.
+        fn real_path(&self, segments: &[String]) -> Result<String> {
+            self.with_session(|s| {
+                let path = s.path(segments);
+                run(async {
+                    let name = s
+                        .sftp
+                        .realpath(path.clone())
+                        .await
+                        .map_err(|e| map_err(e, &path))?;
+                    name.files
+                        .into_iter()
+                        .next()
+                        .map(|f| f.filename)
+                        .ok_or_else(|| Error::Sftp(format!("{path}: no real path")))
+                })
+            })
+        }
+
+        /// Deletes a file on the current session.
+        fn remove_file(&self, segments: &[String]) -> Result<()> {
+            self.with_session(|s| {
+                let path = s.path(segments);
+                run(async {
+                    s.sftp
+                        .remove(path.clone())
+                        .await
+                        .map_err(|e| map_err(e, &path))?;
+                    Ok(())
+                })
+            })
+        }
     }
 
     impl SftpSource {
         pub(super) fn list_dir(&self, segments: &[String]) -> Result<Vec<DirItem>> {
             self.sessions.list_dir(segments)
+        }
+
+        pub(super) fn remove_file(&self, segments: &[String]) -> Result<()> {
+            self.sessions.remove_file(segments)
+        }
+
+        pub(super) fn real_path(&self, segments: &[String]) -> Result<String> {
+            self.sessions.real_path(segments)
         }
 
         pub(super) fn open_file(&self, segments: &[String]) -> Result<Arc<dyn ByteSource>> {
@@ -1392,6 +1463,11 @@ mod server_tests {
             self.open.remove(&handle);
             Ok(ok(id))
         }
+
+        async fn remove(&mut self, id: u32, filename: String) -> Result<Status, Self::Error> {
+            std::fs::remove_file(&filename).map_err(status)?;
+            Ok(ok(id))
+        }
     }
 
     /// A server on a free local port; it stops with the runtime.
@@ -1529,6 +1605,14 @@ mod server_tests {
         }
 
         let linked = entries.iter().find(|e| e.name == "Linked").unwrap();
+        let shows = entries.iter().find(|e| e.name == "Shows").unwrap();
+        // A walk through subfolders visits the folder once, not again
+        // through the link.
+        assert_eq!(
+            source.folder_identity(Some(&linked.location)),
+            source.folder_identity(Some(&shows.location))
+        );
+        assert!(source.folder_identity(Some(&shows.location)).is_some());
         let inside = source.list(Some(&linked.location)).unwrap();
         assert_eq!(inside[0].name, "Episode.mkv");
         assert_eq!(
@@ -1719,5 +1803,40 @@ mod server_tests {
                 Some(source.location(&[], true))
             );
         }
+    }
+
+    #[test]
+    fn deletes_files_and_refuses_folders() {
+        let (dir, _) = home();
+        let password = new_password();
+        let server = serve(dir.path(), accepts(&password, None));
+        let source = SftpSource::new(&config(&server, "", "viewer", &password)).unwrap();
+        assert!(source.can_delete());
+
+        let entries = source.list(None).unwrap();
+        let folder = entries
+            .iter()
+            .find(|e| e.kind == fp_core::source::EntryKind::Directory)
+            .unwrap();
+        let clip = entries
+            .iter()
+            .find(|e| e.name == "Clip_180_LR.mp4")
+            .unwrap();
+
+        assert!(matches!(
+            source.delete(&folder.location),
+            Err(Error::InvalidLocation { .. })
+        ));
+        assert!(matches!(
+            source.delete(&source.location(&[], true)),
+            Err(Error::InvalidLocation { .. })
+        ));
+
+        source.delete(&clip.location).unwrap();
+        assert!(!dir.path().join("Clip_180_LR.mp4").exists());
+        assert!(matches!(
+            source.delete(&clip.location),
+            Err(Error::NotFound(_))
+        ));
     }
 }

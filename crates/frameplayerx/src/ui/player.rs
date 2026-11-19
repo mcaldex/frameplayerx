@@ -7,8 +7,9 @@ use crate::playback::Quality;
 use crate::subtitles::Pick;
 use egui::{Align, Color32, Layout, RichText, Sense, Vec2};
 use fp_core::format::{Projection, StereoLayout, VideoFormat};
-use fp_core::view::ViewSettings;
+use fp_core::view::{BackgroundEnvironment, ViewSettings};
 use fp_media::PlayerState;
+use fp_render::CinemaRoom;
 
 /// Width of the projection names beside the format list's rows.
 const GROUP_WIDTH: f32 = 130.0;
@@ -322,7 +323,8 @@ fn title_row(
             {
                 state.tracks_open = !state.tracks_open;
             }
-            match (pb.player.error(), &pb.notice) {
+            let notice = pb.notice.clone().or_else(|| pb.damage_notice());
+            match (pb.player.error(), notice) {
                 (Some(e), _) => {
                     warning_pill(ui, tr!("player-error-pill"), theme::ERROR).tip(&e);
                 }
@@ -354,7 +356,20 @@ fn title_row(
 
 /// The latest toast, on its own panel over the video.
 pub fn toast_panel(ctx: &egui::Context, v: &mut View) {
-    if let Some((text, _)) = &v.state.toast {
+    show_toast(ctx, v.state);
+}
+
+fn show_toast(ctx: &egui::Context, state: &super::UiState) {
+    if state.skipping_damaged {
+        widgets::status_pill(ctx, egui::Align2::CENTER_CENTER, Vec2::ZERO, |ui| {
+            ui.add(egui::Spinner::new().size(20.0));
+            ui.label(
+                RichText::new(tr!("player-skipping-damaged"))
+                    .font(theme::font(Weight::Medium, 18.0))
+                    .color(theme::TEXT),
+            );
+        });
+    } else if let Some((text, _)) = &state.toast {
         widgets::status_pill(ctx, egui::Align2::CENTER_CENTER, Vec2::ZERO, |ui| {
             widgets::toast_line(ui, text);
         });
@@ -759,7 +774,12 @@ fn tracks_label(pb: &crate::playback::Playback, language: &str) -> Option<String
     let audio: Vec<_> = info.audio_streams().collect();
     let subtitles = crate::subtitles::rows(language, info, &pb.subtitle_files);
     if audio.len() < 2 && subtitles.is_empty() && pb.targets.is_empty() {
-        return None;
+        return Some(format!(
+            "{}  {}   {}",
+            icons::SUBTITLES,
+            tr!("settings-subtitles"),
+            icons::CARET_UP
+        ));
     }
     let mut label = String::new();
     if !pb.targets.is_empty() {
@@ -1139,6 +1159,11 @@ pub fn adjust_panel(ctx: &egui::Context, v: &mut View) {
         }
         ui.add_space(10.0);
         let editing = v.state.presets_editing;
+        // In a cinema its row places you, not the screen's distance and width.
+        let in_cinema = v.state.adjust_tab == 1
+            && pb
+                .cinema_room(v.settings, v.passthrough_available)
+                .is_some();
         // Save and reset stay at the bottom while the page scrolls.
         let footer = !editing && v.state.adjust_tab <= 4;
         let footer_h = if footer { 64.0 } else { 0.0 };
@@ -1159,9 +1184,18 @@ pub fn adjust_panel(ctx: &egui::Context, v: &mut View) {
                         let flat = pb.format.projection == Projection::Flat;
                         let moved = v.settings.panel_offsets != Default::default()
                             || (flat && (pb.settings.yaw, pb.settings.pitch) != (0.0, 0.0));
-                        position_tab(ui, &mut pb.settings, flat, moved, v.actions);
+                        position_tab(ui, &mut pb.settings, flat, moved, in_cinema, v.actions);
+                        let rooms = pb.rooms_offered(v.settings, v.passthrough_available);
+                        ui.add_space(6.0);
+                        video_background(ui, &mut pb.settings, v.settings, rooms);
                     }
-                    2 => stereo_tab(ui, &mut pb.settings, true),
+                    2 => stereo_tab(
+                        ui,
+                        &mut pb.settings,
+                        Some(&v.settings.default_view),
+                        pb.format.can_comfort_focus(),
+                        true,
+                    ),
                     3 => picture_tab(ui, &mut pb.settings),
                     4 => {
                         widgets::section_label(ui, tr!("settings-passthrough-videos"));
@@ -1452,19 +1486,22 @@ fn format_tab(
     }
 }
 
-/// Position tab: where the picture is, and for a flat screen its size.
+/// Position tab: where the picture is, and for a flat screen its size (in
+/// a cinema, where you sit: `cinema` holds the distances that choose its
+/// front to back row).
 fn position_tab(
     ui: &mut egui::Ui,
     s: &mut ViewSettings,
     flat: bool,
     moved: bool,
+    in_cinema: bool,
     actions: &mut Vec<Action>,
 ) {
     let d = ViewSettings::default();
     widgets::rows(ui, |r| {
         r.row(
             tr!("adjust-placement"),
-            Some(tr!("adjust-placement-desc")),
+            Some(tr!("adjust-placement-start-desc")),
             |ui| {
                 let button = ui.add_enabled_ui(moved, |ui| {
                     widgets::button(
@@ -1540,7 +1577,7 @@ fn position_tab(
         );
     });
     ui.label(RichText::new(tr!("adjust-position-hint")).color(theme::TEXT_3));
-    if flat {
+    if flat && !in_cinema {
         ui.add_space(6.0);
         widgets::section_label(ui, tr!("adjust-screen"));
         widgets::rows(ui, |r| {
@@ -1573,16 +1610,43 @@ fn position_tab(
             );
         });
     }
-    ui.add_space(6.0);
-    widgets::section_label(ui, tr!("settings-background"));
-    background_controls(ui, &mut s.background);
 }
 
-/// Depth and eye alignment, with subtitle depth unless `subtitles` is off
-/// (Settings has it with the subtitles).
-pub(super) fn stereo_tab(ui: &mut egui::Ui, s: &mut ViewSettings, subtitles: bool) {
+/// Depth, comfort focus and eye alignment, with subtitle depth unless
+/// `subtitles` is off (Settings has it with the subtitles).
+pub(super) fn stereo_tab(
+    ui: &mut egui::Ui,
+    s: &mut ViewSettings,
+    global: Option<&ViewSettings>,
+    can_focus: bool,
+    subtitles: bool,
+) {
     let d = ViewSettings::default();
     widgets::rows(ui, |r| {
+        if can_focus {
+            let desc = tr!("adjust-comfort-focus-desc");
+            r.row(tr!("adjust-comfort-focus"), Some(desc), |ui| {
+                let mut on = if s.own_focus() {
+                    s.comfort_focus
+                } else {
+                    global.map_or(s.comfort_focus, |g| g.comfort_focus)
+                };
+                if let Some(g) = global
+                    && s.own_focus()
+                    && widgets::icon_button(ui, icons::ARROW_COUNTER_CLOCKWISE, 40.0, false)
+                        .tip(tr!("adjust-reset"))
+                        .clicked()
+                {
+                    s.focus_own = Some(false);
+                    s.comfort_focus = g.comfort_focus;
+                }
+                let sw = widgets::switch(ui, &mut on);
+                if sw.changed() {
+                    s.comfort_focus = on;
+                    s.focus_own = Some(global.is_some());
+                }
+            });
+        }
         r.slider(
             tr!("adjust-depth"),
             Some(tr!("adjust-depth-desc")),
@@ -1869,12 +1933,182 @@ fn backgrounds() -> [(&'static str, [f32; 3]); 4] {
     ]
 }
 
-/// The colour around flat videos and the menus while the room doesn't
-/// show, for the open video (the Position tab) or the one videos start
-/// with (Settings > Video position).
-pub(super) fn background_controls(ui: &mut egui::Ui, c: &mut [f32; 3]) {
+/// The background chips: the rooms built into this player, and for a
+/// single video, following Settings › Video position.
+fn environment_picker(
+    ui: &mut egui::Ui,
+    selected: BackgroundEnvironment,
+    per_video: bool,
+) -> Option<BackgroundEnvironment> {
+    use BackgroundEnvironment::*;
+    let choices = [
+        (UseGlobal, tr!("background-use-global"), per_video),
+        (Colour, tr!("background-colour"), true),
+        (
+            Classic,
+            tr!("background-classic"),
+            CinemaRoom::Classic.is_available(),
+        ),
+        (
+            Luxe,
+            tr!("background-luxe"),
+            CinemaRoom::Luxe.is_available(),
+        ),
+    ];
+    let mut picked = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+        for (environment, label, offered) in choices {
+            if offered && widgets::chip(ui, label, selected == environment).clicked() {
+                picked = Some(environment);
+            }
+        }
+    });
+    picked
+}
+
+/// The background videos start with: a colour, or a cinema room when this
+/// build has one.
+pub(super) fn global_background(ui: &mut egui::Ui, settings: &mut crate::settings::Settings) {
+    if CinemaRoom::any_available()
+        && let Some(environment) = environment_picker(ui, settings.environment(), false)
+    {
+        settings.set_environment(environment);
+    }
+    if let Some(room) = crate::playback::room_for(settings.environment()) {
+        ui.label(RichText::new(tr!("background-room-desc")).color(theme::TEXT_3));
+        let seat = Seat {
+            row: settings.cinema_row(),
+            row_default: crate::settings::DEFAULT_CINEMA_ROW,
+            curvature: settings.cinema_curvature(),
+            curvature_default: 0.0,
+        };
+        let (row, curvature) = seat_sliders(ui, room, seat);
+        if let Some(row) = row {
+            settings.set_cinema_row(row);
+        }
+        if let Some(curvature) = curvature {
+            settings.set_cinema_curvature(curvature);
+        }
+        // The colour is still round the menus and the videos that aren't flat.
+        ui.add_space(6.0);
+        background_controls(
+            ui,
+            &mut settings.default_view.background,
+            tr!("settings-background-menus-desc"),
+        );
+    } else {
+        background_controls(
+            ui,
+            &mut settings.default_view.background,
+            tr!("settings-background-desc"),
+        );
+    }
+}
+
+/// Where a cinema seats you: its row and how much its screen curves, now
+/// and when reset.
+struct Seat {
+    row: u8,
+    row_default: u8,
+    curvature: f32,
+    curvature_default: f32,
+}
+
+/// The row of `room` to sit in and how much its screen curves; what was
+/// changed.
+fn seat_sliders(ui: &mut egui::Ui, room: CinemaRoom, seat: Seat) -> (Option<u8>, Option<f32>) {
+    let rows = room.rows();
+    let mut row = f32::from(seat.row.clamp(1, rows));
+    let mut curvature = seat.curvature;
+    let desc = tr!("adjust-row-desc", rows = rows);
+    let (mut new_row, mut new_curvature) = (None, None);
+    widgets::rows(ui, |r| {
+        if r.slider(
+            tr!("adjust-row"),
+            Some(&desc),
+            &mut row,
+            1.0..=f32::from(rows),
+            f32::from(seat.row_default.clamp(1, rows)),
+            "",
+            0,
+        ) {
+            new_row = Some(row.round() as u8);
+        }
+        if r.slider(
+            tr!("adjust-curvature"),
+            Some(tr!("adjust-cinema-curvature-desc")),
+            &mut curvature,
+            0.0..=1.0,
+            seat.curvature_default,
+            "",
+            2,
+        ) {
+            new_curvature = Some(curvature);
+        }
+    });
+    (new_row, new_curvature)
+}
+
+/// A video's background: with `rooms`, a cinema room can be chosen too.
+fn video_background(
+    ui: &mut egui::Ui,
+    view: &mut ViewSettings,
+    settings: &crate::settings::Settings,
+    rooms: bool,
+) {
+    use BackgroundEnvironment::*;
+    widgets::section_label(ui, tr!("settings-background"));
+    if rooms && let Some(environment) = environment_picker(ui, view.environment, true) {
+        // Its own colour starts from the one it was following.
+        if environment == Colour && view.environment == UseGlobal {
+            view.background = settings.default_view.background;
+        }
+        view.environment = environment;
+    }
+    let environment = match view.environment {
+        UseGlobal => settings.environment(),
+        own => own,
+    };
+    if let Some(room) = crate::playback::room_for(environment).filter(|_| rooms) {
+        let seat = Seat {
+            row: view.cinema_row.unwrap_or_else(|| settings.cinema_row()),
+            row_default: settings.cinema_row(),
+            curvature: view
+                .cinema_curvature
+                .unwrap_or_else(|| settings.cinema_curvature()),
+            curvature_default: settings.cinema_curvature(),
+        };
+        let (row, curvature) = seat_sliders(ui, room, seat);
+        if row.is_some() {
+            view.cinema_row = row;
+        }
+        if curvature.is_some() {
+            view.cinema_curvature = curvature;
+        }
+        return;
+    }
+    // While it follows the global colour that one shows, and changing it
+    // gives the video its own.
+    let following = view.environment == UseGlobal;
+    let mut colour = if following {
+        settings.default_view.background
+    } else {
+        view.background
+    };
+    let before = colour;
+    background_controls(ui, &mut colour, tr!("settings-background-desc"));
+    if colour != before {
+        view.background = colour;
+        if following {
+            view.environment = Colour;
+        }
+    }
+}
+
+fn background_controls(ui: &mut egui::Ui, c: &mut [f32; 3], desc: &str) {
     ui.label(
-        RichText::new(tr!("settings-background-desc"))
+        RichText::new(desc)
             .font(theme::font(Weight::Regular, 15.0))
             .color(theme::TEXT_3),
     );
@@ -1979,6 +2213,30 @@ const TRACK_ROW: f32 = 56.0;
 const TRACK_PAD: f32 = 20.0;
 const LIST_GAP: f32 = 10.0;
 
+/// The subtitle tracks the panel lists, besides Off and Find subtitles:
+/// with a server's own tracks, those and the files that aren't its own.
+fn subtitle_rows(
+    pb: &crate::playback::Playback,
+    rows: &[crate::subtitles::Row],
+    server_tracks: bool,
+) -> usize {
+    if !server_tracks {
+        return rows.len();
+    }
+    let files = rows
+        .iter()
+        .filter(|row| match row.pick {
+            Pick::File(i) => pb.subtitle_files.get(i).is_some_and(|f| {
+                !pb.source_tracks
+                    .iter()
+                    .any(|t| t.subtitle && t.location.as_ref() == Some(&f.location))
+            }),
+            _ => false,
+        })
+        .count();
+    pb.source_tracks.iter().filter(|s| s.subtitle).count() + files
+}
+
 /// The audio and subtitles picker over the control bar: the two lists side
 /// by side, each scrolling when long, and a row plays its track at once.
 /// Its body is as tall as the longer list needs, standing on the panel's
@@ -2005,7 +2263,15 @@ pub fn tracks_panel(ctx: &egui::Context, v: &mut View) {
             0
         })
         .max(1)
-        .max(subtitles.len() + 1)
+        .max(
+            subtitle_rows(pb, &subtitles, server_tracks)
+                + 2
+                + if pb.active_managed_subtitle().is_some() {
+                    3
+                } else {
+                    0
+                },
+        )
         .max(quality_rows) as f32;
     let tall = 2.0 * TRACK_PAD + label_h + LIST_GAP + 8.0 + rows * TRACK_ROW;
     let full = ctx.screen_rect() - widgets::SHADOW_ROOM;
@@ -2083,14 +2349,27 @@ pub fn tracks_panel(ctx: &egui::Context, v: &mut View) {
                 tr!("settings-subtitles"),
                 &pb.title,
                 |ui, fresh| {
+                    if track_row(ui, tr!("subtitle-find"), "", false).clicked() {
+                        actions.push(Action::SubtitleSearch(super::subtitle_search::Action::Open));
+                    }
+                    if let Some(attachment) = pb.active_managed_subtitle() {
+                        super::subtitle_search::timing(ui, attachment.delay_ms, actions);
+                    }
                     if server_tracks {
-                        let off = pb
+                        let server_off = pb
                             .request
                             .source_subtitle
                             .as_deref()
                             .is_none_or(|id| id == "0");
+                        let off = pb.active_subtitle_file.is_none() && server_off;
                         if track_row(ui, tr!("tracks-off"), "", off).clicked() && !off {
-                            actions.push(Action::SelectSourceSubtitles(None));
+                            // Only a file is on, which goes off here: asking
+                            // the server would start its stream again.
+                            actions.push(if server_off {
+                                Action::SelectSubtitles(Pick::Off)
+                            } else {
+                                Action::SelectSourceSubtitles(None)
+                            });
                         }
                         for s in pb.source_tracks.iter().filter(|s| s.subtitle) {
                             let on = pb.request.source_subtitle.as_deref() == Some(s.id.as_str());
@@ -2102,7 +2381,6 @@ pub fn tracks_panel(ctx: &egui::Context, v: &mut View) {
                                 actions.push(Action::SelectSourceSubtitles(Some(s.id.clone())));
                             }
                         }
-                        return;
                     }
                     let mut pick = |ui: &mut egui::Ui, title: &str, detail: &str, pick: Pick| {
                         let on = showing(pb, pick);
@@ -2114,9 +2392,30 @@ pub fn tracks_panel(ctx: &egui::Context, v: &mut View) {
                             actions.push(Action::SelectSubtitles(pick));
                         }
                     };
-                    pick(ui, tr!("tracks-off"), "", Pick::Off);
+                    if !server_tracks {
+                        pick(ui, tr!("tracks-off"), "", Pick::Off);
+                    }
                     for row in &subtitles {
-                        pick(ui, &row.title, &row.detail, row.pick);
+                        let file = match row.pick {
+                            Pick::File(i) => pb.subtitle_files.get(i),
+                            _ => None,
+                        };
+                        // The server's own files are among its tracks above.
+                        if server_tracks
+                            && file.is_none_or(|f| {
+                                pb.source_tracks
+                                    .iter()
+                                    .any(|t| t.subtitle && t.location.as_ref() == Some(&f.location))
+                            })
+                        {
+                            continue;
+                        }
+                        if file.is_some_and(|f| pb.subtitle_needs_review(&f.location)) {
+                            let detail = format!("{} · {}", tr!("subtitle-review"), row.detail);
+                            pick(ui, &row.title, &detail, row.pick);
+                        } else {
+                            pick(ui, &row.title, &row.detail, row.pick);
+                        }
                     }
                 },
             );
@@ -2185,7 +2484,9 @@ fn track_list(
     widgets::section_label(&mut ui, label);
     widgets::card(&mut ui, |ui| {
         let salt = (label, video);
-        let fresh = egui::scroll_area::State::load(ui.ctx(), ui.make_persistent_id(salt)).is_none();
+        // `id_salt` files the area's state under the salt made an `Id`.
+        let id = ui.make_persistent_id(egui::Id::new(salt));
+        let fresh = egui::scroll_area::State::load(ui.ctx(), id).is_none();
         egui::ScrollArea::vertical()
             .id_salt(salt)
             .auto_shrink([false, true])
@@ -2195,7 +2496,7 @@ fn track_list(
 
 /// A row of the picker: the whole row picks its track, and a check marks
 /// the one in use.
-fn track_row(ui: &mut egui::Ui, title: &str, detail: &str, on: bool) -> egui::Response {
+pub(super) fn track_row(ui: &mut egui::Ui, title: &str, detail: &str, on: bool) -> egui::Response {
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, TRACK_ROW), Sense::click());
     if ui.is_rect_visible(rect) {
@@ -2474,4 +2775,81 @@ fn stereo_pictures(
             textures.push(tex);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn collect_texts(shape: &egui::epaint::Shape, out: &mut Vec<String>) {
+        match shape {
+            egui::epaint::Shape::Text(t) => out.push(t.galley.text().to_string()),
+            egui::epaint::Shape::Vec(v) => {
+                for s in v {
+                    collect_texts(s, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn rendered_toast_texts(state: &super::super::UiState) -> Vec<String> {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 720.0),
+            )),
+            ..Default::default()
+        };
+        // Anchored `Area`s need a first sizing pass before emitting text shapes.
+        let _ = ctx.run(input(), |ctx| show_toast(ctx, state));
+        let out = ctx.run(input(), |ctx| show_toast(ctx, state));
+        let mut texts = Vec::new();
+        for cs in &out.shapes {
+            collect_texts(&cs.shape, &mut texts);
+        }
+        texts
+    }
+
+    #[test]
+    fn a_track_list_scrolls_to_the_track_in_use_only_when_first_shown() {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx);
+        let mut fresh = Vec::new();
+        for _ in 0..3 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let rect = ui.max_rect();
+                    track_list(ui, rect, "Subtitles", "Video", |_, first| fresh.push(first));
+                });
+            });
+        }
+        assert_eq!(fresh, [true, false, false]);
+    }
+
+    #[test]
+    fn the_skipping_damaged_message_shows_only_while_jumping() {
+        let mut state = super::super::UiState::default();
+        assert!(rendered_toast_texts(&state).is_empty());
+
+        state.skipping_damaged = true;
+        state.toast("Old toast");
+        let while_jumping = rendered_toast_texts(&state);
+        assert!(
+            while_jumping
+                .iter()
+                .any(|t| t == tr!("player-skipping-damaged")),
+            "expected live skipping message, got {while_jumping:?}"
+        );
+
+        // Done, it says nothing more: the control bar's notice counts it.
+        state.skipping_damaged = false;
+        let after = rendered_toast_texts(&state);
+        assert!(
+            !after.iter().any(|t| t == tr!("player-skipping-damaged")),
+            "got {after:?}"
+        );
+    }
 }

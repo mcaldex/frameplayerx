@@ -2,6 +2,48 @@
 //! draws.
 
 use super::*;
+use fp_render::CinemaParams;
+
+/// The cinema round a flat video: whether it showed last frame, and its
+/// house lights.
+pub(super) struct Cinema {
+    showing: bool,
+    lights: f32,
+    /// How far the zoom control has pulled towards the next row, and when
+    /// it last did.
+    pub(super) row_pull: f32,
+    pub(super) pulled_at: f64,
+}
+
+impl Default for Cinema {
+    fn default() -> Self {
+        Self {
+            showing: false,
+            lights: 1.0,
+            row_pull: 0.0,
+            pulled_at: f64::NEG_INFINITY,
+        }
+    }
+}
+
+/// How much zoom moves a row: half a second of the stick held fully over.
+pub(super) const ROW_PULL: f32 = 0.4;
+
+impl Cinema {
+    /// The house lights `dt` seconds on: going down while a video plays,
+    /// up when it stops, held while it buffers.
+    fn lights_at(&mut self, state: PlayerState, has_frame: bool, dt: f32) -> f32 {
+        let dt = dt.max(0.0);
+        match state {
+            PlayerState::Playing if has_frame => self.lights = (self.lights - dt / 1.4).max(0.0),
+            PlayerState::Playing | PlayerState::Buffering => {}
+            PlayerState::Paused | PlayerState::Ended | PlayerState::Failed => {
+                self.lights = (self.lights + dt / 0.7).min(1.0);
+            }
+        }
+        self.lights
+    }
+}
 
 impl App {
     /// Forward becomes where the head faces, and the browse panel comes
@@ -18,9 +60,9 @@ impl App {
             && p.format.projection == Projection::Flat
             && (p.settings.yaw, p.settings.pitch) != (0.0, 0.0)
         {
+            // Its place isn't kept with the video, so nothing is left to save.
             p.settings.yaw = 0.0;
             p.settings.pitch = 0.0;
-            p.settings_dirty = true;
         }
     }
 
@@ -37,16 +79,15 @@ impl App {
             && p.format.projection == Projection::Flat
             && (p.settings.yaw, p.settings.pitch) != (0.0, 0.0)
         {
+            // Its place isn't kept with the video, so nothing is left to save.
             p.settings.yaw = 0.0;
             p.settings.pitch = 0.0;
-            p.settings_dirty = true;
         }
     }
 
-    /// The panel the keyboard types into: the library or adjust panel with
-    /// a text field in focus.
+    /// The visible panel with a text field in focus.
     pub(super) fn keyboard_target(&self) -> Option<usize> {
-        [MAIN, ADJUST]
+        [MAIN, ADJUST, TRACKS]
             .into_iter()
             .find(|&i| self.panels[i].visible && self.panels[i].wants_keyboard())
     }
@@ -89,7 +130,10 @@ impl App {
             _ => room,
         };
         let grab = grab.and_then(|(panel, hand)| match panel {
-            KEYBOARD => self.keyboard_target().map(|t| (t, hand)),
+            KEYBOARD => self.keyboard_target().map(|t| {
+                let panel = if t == TRACKS { BAR } else { t };
+                (panel, hand)
+            }),
             MAIN | ADJUST | PERF => Some((panel, hand)),
             BAR | TRACKS if self.playback.is_some() => Some((BAR, hand)),
             _ => None,
@@ -193,11 +237,25 @@ impl App {
         self.sync_locks();
         self.check_mounts();
         self.remote_events();
+        let was_skipping = self.ui.skipping_damaged;
+        let mut jumped = false;
         if let Some(p) = &mut self.playback {
             p.save_progress(&self.services.library, false);
             p.sync_watch();
             p.save_key(&self.services.library, false);
             p.watch_decoding(self.settings.hardware_decoding);
+            let (skipping, finished) = p.poll_damage_skip();
+            self.ui.skipping_damaged = skipping;
+            jumped = finished;
+        } else {
+            self.ui.skipping_damaged = false;
+        }
+        if self.ui.skipping_damaged != was_skipping {
+            self.panels[TOAST].request_repaint();
+        }
+        // The control bar's pill counts what was skipped.
+        if jumped {
+            self.panels[BAR].request_repaint();
         }
         self.publish_status();
         self.publish_details();
@@ -237,9 +295,11 @@ impl App {
 
     /// Whether the flat screen and panels follow the head: the setting is
     /// on, the video (if any) is flat (around a 180°/360° one you look
-    /// about), and no panel is being moved.
+    /// about) and not in a cinema (a room trailing the head would swim), and
+    /// no panel is being moved.
     fn follows(&self) -> bool {
         self.settings.follow
+            && !self.cinema.showing
             && self.panel_drag.is_none()
             && self
                 .playback
@@ -370,7 +430,7 @@ impl App {
             .toast
             .as_ref()
             .is_some_and(|(_, t)| t.elapsed().as_secs_f32() < VIDEO_TOAST_SECS);
-        self.panels[TOAST].visible = over_video && live;
+        self.panels[TOAST].visible = over_video && (live || self.ui.skipping_damaged);
         // Said and gone: it doesn't come back when the library opens.
         if over_video && !live {
             self.ui.toast = None;
@@ -420,7 +480,17 @@ impl App {
             None => (anchor, [0.0, 0.0]),
         };
         let kb_anchor = place_around(kb_from, ky, kp, 0.0, 0.0);
-        self.panels[KEYBOARD].pose = place(kb_anchor, 0.0, 0.95, -0.55, 35.0);
+        self.panels[KEYBOARD].pose = if kb_target == Some(TRACKS) {
+            let bar = &self.panels[BAR];
+            bar.pose
+                * Mat4::from_translation(Vec3::new(
+                    0.0,
+                    -(bar.size.y + self.panels[KEYBOARD].size.y) / 2.0,
+                    0.03,
+                ))
+        } else {
+            place(kb_anchor, 0.0, 0.95, -0.55, 35.0)
+        };
         // From the same point as the library panel, so it stays in the room or
         // follows along with the menus.
         let start = perf_start_yaw(
@@ -506,11 +576,19 @@ impl App {
                 thumbs,
                 playback,
                 queue,
+                folder_play_all,
                 ..
             } = self;
+            let folder_play_all = folder_play_all.as_ref().and_then(|scan| {
+                state
+                    .folder_mut()
+                    .filter(|b| b.source == scan.source && b.location == scan.location)?;
+                scan.state.status()
+            });
             let mut view = View {
                 state,
                 queue,
+                folder_play_all,
                 settings,
                 services,
                 thumbs,
@@ -522,6 +600,9 @@ impl App {
             let r = panels[idx].paint(renderer, input.time, |ctx| match idx {
                 MAIN => ui::library::browser(ctx, &mut view),
                 BAR => ui::player::control_bar(ctx, &mut view),
+                TRACKS if view.state.subtitle_search.is_some() => {
+                    ui::subtitle_search::panel(ctx, &mut view);
+                }
                 TRACKS => ui::player::tracks_panel(ctx, &mut view),
                 TOAST => ui::player::toast_panel(ctx, &mut view),
                 _ => ui::player::adjust_panel(ctx, &mut view),
@@ -532,6 +613,9 @@ impl App {
         }
         for a in actions {
             self.apply(a);
+        }
+        if !self.ui.tracks_open || !self.ui_visible || self.show_browser {
+            self.close_subtitle_search();
         }
         self.sync_settings();
     }
@@ -580,24 +664,58 @@ impl App {
         }
         let anchor_rot = anchor.to_scale_rotation_translation().1;
         let player = self.picture_anchor(anchor);
-        if let (Some(p), Some(s)) = (&self.playback, shown) {
+        let mut showing = false;
+        if let (Some(p), Some(mut s)) = (&self.playback, shown) {
             frame = p.player.current_frame();
             video.format = p.format;
             video.screen_pose = place(player, 0.0, s.screen_distance, 0.0, 0.0);
             video.anchor = anchor_rot;
-            video.settings = s;
+            let mut subtitles = player;
+            // Only the room this video wants stays in memory, and it is read
+            // while the video opens, to be ready when it shows.
+            renderer.keep_cinema(p.wanted_room(&self.settings));
+            if let Some(room) = p.room_to_load(&self.settings, input.passthrough_available) {
+                renderer.load_cinema(room);
+            }
             if let Some(v) = p.player.info().video_stream() {
                 video.rotation = v.rotation;
                 video.pixel_aspect = v.pixel_aspect as f32;
+                if let Some(room) = p.cinema_room(&self.settings, input.passthrough_available) {
+                    showing = true;
+                    let seat = room.seat(p.cinema_row(&self.settings));
+                    let pose = room.pose(player, seat);
+                    let lights = self
+                        .cinema
+                        .lights_at(p.player.state(), frame.is_some(), input.dt);
+                    let curvature = room.curvature(p.cinema_curvature(&self.settings));
+                    video.cinema = Some(CinemaParams {
+                        room,
+                        pose,
+                        lights,
+                        curvature,
+                    });
+                    video.screen_pose = pose * Mat4::from_translation(room.screen_centre());
+                    // Below the screen's middle as below a flat screen's, and
+                    // never behind the screen.
+                    let to = room.screen_centre() - seat;
+                    let flat = Vec2::new(to.x, to.z).length();
+                    subtitles = player * Mat4::from_rotation_x(to.y.atan2(flat));
+                    s.subtitle_distance = s.subtitle_distance.min(flat);
+                }
             }
+            video.settings = s;
             if let Some((_, rot)) = input.head {
                 let rel = anchor_rot.inverse() * rot;
                 p.player.set_head_orientation(rel.to_array());
             }
-            self.subtitles(renderer, input.time, player, &s);
+            self.subtitles(renderer, input.time, subtitles, &s);
         } else {
             self.subs.visible = false;
         }
+        if !showing {
+            self.cinema = Cinema::default();
+        }
+        self.cinema.showing = showing;
         // Once the video plays, so the second read doesn't hold up its start.
         if frame.is_some()
             && let Some(p) = &mut self.playback
@@ -821,6 +939,18 @@ fn perf_video(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn house_lights_dim_for_playback_hold_through_buffering_and_rise_on_pause() {
+        let mut cinema = Cinema::default();
+        assert_eq!(cinema.lights_at(PlayerState::Buffering, false, 0.5), 1.0);
+        assert_eq!(cinema.lights_at(PlayerState::Playing, false, 0.7), 1.0);
+        assert!((cinema.lights_at(PlayerState::Playing, true, 0.7) - 0.5).abs() < 1e-6);
+        assert!((cinema.lights_at(PlayerState::Buffering, true, 0.5) - 0.5).abs() < 1e-6);
+        assert_eq!(cinema.lights_at(PlayerState::Playing, true, 0.7), 0.0);
+        assert!((cinema.lights_at(PlayerState::Paused, true, 0.35) - 0.5).abs() < 1e-6);
+        assert_eq!(cinema.lights_at(PlayerState::Ended, true, 1.0), 1.0);
+    }
 
     #[test]
     fn a_toast_sits_above_the_bar_and_any_picker() {

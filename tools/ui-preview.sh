@@ -25,8 +25,17 @@ import glob, http.server, json, os, random, sqlite3, sys, urllib.parse
 
 home, port_file = sys.argv[1], sys.argv[2]
 
+def library_db():
+    # The app's library is in a file named for its schema.
+    base = os.path.join(home, ".local/share/frameplayerx")
+    named = sorted(
+        glob.glob(os.path.join(base, "library-*.sqlite3")),
+        key=lambda p: int(os.path.basename(p)[len("library-"):-len(".sqlite3")]),
+    )
+    return named[-1] if named else os.path.join(base, "library.sqlite3")
+
 def thumb_for(title_prefix):
-    db_path = os.path.join(home, ".local/share/frameplayerx/library.sqlite3")
+    db_path = library_db()
     thumb_dir = os.path.join(home, ".cache/frameplayerx/thumbnails")
     if os.path.exists(db_path):
         with sqlite3.connect(db_path) as db:
@@ -557,7 +566,58 @@ tracks
 frames 8
 panel tracks plex-tracks
 panel bar plex-player-bar
+subtitle-preview results
+panel tracks opensubtitles-results
+subtitle-preview empty
+panel tracks opensubtitles-empty
+subtitle-preview unavailable
+panel tracks opensubtitles-unavailable
+subtitle-preview allowance
+panel tracks opensubtitles-allowance
+subtitle-preview account
+panel tracks opensubtitles-account
 EOF
+
+if [ "${UI_PREVIEW_PLEX_ONLY:-0}" != 1 ]; then
+  cat >>"$script" <<EOF
+# The cinema: the Luxe from the second row (the default), with the film
+# playing and paused, then its screen curved, and the Classic. A slow
+# preview frame brings the house lights up by at most 0.1 s of their fade.
+close
+look 0 0
+aim 90 40
+environment luxe
+loop video
+open $home/Videos/Mountain Lake_360.webm
+wait-playing
+format-flat
+hide-controls
+wait 6
+sbs cinema-playing
+pause
+wait 4
+sbs cinema-paused
+shot cinema
+view cinema_curvature 1
+frames 4
+shot cinema-curved
+view cinema_curvature 0
+look 55 -9
+frames 3
+shot cinema-aisle
+look 180 -9
+frames 3
+shot cinema-rear
+look 0 0
+environment classic
+wait 6
+shot cinema-classic
+click
+adjust 1
+frames 6
+panel adjust cinema-position
+EOF
+fi
 
 cargo build -p frameplayerx
 HOME="$home" XDG_CONFIG_HOME="$home/.config" XDG_DATA_HOME="$home/.local/share" \

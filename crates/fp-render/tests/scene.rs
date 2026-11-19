@@ -6,9 +6,12 @@ use fp_core::view::ViewSettings;
 use fp_media::PixelLayout;
 use fp_render::capture::OffscreenEyes;
 use fp_render::math::{Fov, projection, view};
-use fp_render::{EyeView, Gpu, QuadDraw, QuadTexture, Renderer, VideoParams};
+use fp_render::{
+    CinemaParams, CinemaRoom, EyeView, Foveation, Gpu, QuadDraw, QuadTexture, Renderer, VideoParams,
+};
 use glam::{Mat4, Quat, Vec3};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 const SIZE: u32 = 128;
 
@@ -390,6 +393,102 @@ fn flat_screen_sits_in_front_and_background_surrounds_it() {
     assert!(is_blue(px(&l, 2, 2)), "corner {:?}", px(&l, 2, 2));
     let [l, _] = render(&mut r, &mut e, None, &p, &[]);
     assert!(is_blue(centre(&l)), "no video {:?}", centre(&l));
+    e.destroy(&r);
+}
+
+#[test]
+fn cinema_lights_and_stereo_video_render_behind_panel_quads() {
+    // Rooms come with the build only when their files were supplied.
+    let Some(cinema) = CinemaRoom::ALL.into_iter().find(|r| r.is_available()) else {
+        return;
+    };
+    let Some((mut r, mut e)) = setup() else {
+        return;
+    };
+    let started = Instant::now();
+    while !r.load_cinema(cinema) {
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the room loads"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let sbs = frame(
+        320,
+        90,
+        |u, _| {
+            if u < 0.5 { [255, 0, 0] } else { [0, 0, 255] }
+        },
+    );
+    let mut p = params(
+        Projection::Flat,
+        StereoLayout::SideBySide,
+        ViewSettings::default(),
+    );
+    // The second row's seat, turned to look straight at the middle of the
+    // screen.
+    let seat = cinema.seat(2);
+    let to = cinema.screen_centre() - seat;
+    let up = to.y.atan2(Vec3::new(to.x, 0.0, to.z).length());
+    let viewer = Mat4::from_translation(Vec3::Y * 1.6) * Mat4::from_rotation_x(-up);
+    let pose = cinema.pose(viewer, seat);
+    p.screen_pose = pose * Mat4::from_translation(cinema.screen_centre());
+    p.background = [0.0, 0.0, 0.0, 1.0];
+    let mut panel = QuadDraw::panel(
+        QuadTexture::White,
+        Mat4::from_translation(Vec3::new(-0.65, 1.6, -2.0)),
+        0.32,
+        0.32,
+        1.0,
+    );
+    panel.color = [0.0, 1.0, 1.0, 1.0];
+    let ceiling_light = |img: &[u8]| {
+        img[..(SIZE * 20 * 4) as usize]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| p[..3].iter().map(|&c| u64::from(c)).sum::<u64>())
+            .sum::<u64>()
+    };
+
+    // Use both settings so devices with fragment shading rate can run the same
+    // check with the rate attachment enabled as well as without it.
+    for foveation in [Foveation::Off, Foveation::High] {
+        r.set_foveation(foveation);
+        let room = |lights| CinemaParams {
+            room: cinema,
+            pose,
+            lights,
+            curvature: 0.0,
+        };
+        p.cinema = Some(room(0.0));
+        let dim = render(&mut r, &mut e, Some(&sbs), &p, &[panel]);
+        p.cinema = Some(room(1.0));
+        let bright = render(&mut r, &mut e, Some(&sbs), &p, &[panel]);
+        for (eye, (dim, bright)) in dim.iter().zip(&bright).enumerate() {
+            assert!(
+                ceiling_light(bright) > ceiling_light(dim) + 2000,
+                "the room brightens in eye {eye} ({foveation:?})"
+            );
+            let video = if eye == 0 { is_red } else { is_blue };
+            assert!(
+                video(centre(dim)) && video(centre(bright)),
+                "the room leaves the correct eye's video visible: {:?} {:?}",
+                centre(dim),
+                centre(bright)
+            );
+            let [red, green, blue] = px(bright, 43, SIZE / 2);
+            assert!(red < 40 && green > 210 && blue > 210, "panel {eye}");
+        }
+    }
+
+    let hdr = pq_frame(160, 90, false, |_, _| [0.65, 0.5, 0.35]);
+    p.format.stereo = StereoLayout::Mono;
+    let [with_room, _] = render(&mut r, &mut e, Some(&hdr), &p, &[]);
+    p.cinema = None;
+    let [without_room, _] = render(&mut r, &mut e, Some(&hdr), &p, &[]);
+    assert_ne!(centre(&with_room), [0, 0, 0], "HDR picture remains visible");
+    assert!(near(centre(&with_room), centre(&without_room), 1));
     e.destroy(&r);
 }
 

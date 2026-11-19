@@ -105,7 +105,7 @@ headset's Noto Sans CJK; for the preview, install it with
 | `fp-xr` | OpenXR: the session and swapchains, controller input, passthrough |
 | `fp-xr-loader` | Finds the active OpenXR runtime and loads it directly, with no Khronos loader to ship (shared with `frame-probe`) |
 | `fp-library` | The SQLite database: folder scanning, the metadata and thumbnail worker, search, watch history |
-| `fp-sources` | Sources: local folders, HTTP, WebDAV, DLNA, SMB, SFTP, DeoVR and HereSphere feeds, Jellyfin, Emby and Plex |
+| `fp-sources` | Sources: local folders, HTTP, WebDAV, DLNA, SMB, SFTP, NFS, DeoVR and HereSphere feeds, Jellyfin, Emby and Plex |
 | `fp-haptics` | Funscripts, the sync engine, and TCode, Buttplug and Handy devices |
 | `fp-remote` | The DeoVR remote API and the phone web remote |
 | `fp-updater` | Signed update manifests, download, install and rollback; the `fp-release` maintainer tool |
@@ -166,6 +166,19 @@ as bytes, so this pipeline takes all its descriptors from descriptor
 buffers, the scene's parameters included. HDR 10-bit frames are still
 converted, as their scenes are measured in the converted planes.
 
+Comfort focus (`fp-render/src/focus.rs`) measures how close what the
+viewer looks at is, 20 times a second. After the eye passes, the scene
+shader's `fs_focus` draws strips of both eyes' luma round the aim into a
+small float target with the eye passes' own pipeline layout and bindings,
+so it reads every frame they read, one in the decoder's buffer included;
+`shaders/focus.wgsl` then matches the strips in a compute pass, and the
+scores are read back once the slot's fence has signalled. The eye passes
+start each eye's rays at its offset from its camera, taken from the
+headset's eye poses, and intersect them with a sphere of the measured
+radius round that camera (`Params.focus.w` and `eyes`), and turn the eyes'
+pictures apart about the head's up to ease close things (`focus.z` and
+`relief`); the measurement leaves both out, reading the video as filmed.
+
 **Sources and browsing.** Every source implements one `Source` trait
 (`list`, `open`, `details`). Each kind gets its own browser in `ui/`:
 `local.rs`, `folders.rs`, `catalog.rs` and `feeds.rs`, built from the
@@ -177,7 +190,11 @@ Persistent source references use
 `source://source/<encoded-source-id>/<kind>/<encoded-key>`
 (`fp-sources/src/location.rs`). Each component is encoded separately; the
 key is one opaque segment, including any encoded path separators. HTTP(S),
-WebDAV, SMB and SFTP keys are relative to the configured root; Jellyfin and Emby
+WebDAV, SMB, SFTP and NFS keys are relative to the configured root; a whole
+NFS server's can name the export they are in as an encoded first segment
+(`%2Fvolume1%2Fvideos/clip.mp4`), so an NFS source edited between the whole
+server and an export, or to another export on the same server, has its saved
+locations moved over (`nfs::rekey`). Jellyfin and Emby
 keys retain item and version IDs, and DLNA uses object IDs rather than
 resource URLs. Feeds use published stable scene IDs where available;
 otherwise scene, media and asset URLs remain exactly as published,
@@ -294,10 +311,25 @@ embedded tracks itself; files are loaded whole. Text cues are set by
 cosmic-text (`ui/subtitle_text.rs`) with the system's fonts, loaded on a
 thread at startup, so every script is shaped; egui sets them until then.
 
+**OpenSubtitles.** The client lives in `fp-sources/src/opensubtitles`.
+The app searches only when the search panel is opened or submitted, using
+source-provided media identity and a bounded original-file hash where
+available, and otherwise the file name, as Jellyfin's OpenSubtitles plugin
+does. Every result page is fetched; results for another kind of video,
+episode or IMDb ID are dropped, and the rest are ordered by file match,
+downloads, rating and trusted uploader, also as the plugin does. Managed subtitle attachments are stored in the library and
+resolved beneath `$XDG_DATA_HOME/frameplayerx/subtitles/`. The account
+file is `$XDG_CONFIG_HOME/frameplayerx/opensubtitles-account.json` and has
+owner-only permissions on Linux. Only the API client sends the account token
+and consumer key. A separate HTTP client fetches the file links.
+
 **The database.** SQLite, with the schema version in `PRAGMA user_version`
-and forward-only migrations in `fp-library/src/schema.rs`. The scanner
-marks files missing rather than deleting them, so ratings, resume points
-and adjustments survive a card being taken out.
+and forward-only migrations in `fp-library/src/schema.rs`. Each schema has
+a file of its own, `library-<schema>.sqlite3` (`library.sqlite3` up to 4):
+a build with a new schema starts from a copy of the newest earlier file,
+which the version before, refusing a newer schema, keeps opening as it
+was. Only that earlier file is kept; older ones are deleted. The scanner marks files missing rather than deleting them, so
+ratings, resume points and adjustments survive a card being taken out.
 
 **Blu-ray.** `fp-media/src/mvc` rewrites H.264 MVC's second view into
 plain H.264 pictures any decoder takes. In MKV the second view rides in the
@@ -439,6 +471,10 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
   cargo run -p frameplayerx -- --preview /tmp/shots --script /tmp/demo.fps
 ```
 
+`environment classic` (or `luxe`) and `view cinema_row 4` show a
+[cinema room](#cinema-rooms) from that row;
+`tools/ui-preview.sh` ends with such shots.
+
 ### Other modes
 
 | Command | What it does |
@@ -467,6 +503,11 @@ printf 'open clip_8k.mp4\nwait-playing 30\nwait 2\ngpu\nwait 10\ngpu\n' > /tmp/g
 frameplayerx --preview /tmp/shots --size 2160 --script /tmp/gpu.fps
 ```
 
+To measure what a cinema room costs, play the same flat clip with
+`environment dark` and then `environment classic` in one script, recording
+`gpu` samples once each has settled, and compare the `eyes` medians on the
+headset.
+
 ## On the headset
 
 ```bash
@@ -480,6 +521,65 @@ Builds target `aarch64-unknown-linux-gnu` with glibc 2.28, so they run on
 any SteamOS image. `tools/package.sh` checks that the binary is ARM64,
 needs nothing newer than glibc 2.28 and finds its libraries through
 `$ORIGIN/lib`.
+
+### OpenSubtitles key for local builds
+
+Save the OpenSubtitles consumer key as plain text in `opensubtitles.key` at
+the root of your checkout. Git ignores `*.key`. Both `tools/build-frame.sh`
+and `tools/package.sh` pick it up automatically. A nonempty
+`FP_OPENSUBTITLES_API_KEY` environment variable takes precedence.
+
+For a desktop debug run from the same checkout, load the file before
+calling Cargo.
+
+```bash
+export FP_OPENSUBTITLES_API_KEY="$(<opensubtitles.key)"
+cargo run -p frameplayerx
+```
+
+### Cinema rooms
+
+The cinema's rooms, Classic and Luxe, are in `crates/fp-render/rooms/`,
+and `crates/fp-render/build.rs` embeds them in the binary.
+`tools/cinema/make_cinema.py` models them in Blender and bakes their
+lighting into textures (`--preview` renders stills instead). The Luxe's
+recliner is [Recliner Brown_Leather](https://sketchfab.com/3d-models/recliner-brown-leather-4e3e06cf74fe48c8b7472a3549f6b5d2)
+by Puneet Sharma (CC-BY 4.0): download it as glTF from Sketchfab (it needs
+an account), extract it into `target/cinema-models/recliner`, and pass its
+`scene.gltf` with `--seat-model`.
+
+```bash
+blender -b --factory-startup --python tools/cinema/make_cinema.py -- \
+  --room classic --out "$PWD/crates/fp-render/rooms/classic" --export
+blender -b --factory-startup --python tools/cinema/make_cinema.py -- \
+  --room luxe --seat-model "$PWD/target/cinema-models/recliner/scene.gltf" \
+  --out "$PWD/crates/fp-render/rooms/luxe" --export
+```
+
+Each room folder holds `cinema.bin`, `cinema-hall.jpg`, `props.jpg`,
+`detail.png` and `params.json`. `cinema.bin` is `FPXC` version 4: meshes
+each drawn at a list of places, such as one seat at every seat, textured
+from `cinema-hall.jpg` (the room) or `props.jpg` (the seats), with
+`detail.png`'s tiling patterns (fabric, carpet, leather) laid over both,
+finer than the baked textures can hold. `params.json` is in metres with
+the origin at one seat's eyes looking along -Z:
+
+```json
+{
+  "screen_width": 12.6,
+  "screen_height": 6.63,
+  "screen_center": [0.0, 0.15, -11.3],
+  "max_curvature": 0.0403,
+  "seats": [[0.0, -1.55, -4.6], [0.0, 0.0, 0.0], [0.0, 3.05, 8.05]]
+}
+```
+
+`seats` are the eyes of each row's middle seat, on the screen's centre
+line, front row first: the Row setting counts them. `max_curvature` is the
+screen's deepest curve, 1 over its radius in metres, where Curvature is 1:
+the generator stops the masking's edges 10 cm short of the stage's front.
+The screen and its masking are cut into strips and marked to bend, and
+the player bends them and the picture round the same circle.
 
 ### Environment variables
 
@@ -548,7 +648,12 @@ headset and copies the text and JSON reports into `probe-reports/`.
    `crates/fp-updater/src/lib.rs` (`RELEASE_PUBLIC_KEY`), and store the
    whole `.key` file as the `FP_RELEASE_KEY` repository secret. Keep the key
    offline otherwise.
-2. Stable: push (or merge) to `main`. Beta: run the `ci` workflow on the
+2. Once: register a FramePlayerX consumer key on OpenSubtitles with
+   anonymous downloads allowed, and store it as the
+   `FP_OPENSUBTITLES_API_KEY` repository secret (or a variable of that
+   name, which the secret overrides). Packaging embeds it in the app;
+   without it, **Find subtitles** says OpenSubtitles is unavailable.
+3. Stable: push (or merge) to `main`. Beta: run the `ci` workflow on the
    `beta` branch from the Actions tab (Run workflow). CI calculates the
    version, stamps it into `crates/frameplayerx/Cargo.toml`, builds,
    packages, signs `manifest.json` and publishes the GitHub release with

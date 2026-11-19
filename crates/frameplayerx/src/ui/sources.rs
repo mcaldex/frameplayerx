@@ -16,7 +16,7 @@ pub(super) fn kind_icon(kind: SourceKind) -> &'static str {
         SourceKind::Dlna => icons::BROADCAST,
         SourceKind::DeoVr | SourceKind::HereSphere => icons::VIRTUAL_REALITY,
         SourceKind::MediaBrowser | SourceKind::Plex => icons::MONITOR_PLAY,
-        SourceKind::Smb => icons::SHARE_NETWORK,
+        SourceKind::Smb | SourceKind::Nfs => icons::SHARE_NETWORK,
         SourceKind::Sftp => icons::TERMINAL_WINDOW,
     }
 }
@@ -38,6 +38,7 @@ pub(super) fn kind_label(kind: SourceKind) -> &'static str {
         SourceKind::HereSphere => tr!("source-kind-heresphere"),
         SourceKind::Smb => tr!("source-kind-smb"),
         SourceKind::Sftp => tr!("source-kind-sftp"),
+        SourceKind::Nfs => tr!("source-kind-nfs"),
         SourceKind::MediaBrowser => "Jellyfin/Emby",
         SourceKind::Plex => "Plex",
     }
@@ -50,6 +51,7 @@ fn kind_chip_label(kind: SourceKind) -> &'static str {
         SourceKind::HereSphere => "HereSphere",
         SourceKind::Smb => "SMB",
         SourceKind::Sftp => "SFTP",
+        SourceKind::Nfs => "NFS",
         _ => kind_label(kind),
     }
 }
@@ -259,12 +261,6 @@ fn list_row(ui: &mut egui::Ui, v: &mut View, row: Row) {
                         return;
                     }
                     if !builtin {
-                        if widgets::icon_button(ui, icons::TRASH, 44.0, false)
-                            .tip(tr!("sources-remove"))
-                            .clicked()
-                        {
-                            v.actions.push(Action::RemoveSource(id.clone()));
-                        }
                         if widgets::icon_button(ui, icons::PENCIL_SIMPLE, 44.0, false)
                             .tip(tr!("sources-edit"))
                             .clicked()
@@ -313,7 +309,14 @@ fn browse(ui: &mut egui::Ui, v: &mut View) {
         .map(|c| kind_label(c.kind()))
         .unwrap_or(tr!("sources-folder"));
     let back = match &mut sv.page {
-        SourcePage::Folders(b) => super::folders::page(ui, v, &sv.name, kind, b),
+        SourcePage::Folders(b) => {
+            let address = v
+                .services
+                .opener
+                .source(&sv.source)
+                .and_then(|s| s.display_location(b.location.as_deref()));
+            super::folders::page(ui, v, &sv.name, kind, address, b)
+        }
         SourcePage::Local(l) => super::local::page(ui, v, l),
         SourcePage::Library(l) => super::local::library_page(ui, v, &sv.source, &sv.name, l),
         SourcePage::Catalog(j) => super::catalog::page(ui, v, &sv.source, &sv.name, j),
@@ -358,7 +361,13 @@ fn lock_source(v: &mut View, id: &str, name: &str) {
 /// Opens the form editing source `id`.
 fn edit(v: &mut View, id: &str) {
     if let Some(cfg) = v.services.source_config(id) {
-        v.state.source_form = Some(edit_form(cfg));
+        let mut form = edit_form(cfg);
+        let limit = v.settings.play_all_limit(id);
+        form.limit_play_all = limit.is_some();
+        if let Some(limit) = limit {
+            form.play_all_limit = limit.to_string();
+        }
+        v.state.source_form = Some(form);
     }
 }
 
@@ -536,7 +545,7 @@ fn pin_form(ui: &mut egui::Ui, v: &mut View) {
     }
 }
 
-fn kinds() -> [(SourceKind, &'static str); 10] {
+fn kinds() -> [(SourceKind, &'static str); 11] {
     [
         (SourceKind::Library, tr!("source-kind-library-desc")),
         (SourceKind::MediaBrowser, tr!("source-kind-jellyfin-desc")),
@@ -547,6 +556,7 @@ fn kinds() -> [(SourceKind, &'static str); 10] {
         (SourceKind::Http, tr!("source-kind-http-desc")),
         (SourceKind::Smb, tr!("source-kind-smb-desc")),
         (SourceKind::Sftp, tr!("source-kind-sftp-desc")),
+        (SourceKind::Nfs, tr!("source-kind-nfs-desc")),
         (SourceKind::Dlna, tr!("source-kind-dlna-desc")),
     ]
 }
@@ -562,6 +572,7 @@ pub(super) fn address_hint(kind: SourceKind) -> &'static str {
         SourceKind::Http => "http://192.168.1.10:8080/videos/",
         SourceKind::Smb => "smb://nas.local/videos",
         SourceKind::Sftp => "sftp://pc.local/~/Videos",
+        SourceKind::Nfs => "nfs://nas.local/volume1/videos",
         SourceKind::Dlna => "",
     }
 }
@@ -574,7 +585,7 @@ pub(super) fn name_hint(kind: SourceKind) -> &'static str {
         SourceKind::HereSphere => tr!("source-name-hint-heresphere"),
         SourceKind::WebDav => tr!("source-name-hint-webdav"),
         SourceKind::Http => tr!("source-name-hint-http"),
-        SourceKind::Smb => tr!("source-name-hint-smb"),
+        SourceKind::Smb | SourceKind::Nfs => tr!("source-name-hint-smb"),
         SourceKind::Sftp => tr!("source-name-hint-sftp"),
         SourceKind::Local | SourceKind::Library => tr!("source-name-hint-library"),
         SourceKind::Dlna => tr!("source-name-hint"),
@@ -590,7 +601,12 @@ fn add_form(ui: &mut egui::Ui, v: &mut View) {
         return;
     };
     let editing = f.editing.clone();
-    let cancel = form_header(ui, f, editing.as_ref());
+    let (cancel, remove) = form_header(ui, f, editing.as_ref());
+    if remove && let Some(old) = &editing {
+        v.actions.push(Action::RemoveSource(old.id().to_string()));
+        v.state.source_form = None;
+        return;
+    }
     let id = match &editing {
         Some(c) => c.id().to_string(),
         None => format!(
@@ -604,19 +620,20 @@ fn add_form(ui: &mut egui::Ui, v: &mut View) {
     } else if let Some(SourceConfig::Dlna(_)) = &editing {
         dlna_edit_form(ui, f, id)
     } else if f.kind == SourceKind::Dlna {
-        dlna_search(ui, v.actions, &dlna_found, searching, &id)
+        dlna_search(ui, f, v.actions, &dlna_found, searching, &id)
     } else if f.kind == SourceKind::Library {
         library_form(ui, f, id, &configs, v.actions)
     } else {
         server_form(ui, f, id, editing.as_ref(), v.actions)
     };
+    let save = save.zip(form_play_all_limit(f).ok());
     if let Some(old) = &editing {
         pin_rows(ui, v, old.id(), old.name(), pins.contains_key(old.id()));
     }
-    if let Some(cfg) = save {
+    if let Some((cfg, limit)) = save {
         v.actions.push(match editing {
-            Some(_) => Action::UpdateSource(cfg),
-            None => Action::AddSource(cfg),
+            Some(_) => Action::UpdateSource(cfg, limit),
+            None => Action::AddSource(cfg, limit),
         });
         v.state.source_form = None;
     } else if cancel {
@@ -624,9 +641,30 @@ fn add_form(ui: &mut egui::Ui, v: &mut View) {
     }
 }
 
-/// The form's title and its source type; true when cancelled.
-fn form_header(ui: &mut egui::Ui, f: &mut SourceForm, editing: Option<&SourceConfig>) -> bool {
+/// Remove source, which asks again: pressed once it turns red as
+/// "Remove it?" for 4 seconds. Whether it was pressed again.
+fn remove_button(ui: &mut egui::Ui, f: &mut SourceForm) -> bool {
+    super::confirm_button(
+        ui,
+        &mut f.remove_armed,
+        tr!("source-remove"),
+        tr!("source-remove-confirm"),
+        |ui, label, kind| {
+            widgets::button_sized(ui, Some(icons::TRASH), label, kind, 44.0)
+                .tip(tr!("sources-remove"))
+        },
+    )
+}
+
+/// The form's title and its source type; whether it was cancelled, and
+/// whether Remove source was pressed again.
+fn form_header(
+    ui: &mut egui::Ui,
+    f: &mut SourceForm,
+    editing: Option<&SourceConfig>,
+) -> (bool, bool) {
     let mut cancel = false;
+    let mut remove = false;
     ui.add_space(12.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 12.0;
@@ -645,6 +683,11 @@ fn form_header(ui: &mut egui::Ui, f: &mut SourceForm, editing: Option<&SourceCon
                 .font(theme::font(Weight::Bold, 30.0))
                 .color(theme::TEXT),
         );
+        if editing.is_some() {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                remove = remove_button(ui, f);
+            });
+        }
     });
     ui.add_space(12.0);
     widgets::section_label(ui, tr!("source-type"));
@@ -675,7 +718,53 @@ fn form_header(ui: &mut egui::Ui, f: &mut SourceForm, editing: Option<&SourceCon
     ui.add_space(4.0);
     ui.label(RichText::new(help).color(theme::TEXT_2));
     ui.add_space(12.0);
-    cancel
+    (cancel, remove)
+}
+
+fn supports_play_all_limit(kind: SourceKind) -> bool {
+    matches!(
+        kind,
+        SourceKind::Local
+            | SourceKind::Library
+            | SourceKind::Http
+            | SourceKind::WebDav
+            | SourceKind::Smb
+            | SourceKind::Sftp
+            | SourceKind::Nfs
+            | SourceKind::Dlna
+    )
+}
+
+fn form_play_all_limit(form: &SourceForm) -> Result<Option<usize>, String> {
+    if !supports_play_all_limit(form.kind) {
+        return Ok(Some(crate::settings::DEFAULT_PLAY_ALL_LIMIT));
+    }
+    if !form.limit_play_all {
+        return Ok(None);
+    }
+    form.play_all_limit
+        .trim()
+        .parse::<std::num::NonZeroUsize>()
+        .map(|limit| Some(limit.get()))
+        .map_err(|_| tr!("source-play-all-limit-invalid").into())
+}
+
+fn play_all_limit_row(rows: &mut widgets::Rows<'_>, form: &mut SourceForm) {
+    rows.row(
+        tr!("source-play-all-limit"),
+        Some(tr!("source-play-all-limit-desc")),
+        |ui| {
+            widgets::switch(ui, &mut form.limit_play_all);
+            if form.limit_play_all {
+                ui.add(
+                    egui::TextEdit::singleline(&mut form.play_all_limit)
+                        .margin(egui::Margin::symmetric(12, 9))
+                        .font(theme::font(Weight::Regular, 17.0))
+                        .desired_width(104.0),
+                );
+            }
+        },
+    );
 }
 
 /// A library's name and folder, with folders worth having one for, and
@@ -714,6 +803,7 @@ fn library_form(
                 });
             });
         }
+        play_all_limit_row(r, f);
     });
     ui.add_space(12.0);
     let built = build_config(f, id).and_then(|cfg| match &cfg {
@@ -782,6 +872,7 @@ fn dlna_edit_form(ui: &mut egui::Ui, f: &mut SourceForm, id: String) -> Option<S
         r.row(tr!("source-address"), None, |ui| {
             text_field(ui, &mut f.address, address_hint(f.kind), false);
         });
+        play_all_limit_row(r, f);
     });
     ui.add_space(12.0);
     ui.horizontal(|ui| match build_config(f, id) {
@@ -806,6 +897,7 @@ fn dlna_edit_form(ui: &mut egui::Ui, f: &mut SourceForm, id: String) -> Option<S
 /// Searching the network for DLNA servers, and adding one.
 fn dlna_search(
     ui: &mut egui::Ui,
+    f: &mut SourceForm,
     actions: &mut Vec<Action>,
     found: &[fp_sources::DlnaDevice],
     searching: bool,
@@ -838,16 +930,25 @@ fn dlna_search(
         }
     } else {
         widgets::rows(ui, |r| {
+            play_all_limit_row(r, f);
+            let limit = form_play_all_limit(f);
+            if let Err(e) = &limit {
+                r.content(|ui| ui.label(RichText::new(e).color(theme::WARN)));
+            }
             for d in found {
                 r.row(&d.friendly_name, Some(d.manufacturer.as_str()), |ui| {
-                    if widgets::button_sized(
-                        ui,
-                        Some(icons::PLUS),
-                        tr!("common-add"),
-                        Kind::Secondary,
-                        44.0,
-                    )
-                    .clicked()
+                    if ui
+                        .add_enabled_ui(limit.is_ok(), |ui| {
+                            widgets::button_sized(
+                                ui,
+                                Some(icons::PLUS),
+                                tr!("common-add"),
+                                Kind::Secondary,
+                                44.0,
+                            )
+                        })
+                        .inner
+                        .clicked()
                     {
                         save = Some(SourceConfig::Dlna(d.to_config(id.to_string())));
                     }
@@ -870,6 +971,7 @@ fn server_form(
     let local = f.kind == SourceKind::Local;
     let smb = f.kind == SourceKind::Smb;
     let sftp = f.kind == SourceKind::Sftp;
+    let nfs = f.kind == SourceKind::Nfs;
     let is_mb = f.kind == SourceKind::MediaBrowser;
     if is_mb && f.use_quick_connect {
         poll_quick_connect(ui, f, actions);
@@ -905,7 +1007,18 @@ fn server_form(
                 },
             );
         }
-        if !local {
+        if nfs {
+            r.row(
+                tr!("source-nfs-uid"),
+                Some(tr!("source-nfs-ids-desc")),
+                |ui| {
+                    text_field(ui, &mut f.nfs_uid, &default_id(true), false);
+                },
+            );
+            r.row(tr!("source-nfs-gid"), None, |ui| {
+                text_field(ui, &mut f.nfs_gid, &default_id(false), false);
+            });
+        } else if !local {
             if is_mb && f.use_quick_connect {
                 quick_connect_rows(r, f, actions);
             } else {
@@ -937,6 +1050,9 @@ fn server_form(
                 );
             }
         }
+        if supports_play_all_limit(f.kind) {
+            play_all_limit_row(r, f);
+        }
     });
     ui.add_space(12.0);
     let built = build_config(f, id).map(|cfg| match editing {
@@ -959,7 +1075,7 @@ fn server_form(
             }
         }
     });
-    if !is_mb || !f.use_quick_connect {
+    if !nfs && (!is_mb || !f.use_quick_connect) {
         ui.add_space(8.0);
         ui.label(
             RichText::new(tr!("source-passwords-note"))
@@ -968,6 +1084,12 @@ fn server_form(
         );
     }
     save
+}
+
+/// What a blank NFS user (or group) ID sends: this process's.
+fn default_id(user: bool) -> String {
+    let (uid, gid) = fp_sources::nfs::default_ids();
+    if user { uid } else { gid }.to_string()
 }
 
 pub(super) fn text_field(ui: &mut egui::Ui, value: &mut String, hint: &str, masked: bool) {
@@ -1197,6 +1319,11 @@ pub fn edit_form(cfg: &SourceConfig) -> SourceForm {
                 .unwrap_or_default();
             f.key_passphrase = c.key_passphrase.clone();
         }
+        SourceConfig::Nfs(c) => {
+            f.address = fp_sources::nfs::nfs_url(&c.host, c.port, &c.export);
+            f.nfs_uid = c.uid.map(|u| u.to_string()).unwrap_or_default();
+            f.nfs_gid = c.gid.map(|g| g.to_string()).unwrap_or_default();
+        }
         SourceConfig::MediaBrowser(c) => {
             creds(&c.credentials);
             f.address = c.url.clone();
@@ -1314,6 +1441,7 @@ fn key_locked(f: &SourceForm) -> Option<bool> {
 
 /// Builds a source configuration from the form, validating the address.
 pub fn build_config(f: &SourceForm, id: String) -> Result<SourceConfig, String> {
+    form_play_all_limit(f)?;
     if f.kind == SourceKind::Plex {
         return f
             .plex
@@ -1469,6 +1597,40 @@ pub fn build_config(f: &SourceForm, id: String) -> Result<SourceConfig, String> 
                 },
                 key_file,
                 host_key: None,
+            })
+        }
+        SourceKind::Nfs => {
+            let loc = fp_sources::nfs::NfsLocation::parse(&if address.contains("://") {
+                address.clone()
+            } else {
+                // `nas:/volume1/videos`, as mount and /etc/fstab write it.
+                format!("nfs://{}", address.replacen(":/", "/", 1))
+            })
+            .map_err(|_| tr!("source-error-nfs").to_string())?;
+            let id_field = |value: &str| -> Result<Option<u32>, String> {
+                let value = value.trim();
+                if value.is_empty() {
+                    return Ok(None);
+                }
+                value
+                    .parse()
+                    .map(Some)
+                    .map_err(|_| tr!("source-error-nfs-id").to_string())
+            };
+            SourceConfig::Nfs(fp_sources::NfsConfig {
+                id,
+                name,
+                // `nfs://nas` is the whole server, `nfs://nas/` (and
+                // `nas:/`) its export `/`.
+                export: if loc.path.is_empty() && loc.export.is_none() {
+                    String::new()
+                } else {
+                    format!("/{}", loc.path.join("/"))
+                },
+                host: loc.host,
+                port: loc.port,
+                uid: id_field(&f.nfs_uid)?,
+                gid: id_field(&f.nfs_gid)?,
             })
         }
         SourceKind::MediaBrowser => {
@@ -1631,6 +1793,61 @@ mod tests {
             }
         }
         f.address = "smb://".into();
+        assert!(build_config(&f, "x".into()).is_err());
+        // NFS, as a URL or as mount writes it, with optional IDs.
+        f.kind = SourceKind::Nfs;
+        for address in [
+            "nfs://nas:2049/volume1/My%20Videos/",
+            "nas:/volume1/My Videos",
+        ] {
+            f.address = address.into();
+            match build_config(&f, "x".into()).unwrap() {
+                SourceConfig::Nfs(c) => {
+                    assert_eq!(c.host, "nas", "{address}");
+                    assert_eq!(c.export, "/volume1/My Videos", "{address}");
+                    assert_eq!((c.uid, c.gid), (None, None));
+                    assert_eq!(c.name, "nas");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        // `nfs://nas/` and `nas:/` are the export `/`, `nfs://nas` the
+        // whole server; each shows again as it was typed.
+        for (address, export, shown) in [
+            ("nfs://nas/", "/", "nfs://nas/"),
+            ("nas:/", "/", "nfs://nas/"),
+            ("nfs://nas", "", "nfs://nas"),
+        ] {
+            f.address = address.into();
+            match build_config(&f, "x".into()).unwrap() {
+                SourceConfig::Nfs(c) => {
+                    assert_eq!(c.export, export, "{address}");
+                    assert_eq!(edit_form(&SourceConfig::Nfs(c)).address, shown);
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        f.address = "nfs://nas".into();
+        f.nfs_uid = "1026".into();
+        f.nfs_gid = "100".into();
+        match build_config(&f, "x".into()).unwrap() {
+            SourceConfig::Nfs(c) => {
+                assert!(c.export.is_empty());
+                assert_eq!((c.uid, c.gid), (Some(1026), Some(100)));
+                let form = edit_form(&SourceConfig::Nfs(c.clone()));
+                assert_eq!(form.address, "nfs://nas");
+                assert_eq!(
+                    (form.nfs_uid.as_str(), form.nfs_gid.as_str()),
+                    ("1026", "100")
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        f.nfs_uid = "me".into();
+        assert!(build_config(&f, "x".into()).is_err());
+        f.nfs_uid.clear();
+        f.nfs_gid.clear();
+        f.address = "nfs://".into();
         assert!(build_config(&f, "x".into()).is_err());
 
         // SFTP: the user from the address, and a password or a key file.

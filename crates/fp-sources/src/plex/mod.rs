@@ -11,6 +11,7 @@ use crate::config::{PlexConfig, SourceConfig, SourceKind};
 use crate::error::{Error, Result};
 use crate::http::{HttpClient, HttpOptions, HttpReply};
 use crate::json::{get, text};
+use crate::media_identity::MediaIdentity;
 use crate::urlutil::{encode_form_value, redact, same_origin};
 use crate::{Sidecars, Source, WatchEvent, WatchSession};
 use fp_core::source::{ByteSource, Entry};
@@ -85,6 +86,9 @@ pub struct PlexSource {
     /// Recent details, and when they were read. Watch sessions are made from
     /// them without network I/O.
     metadata: Mutex<HashMap<String, (Instant, Value)>>,
+    /// Whether the server and current user allow media deletion
+    /// (`MediaContainer.allowMediaDeletion`).
+    allow_deletion: Mutex<Option<bool>>,
     facets: Mutex<HashMap<String, String>>,
     encoding: Arc<Mutex<Option<String>>>,
     id: String,
@@ -114,6 +118,7 @@ impl PlexSource {
             changed: AtomicBool::new(false),
             versions: Default::default(),
             metadata: Default::default(),
+            allow_deletion: Default::default(),
             facets: Default::default(),
             encoding: Default::default(),
         })
@@ -299,13 +304,21 @@ impl PlexSource {
                         r.error_for_status(&base)
                     }
                 });
-            if let Err(e) = response {
-                if matches!(e, Error::SignedOut(_)) {
-                    return Err(e);
+            let reply = match response {
+                Ok(r) => r,
+                Err(e) => {
+                    if matches!(e, Error::SignedOut(_)) {
+                        return Err(e);
+                    }
+                    last = e;
+                    continue;
                 }
-                last = e;
-                continue;
-            }
+            };
+            let allowed = serde_json::from_slice::<Value>(&reply.body)
+                .ok()
+                .and_then(|root| parse_allow_deletion(container(&root)))
+                .unwrap_or(false);
+            *lock(&self.allow_deletion) = Some(allowed);
             {
                 let mut current = lock(&self.config);
                 if current.url != base || current.machine_identifier != machine {
@@ -322,14 +335,30 @@ impl PlexSource {
     }
 
     fn request(&self, method: &str, path: &str, headers: &[(&str, &str)]) -> Result<HttpReply> {
+        self.send(method, path, headers, true)
+    }
+
+    fn send(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        retry_status: bool,
+    ) -> Result<HttpReply> {
         let mut renewed = false;
         let mut reconnected = false;
         loop {
             let endpoint = self.client()?;
             let url = resource_url(&endpoint.base, path)?;
-            let reply = endpoint
-                .client
-                .request(method, &url, headers, None, JSON_LIMIT);
+            let reply = if retry_status {
+                endpoint
+                    .client
+                    .request(method, &url, headers, None, JSON_LIMIT)
+            } else {
+                endpoint
+                    .client
+                    .request_no_status_retry(method, &url, headers, None, JSON_LIMIT)
+            };
             if !renewed
                 && reply.as_ref().is_ok_and(|r| matches!(r.status, 401 | 498))
                 && lock(&self.config).auth.is_some()
@@ -363,7 +392,40 @@ impl PlexSource {
 
     fn json(&self, path: &str) -> Result<Value> {
         let response = self.request("GET", path, &[("Accept", "application/json")])?;
-        serde_json::from_slice(&response.body).map_err(Error::from)
+        let value: Value = serde_json::from_slice(&response.body).map_err(Error::from)?;
+        if let Some(allowed) = parse_allow_deletion(container(&value)) {
+            *lock(&self.allow_deletion) = Some(allowed);
+        }
+        Ok(value)
+    }
+
+    pub(super) fn cached_allow_deletion(&self) -> Option<bool> {
+        *lock(&self.allow_deletion)
+    }
+
+    pub(super) fn allow_deletion(&self) -> Result<bool> {
+        if let Some(allowed) = self.cached_allow_deletion() {
+            return Ok(allowed);
+        }
+        self.client()?;
+        Ok(self.cached_allow_deletion().unwrap_or(false))
+    }
+
+    pub(super) fn delete_by_id(&self, id: &str) -> Result<()> {
+        if !self.allow_deletion()? {
+            return Err(Error::Auth(format!(
+                "{} does not allow deleting media",
+                self.name
+            )));
+        }
+        self.send(
+            "DELETE",
+            &format!("/library/metadata/{}", encode_form_value(id)),
+            &[("Accept", "application/json")],
+            false,
+        )?;
+        lock(&self.metadata).remove(id);
+        Ok(())
     }
 
     fn raw_item(&self, id: &str) -> Result<Value> {
@@ -536,6 +598,9 @@ impl Source for PlexSource {
     fn details(&self, entry: &Entry) -> Result<Entry> {
         self.entry_details(entry)
     }
+    fn media_identity(&self, video: &Entry) -> Result<Option<MediaIdentity>> {
+        self.matching_identity(video)
+    }
     fn sidecars(&self, video: &Entry) -> Result<Sidecars> {
         Ok(Sidecars::from_entry(&self.entry_details(video)?))
     }
@@ -576,6 +641,50 @@ impl Source for PlexSource {
             .swap(false, Ordering::AcqRel)
             .then(|| SourceConfig::Plex(lock(&self.config).clone()))
     }
+
+    fn can_delete(&self) -> bool {
+        true
+    }
+
+    fn delete_allowed(&self, location: &str) -> Option<bool> {
+        let loc = self.parse_location(location).ok()?;
+        if loc.kind != "item" {
+            return Some(false);
+        }
+        let server_allows = self.cached_allow_deletion()?;
+        if !server_allows {
+            return Some(false);
+        }
+        if let Some((_, raw)) = lock(&self.metadata).get(&loc.id).cloned()
+            && let Some(item) = self.catalog_item(&raw)
+        {
+            return Some(item.kind.playable());
+        }
+        Some(true)
+    }
+
+    fn ask_delete_allowed(&self, location: &str) -> Result<bool> {
+        let loc = self.parse_location(location)?;
+        if loc.kind != "item" {
+            return Ok(false);
+        }
+        if !self.allow_deletion()? {
+            return Ok(false);
+        }
+        Ok(self.item(&loc.id)?.can_delete)
+    }
+
+    fn delete(&self, location: &str) -> Result<()> {
+        let loc = self.parse_location(location)?;
+        // A show or a season would take every episode's files with it.
+        if loc.kind != "item" || !self.item(&loc.id)?.kind.playable() {
+            return Err(Error::invalid(
+                location,
+                "only a video's files can be deleted",
+            ));
+        }
+        self.delete_by_id(&loc.id)
+    }
 }
 
 impl fmt::Debug for PlexSource {
@@ -593,6 +702,17 @@ fn unix_now() -> u64 {
 }
 fn container(value: &Value) -> &Value {
     get(value, "MediaContainer").unwrap_or(value)
+}
+
+fn parse_allow_deletion(container: &Value) -> Option<bool> {
+    let v = container.get("allowMediaDeletion")?;
+    v.as_bool()
+        .or_else(|| v.as_i64().map(|n| n != 0))
+        .or_else(|| v.as_u64().map(|n| n != 0))
+        .or_else(|| {
+            v.as_str()
+                .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+        })
 }
 
 fn server_url(raw: &str) -> Result<String> {

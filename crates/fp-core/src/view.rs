@@ -6,6 +6,18 @@ use serde::{Deserialize, Serialize};
 /// The colour around a flat screen to start with, a near-black grey.
 pub const BACKGROUND: [f32; 3] = [0.086, 0.086, 0.11];
 
+/// What surrounds a flat video while the room doesn't show.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundEnvironment {
+    /// A video follows Settings › Video position, its colour included.
+    #[default]
+    UseGlobal,
+    Colour,
+    Classic,
+    Luxe,
+}
+
 /// Everything the viewer can adjust about how a video is shown. Defaults are
 /// neutral. Persisted per video by the library and applied by the renderer.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -38,6 +50,13 @@ pub struct ViewSettings {
     pub lens_centre: [[f32; 2]; 2],
     /// Swap left and right eyes.
     pub swap_eyes: bool,
+    /// Comfort focus for stereo 180° and fisheye videos: softens close-up
+    /// stereo depth when something in the scene is very near.
+    pub comfort_focus: bool,
+    /// Whether this video keeps its own comfort focus setting rather than
+    /// following the global one (Settings > Picture > 3D videos).
+    #[serde(default)]
+    pub focus_own: Option<bool>,
     /// Picture: brightness and contrast around 0 and 1, saturation 1,
     /// gamma 1, sharpen 0..1.
     pub brightness: f32,
@@ -52,6 +71,13 @@ pub struct ViewSettings {
     /// The colour around a flat screen and the menus while the room doesn't
     /// show, sRGB 0..1.
     pub background: [f32; 3],
+    pub environment: BackgroundEnvironment,
+    /// The cinema row to sit in, 1 being the front row; `None` follows
+    /// Settings › Video position.
+    pub cinema_row: Option<u8>,
+    /// How much the cinema's screen curves, from 0 (flat) to 1 (as deep as
+    /// the room allows); `None` follows Settings › Video position.
+    pub cinema_curvature: Option<f32>,
     /// Subtitle depth in metres.
     pub subtitle_distance: f32,
     /// Chroma key: makes one colour of the video see-through (a green or
@@ -88,6 +114,8 @@ impl Default for ViewSettings {
             lens_k2: 0.0,
             lens_centre: [[0.0; 2]; 2],
             swap_eyes: false,
+            comfort_focus: false,
+            focus_own: Some(false),
             brightness: 0.0,
             contrast: 1.0,
             saturation: 1.0,
@@ -97,6 +125,9 @@ impl Default for ViewSettings {
             screen_width: 6.0,
             screen_curvature: 0.0,
             background: BACKGROUND,
+            environment: BackgroundEnvironment::UseGlobal,
+            cinema_row: None,
+            cinema_curvature: None,
             subtitle_distance: 2.5,
             chroma_key: false,
             key_color: [0.08, 0.04, 1.0],
@@ -132,6 +163,16 @@ impl ViewSettings {
             } else {
                 other.swap_eyes
             },
+            comfort_focus: if t < 0.5 {
+                self.comfort_focus
+            } else {
+                other.comfort_focus
+            },
+            focus_own: if t < 0.5 {
+                self.focus_own
+            } else {
+                other.focus_own
+            },
             brightness: l(self.brightness, other.brightness),
             contrast: l(self.contrast, other.contrast),
             saturation: l(self.saturation, other.saturation),
@@ -141,6 +182,26 @@ impl ViewSettings {
             screen_width: l(self.screen_width, other.screen_width),
             screen_curvature: l(self.screen_curvature, other.screen_curvature),
             background: [0, 1, 2].map(|i| l(self.background[i], other.background[i])),
+            environment: if t < 0.5 {
+                self.environment
+            } else {
+                other.environment
+            },
+            cinema_row: if t < 0.5 {
+                self.cinema_row
+            } else {
+                other.cinema_row
+            },
+            cinema_curvature: match (self.cinema_curvature, other.cinema_curvature) {
+                (Some(a), Some(b)) => Some(l(a, b)),
+                (a, b) => {
+                    if t < 0.5 {
+                        a
+                    } else {
+                        b
+                    }
+                }
+            },
             subtitle_distance: l(self.subtitle_distance, other.subtitle_distance),
             chroma_key: if t < 0.5 {
                 self.chroma_key
@@ -162,6 +223,11 @@ impl ViewSettings {
     /// Whether the chroma key is this video's own (see [`Self::key_own`]).
     pub fn own_key(&self) -> bool {
         self.key_own.unwrap_or(self.chroma_key)
+    }
+
+    /// Whether the comfort focus setting is this video's own (see [`Self::focus_own`]).
+    pub fn own_focus(&self) -> bool {
+        self.focus_own.unwrap_or(false)
     }
 
     /// The chroma key settings: on, colour, similarity, smoothness, spill.
@@ -186,10 +252,14 @@ impl ViewSettings {
         ) = from.key();
     }
 
-    /// These settings with `global`'s chroma key, unless the video has its own.
+    /// These settings with `global`'s chroma key and comfort focus, unless the
+    /// video has its own.
     pub fn with_global_key(mut self, global: &ViewSettings) -> ViewSettings {
         if !self.own_key() {
             self.set_key(global);
+        }
+        if !self.own_focus() {
+            self.comfort_focus = global.comfort_focus;
         }
         self
     }
@@ -268,6 +338,30 @@ impl Keyframes {
             }
         }
     }
+
+    /// `value` of the settings at `time`, blended as [`Self::at`] blends
+    /// numbers: for a value worked out from settings that `at` can only
+    /// step between, such as one that follows a global setting at one
+    /// keyframe and not at the next.
+    pub fn value_at(
+        &self,
+        time: f64,
+        base: &ViewSettings,
+        value: impl Fn(&ViewSettings) -> f32,
+    ) -> f32 {
+        let i = self.frames.partition_point(|(t, _)| *t <= time);
+        match (
+            i.checked_sub(1).map(|i| &self.frames[i]),
+            self.frames.get(i),
+        ) {
+            (None, None) => value(base),
+            (Some((_, s)), None) | (None, Some((_, s))) => value(s),
+            (Some((t0, a)), Some((t1, b))) => {
+                let (a, b) = (value(a), value(b));
+                a + (b - a) * ((time - t0) / (t1 - t0)) as f32
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -341,6 +435,25 @@ mod tests {
     }
 
     #[test]
+    fn a_value_following_a_global_one_blends_into_its_own() {
+        let base = ViewSettings::default();
+        let curve = |s: &ViewSettings| s.cinema_curvature.unwrap_or(0.2);
+        let mut k = Keyframes::default();
+        assert_eq!(k.value_at(5.0, &base, curve), 0.2);
+        k.insert(0.0, base);
+        k.insert(
+            10.0,
+            ViewSettings {
+                cinema_curvature: Some(0.6),
+                ..base
+            },
+        );
+        assert!((k.value_at(5.0, &base, curve) - 0.4).abs() < 1e-6);
+        assert_eq!(k.value_at(-1.0, &base, curve), 0.2);
+        assert_eq!(k.value_at(20.0, &base, curve), 0.6);
+    }
+
+    #[test]
     fn partial_json_uses_defaults() {
         let v: ViewSettings = serde_json::from_str(r#"{"zoom":1.2}"#).unwrap();
         assert_eq!(v.zoom, 1.2);
@@ -373,5 +486,33 @@ mod tests {
         assert_eq!(old.with_global_key(&global).key_color, [1.0, 0.0, 1.0]);
         let old: ViewSettings = serde_json::from_str(r#"{"zoom":1.2}"#).unwrap();
         assert!(old.with_global_key(&global).chroma_key);
+    }
+
+    #[test]
+    fn videos_follow_global_comfort_focus_unless_overridden() {
+        let global = ViewSettings {
+            comfort_focus: true,
+            ..Default::default()
+        };
+        let video = ViewSettings::default();
+        assert!(video.with_global_key(&global).comfort_focus);
+
+        let forced_off = ViewSettings {
+            comfort_focus: false,
+            focus_own: Some(true),
+            ..video
+        };
+        assert!(!forced_off.with_global_key(&global).comfort_focus);
+
+        let global_off = ViewSettings::default();
+        let forced_on = ViewSettings {
+            comfort_focus: true,
+            focus_own: Some(true),
+            ..video
+        };
+        assert!(forced_on.with_global_key(&global_off).comfort_focus);
+
+        let old: ViewSettings = serde_json::from_str(r#"{"zoom":1.2}"#).unwrap();
+        assert!(old.with_global_key(&global).comfort_focus);
     }
 }

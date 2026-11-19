@@ -143,7 +143,12 @@ impl Image {
             alloc: None,
         };
         // Out of memory, what was made so far is given back.
-        if let Err(e) = img.back(gpu, view_formats, name) {
+        let aspect = if usage.contains(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT) {
+            vk::ImageAspectFlags::DEPTH
+        } else {
+            vk::ImageAspectFlags::COLOR
+        };
+        if let Err(e) = img.back(gpu, view_formats, name, aspect) {
             img.destroy(gpu);
             return Err(e);
         }
@@ -151,7 +156,13 @@ impl Image {
     }
 
     /// Gives the image its memory and views.
-    fn back(&mut self, gpu: &Gpu, view_formats: &[vk::Format], name: &str) -> Result<()> {
+    fn back(
+        &mut self,
+        gpu: &Gpu,
+        view_formats: &[vk::Format],
+        name: &str,
+        aspect: vk::ImageAspectFlags,
+    ) -> Result<()> {
         // SAFETY: valid image.
         let requirements = unsafe { gpu.device.get_image_memory_requirements(self.image) };
         let alloc = self.alloc.insert(
@@ -172,9 +183,10 @@ impl Image {
         }
         .ctx("bind image")?;
         for &f in view_formats {
-            self.views.push(view(gpu, self.image, f, 0, self.mips)?);
+            self.views
+                .push(view_aspect(gpu, self.image, f, 0, self.mips, aspect)?);
         }
-        self.level0 = view(gpu, self.image, self.format, 0, 1)?;
+        self.level0 = view_aspect(gpu, self.image, self.format, 0, 1, aspect)?;
         Ok(())
     }
 
@@ -202,6 +214,24 @@ pub fn view(
     base_mip: u32,
     mips: u32,
 ) -> Result<vk::ImageView> {
+    view_aspect(
+        gpu,
+        image,
+        format,
+        base_mip,
+        mips,
+        vk::ImageAspectFlags::COLOR,
+    )
+}
+
+fn view_aspect(
+    gpu: &Gpu,
+    image: vk::Image,
+    format: vk::Format,
+    base_mip: u32,
+    mips: u32,
+    aspect: vk::ImageAspectFlags,
+) -> Result<vk::ImageView> {
     // SAFETY: valid image and format compatible with it.
     unsafe {
         gpu.device.create_image_view(
@@ -209,7 +239,7 @@ pub fn view(
                 .image(image)
                 .view_type(vk::ImageViewType::TYPE_2D)
                 .format(format)
-                .subresource_range(range(base_mip, mips)),
+                .subresource_range(range(base_mip, mips).aspect_mask(aspect)),
             None,
         )
     }

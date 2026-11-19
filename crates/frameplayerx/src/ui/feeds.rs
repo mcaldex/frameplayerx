@@ -592,6 +592,51 @@ impl FeedView {
                 .collect(),
         }
     }
+
+    /// Drops any scene matching `urls` from the listing, groups, and open
+    /// details page, returning whether anything changed and thumbnail URLs to
+    /// forget.
+    pub fn remove_scene(&mut self, urls: &[String]) -> (bool, Vec<String>) {
+        let mut forgotten = Vec::new();
+        let mut changed = false;
+        self.scenes.retain(|u, s| {
+            if urls.contains(u) {
+                changed = true;
+                if let Some(t) = &s.thumbnail_url {
+                    forgotten.push(t.clone());
+                }
+                false
+            } else {
+                true
+            }
+        });
+        if self.details.as_ref().is_some_and(|d| urls.contains(&d.url)) {
+            self.details = None;
+            changed = true;
+        }
+        if !changed {
+            return (false, forgotten);
+        }
+        self.order.retain(|u| !urls.contains(u));
+        let picked = self
+            .group
+            .and_then(|g| self.groups.get(g))
+            .map(|(name, _)| name.clone());
+        for (_, group_urls) in &mut self.groups {
+            group_urls.retain(|u| !urls.contains(u));
+        }
+        self.groups.retain(|(_, group_urls)| !group_urls.is_empty());
+        // The group picked, wherever it is now; all of them once it emptied.
+        self.group = if self.groups.len() == 1 {
+            Some(0)
+        } else {
+            picked.and_then(|name| self.groups.iter().position(|(n, _)| *n == name))
+        };
+        for u in urls {
+            self.requested.remove(u);
+        }
+        (true, forgotten)
+    }
 }
 
 /// Opens `scene`.
@@ -1088,8 +1133,13 @@ fn details(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut Fe
     let info = d.info.clone();
     // The server says whether it takes favourites from players.
     let writable = info.as_ref().is_some_and(|i| i.write_favorite);
-    let (mut play_at, mut search) = (None::<f64>, None::<String>);
+    let (mut play_at, mut search, mut delete) = (None::<f64>, None::<String>, false);
     let mut favorite = None::<bool>;
+    let can_delete = v
+        .services
+        .opener
+        .delete_allowed_in(Some(source), &scene.url)
+        == Some(true);
     let queued = scene_request(source, &scene, info.as_deref(), None);
     egui::ScrollArea::vertical()
         .auto_shrink(false)
@@ -1155,6 +1205,10 @@ fn details(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut Fe
                         {
                             favorite = Some(!scene.favorite);
                         }
+                    }
+                    if can_delete {
+                        ui.add_space(4.0);
+                        delete = super::delete_button(ui, v.state, &scene.url);
                     }
                     if let Some(info) = &info
                         && !info.sources.is_empty()
@@ -1237,6 +1291,14 @@ fn details(ui: &mut egui::Ui, v: &mut View, source: &str, name: &str, f: &mut Fe
         f.group = None;
         f.shown = PAGE;
         f.details = None;
+    }
+    if delete {
+        v.actions.push(Action::DeleteFile(super::DeleteTarget {
+            title: scene.title.clone(),
+            location: scene.url.clone(),
+            source_id: Some(source.to_string()),
+            catalog_item_id: None,
+        }));
     }
     back
 }
@@ -1590,5 +1652,62 @@ mod tests {
         assert!(f.unfilled().is_empty(), "the scan answers the search");
         f.search = "sun".into();
         assert_eq!(titles(&f), ["Lake"]);
+    }
+
+    #[test]
+    fn remove_scene_updates_groups_order_and_details() {
+        let mut f = view();
+        if let Some(s) = f.scenes.get_mut("c") {
+            s.thumbnail_url = Some("https://feed/c.jpg".into());
+        }
+        f.group = Some(1);
+        f.details = Some(Details {
+            url: "c".into(),
+            info: None,
+            loading: false,
+            error: None,
+        });
+        let (changed, forgotten) = f.remove_scene(&["c".into()]);
+        assert!(changed);
+        assert_eq!(forgotten, vec!["https://feed/c.jpg".to_string()]);
+        assert!(f.details.is_none());
+        assert!(!f.scenes.contains_key("c"));
+        assert_eq!(f.order, vec!["a", "b"]);
+        assert_eq!(f.groups.len(), 1);
+        assert_eq!(f.group, Some(0));
+    }
+
+    #[test]
+    fn removing_scenes_keeps_the_group_picked_or_shows_all() {
+        let three = || {
+            let mut f = FeedView::new(SourceKind::DeoVr);
+            f.loaded(
+                Ok(FeedLibrary {
+                    groups: vec![
+                        ("A".into(), vec!["a".into()]),
+                        ("B".into(), vec!["b".into()]),
+                        ("C".into(), vec!["c".into()]),
+                    ],
+                    scenes: vec![
+                        scene("a", "Beach", 60.0),
+                        scene("b", "Alps", 60.0),
+                        scene("c", "Canyon", 60.0),
+                    ],
+                }),
+                false,
+            );
+            f
+        };
+        // The group picked empties: all groups, not the one after it.
+        let mut f = three();
+        f.group = Some(1);
+        f.remove_scene(&["b".into()]);
+        assert_eq!(f.group, None);
+        // Another group empties: the one picked moves up with its scenes.
+        let mut f = three();
+        f.group = Some(2);
+        f.remove_scene(&["a".into()]);
+        assert_eq!(f.group, Some(1));
+        assert_eq!(f.groups[1].0, "C");
     }
 }

@@ -332,6 +332,8 @@ pub struct Decoder {
     paired: Option<Paired>,
     /// Packets precise seeks left out.
     pub(crate) left_out: u64,
+    #[cfg(test)]
+    pub(crate) bsf_check: Option<crate::v4l2::AnnexbFilter>,
 }
 
 /// The ways of decoding through another decoder and reworking its pictures:
@@ -464,6 +466,8 @@ impl Decoder {
             skip: None,
             paired: Some(Paired::Deinterlace(Box::new(d))),
             left_out: 0,
+            #[cfg(test)]
+            bsf_check: None,
         };
         dec.follow_paired();
         dec
@@ -493,6 +497,8 @@ impl Decoder {
                 crate::frame_seq::FrameSeqDecoder::new(inner, stream, stills),
             ))),
             left_out: 0,
+            #[cfg(test)]
+            bsf_check: None,
         };
         dec.follow_paired();
         dec
@@ -540,6 +546,8 @@ impl Decoder {
             skip: None,
             paired: Some(Paired::Mvc(Box::new(mvc))),
             left_out: 0,
+            #[cfg(test)]
+            bsf_check: None,
         };
         dec.follow_paired();
         Ok(dec)
@@ -668,6 +676,8 @@ impl Decoder {
             skip: None,
             paired: None,
             left_out: 0,
+            #[cfg(test)]
+            bsf_check: None,
         })
     }
 
@@ -710,6 +720,8 @@ impl Decoder {
                 skip: None,
                 paired: None,
                 left_out: 0,
+                #[cfg(test)]
+                bsf_check: None,
             };
             if hardware {
                 HW_SESSIONS.fetch_add(1, Ordering::Relaxed); // until Drop
@@ -853,8 +865,18 @@ impl Decoder {
                     }
                     return Ok(accepted);
                 }
+                // Bitstream filter refusal skips the damaged stretch rather
+                // than falling back to software for the rest of the file.
+                Err(e) if e.is_annexb_refused() => return Err(e),
                 Err(e) => self.fall_back(&e)?,
             }
+        }
+        #[cfg(test)]
+        if let Some(bsf) = self.bsf_check.as_mut()
+            && !pkt.is_null()
+        {
+            bsf.send(pkt)?;
+            bsf.drain(|_| Ok(()))?;
         }
         while let Some(p) = self.replay.front() {
             if !self.send_ffmpeg(p.as_ptr())? {
@@ -1037,8 +1059,32 @@ impl Decoder {
         let _ = flag;
     }
 
+    #[cfg(test)]
+    pub(crate) fn enable_annexb_check(&mut self, input: &Input, index: usize) {
+        if let Some(p) = self.paired.as_mut() {
+            p.inner().enable_annexb_check(input, index);
+            return;
+        }
+        #[cfg(target_os = "linux")]
+        if self.native.is_some() {
+            return;
+        }
+        if let Some(&st) = input.streams().get(index) {
+            // SAFETY: `st` is valid while `input` lives.
+            self.bsf_check = unsafe {
+                crate::v4l2::AnnexbFilter::open((*st).codecpar, (*st).time_base)
+                    .ok()
+                    .flatten()
+            };
+        }
+    }
+
     pub fn flush(&mut self) {
         self.skip = None;
+        #[cfg(test)]
+        if let Some(bsf) = self.bsf_check.as_mut() {
+            bsf.flush();
+        }
         match self.paired.as_mut() {
             Some(Paired::Mvc(m)) => return m.flush(),
             Some(Paired::FrameSequential(f)) => return f.flush(),
@@ -1457,5 +1503,48 @@ mod tests {
         assert_eq!(frames.len(), 24);
         let (_, v) = decode_all("vp9.webm", 5);
         assert_eq!(v[0].width, 320);
+    }
+
+    #[test]
+    fn annexb_refusal_returns_error_without_falling_back() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/h264_aac_180_LR.mp4");
+        let mut input = Input::open(
+            Arc::new(FileSource::open(&path).unwrap()),
+            "h264_aac_180_LR.mp4",
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        let vi = input.best_stream(ff::AVMEDIA_TYPE_VIDEO).unwrap();
+        let mut dec = Decoder::open(&input, vi, HwDecode::Off).unwrap();
+        dec.enable_annexb_check(&input, vi);
+        let name_before = dec.name.clone();
+
+        // Advance to the first video keyframe so we also have a valid packet
+        // ready to test recovery after flush.
+        let mut good_pkt = Packet::new();
+        while input.read(good_pkt.as_ptr()).unwrap() {
+            if good_pkt.stream_index() == vi {
+                break;
+            }
+            good_pkt.unref();
+        }
+
+        // Send a zeroed non-multiple-of-4 packet refused by h264_mp4toannexb.
+        let bad_pkt = Packet::new();
+        // SAFETY: allocates and zeroes 65 packet payload bytes.
+        unsafe {
+            assert_eq!(ff::av_new_packet(bad_pkt.as_ptr(), 65), 0);
+            std::ptr::write_bytes((*bad_pkt.as_ptr()).data, 0, 65);
+            (*bad_pkt.as_ptr()).flags = ff::AV_PKT_FLAG_KEY as i32;
+        }
+        let err = dec.send(bad_pkt.as_ptr()).unwrap_err();
+        assert!(err.is_annexb_refused(), "got {err:?}");
+        assert_eq!(dec.name, name_before);
+        assert!(!dec.hardware);
+
+        // Flushing recovers and decodes the subsequent valid packet normally.
+        dec.flush();
+        assert!(dec.send(good_pkt.as_ptr()).unwrap());
     }
 }
