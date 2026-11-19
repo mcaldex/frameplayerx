@@ -1219,14 +1219,11 @@ impl Playback {
     /// is told, and whether a jump finished since the last poll, which
     /// [`Self::damage_notice`] then counts.
     pub fn poll_damage_skip(&mut self) -> (bool, bool) {
-        let st = self.player.stats();
-        let (skipping, done) = damage_skip_step(
-            &mut self.damaged_jumps,
-            st.skipping_damaged,
-            st.damaged_jumps,
-        );
+        let skipping_now = self.player.is_skipping_damaged();
+        let (jumps, skipped) = self.player.damaged();
+        let (skipping, done) = damage_skip_step(&mut self.damaged_jumps, skipping_now, jumps);
         if done {
-            self.damaged_skipped += st.damaged_skipped;
+            self.damaged_skipped += skipped;
         }
         let held = held_long(&mut self.skipping_since, skipping, Instant::now());
         (held, done)

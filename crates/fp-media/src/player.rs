@@ -721,6 +721,16 @@ impl Player {
         self.shared.skipping_damaged.load(Ordering::Acquire)
     }
 
+    /// [`Stats::damaged_jumps`] and [`Stats::damaged_skipped`], without
+    /// the rest of [`Self::stats`].
+    pub fn damaged(&self) -> (u64, f64) {
+        let s = &self.shared;
+        (
+            s.damaged_jumps.load(Ordering::Acquire),
+            f64::from_bits(s.damaged_skipped.load(Ordering::Acquire)),
+        )
+    }
+
     /// How reading the file over the network is going, when it is.
     pub fn net(&self) -> Option<Arc<NetCounters>> {
         self.shared.net.clone()
@@ -1041,8 +1051,17 @@ fn demux_thread(
                     );
                 }
                 JumpResult::EndOfFile => {
+                    // The rest of the video is what was skipped.
+                    let skipped = skip
+                        .time
+                        .filter(|_| sh.duration > 0.0)
+                        .map_or(0.0, |from| (sh.duration - from).max(0.0));
+                    sh.damaged_skipped
+                        .store(skipped.to_bits(), Ordering::Release);
                     sh.damaged_jumps.fetch_add(1, Ordering::AcqRel);
-                    log::info!("video: nothing readable after the damage");
+                    log::info!(
+                        "video: nothing readable in the last {skipped:.2} s, after the damage"
+                    );
                 }
                 // A seek took over: nothing was skipped.
                 JumpResult::Aborted => {}
@@ -2852,5 +2871,8 @@ mod tests {
         assert_eq!(p.error(), None);
         assert!(!p.is_skipping_damaged());
         assert_eq!(p.stats().damaged_jumps, 1);
+        // The hole runs from 2 s to the end: those 38 s were skipped.
+        let skipped = p.stats().damaged_skipped;
+        assert!((skipped - 38.0).abs() < 0.5, "skipped {skipped:.3} s");
     }
 }
