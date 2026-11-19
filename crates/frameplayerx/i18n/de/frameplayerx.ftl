@@ -93,6 +93,7 @@ settings-height = Höhe
 settings-height-desc = Heben oder senken Sie sich in Videos ohne eigene Höhe.
 settings-background = Hintergrund
 settings-background-desc = Um flache Videos und die Menüs herum. Ihr Raum ersetzt ihn, solange er angezeigt wird.
+settings-background-menus-desc = Um die Menüs und nicht flache Videos herum. Ihr Raum ersetzt ihn, solange er angezeigt wird.
 background-use-global = Global verwenden
 background-colour = Farbe
 background-classic = Klassik

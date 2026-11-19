@@ -153,24 +153,29 @@ impl App {
                         if pull.row_pull.abs() >= frame::ROW_PULL {
                             pull.row_pull -= frame::ROW_PULL.copysign(pull.row_pull);
                             let rows = room.rows();
-                            let row = p.cinema_row(&self.settings).min(rows);
+                            let now = p.cinema_row(&self.settings).min(rows);
                             let row = if d > 0.0 {
-                                row.saturating_sub(1).max(1)
+                                now.saturating_sub(1).max(1)
                             } else {
-                                (row + 1).min(rows)
+                                (now + 1).min(rows)
                             };
-                            p.settings.cinema_row = self.settings.own_cinema_row(row, rows);
-                            p.settings_dirty = true;
-                            self.ui.toast(tr!("toast-row", row = row));
+                            // At the front or back row there is nowhere to go.
+                            if row != now {
+                                p.settings.cinema_row = Some(row);
+                                p.settings_dirty = true;
+                                self.ui.toast(tr!("toast-row", row = row));
+                            }
                         }
                     // A flat screen's size is its width.
                     } else if p.format.projection == Projection::Flat {
-                        p.settings.screen_width =
-                            (p.settings.screen_width * (1.0 + d)).clamp(0.5, 30.0);
+                        let width = (p.settings.screen_width * (1.0 + d)).clamp(0.5, 30.0);
+                        p.settings_dirty |= width != p.settings.screen_width;
+                        p.settings.screen_width = width;
                     } else {
-                        p.settings.zoom = (p.settings.zoom + d).clamp(0.5, 2.5);
+                        let zoom = (p.settings.zoom + d).clamp(0.5, 2.5);
+                        p.settings_dirty |= zoom != p.settings.zoom;
+                        p.settings.zoom = zoom;
                     }
-                    p.settings_dirty = true;
                 }
             }
             Cmd::Height(d) => {
@@ -218,7 +223,8 @@ impl App {
                     // The picture follows the hand.
                     p.settings.yaw = y0 + yaw;
                     p.settings.pitch = (p0 + pitch).clamp(-90.0, 90.0);
-                    p.settings_dirty = true;
+                    // A flat screen's place isn't kept with the video.
+                    p.settings_dirty |= p.format.projection != Projection::Flat;
                 }
             }
             Cmd::DragEnd => self.drag_start = None,

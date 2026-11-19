@@ -68,7 +68,8 @@ struct Params {
     // Each eye's turn apart about the head's up, as a quaternion
     relief: array<vec4<f32>, 2>,
     // xy: the picture's share of the screen's width and height; black fills
-    // the rest (a cinema's screen)
+    // the rest (a cinema's screen); zw: in a cinema, the depth each eye draws
+    // it at, so the room in front of the screen hides it
     fill: vec4<f32>,
 };
 
@@ -92,7 +93,7 @@ fn vs_main(@builtin(vertex_index) i: u32) -> VsOut {
     // One triangle covering the screen.
     let xy = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0;
     var o: VsOut;
-    o.pos = vec4<f32>(xy, 0.0, 1.0);
+    o.pos = vec4<f32>(xy, select(params.fill.z, params.fill.w, pc.eye == 1u), 1.0);
     o.ndc = xy;
     return o;
 }

@@ -166,6 +166,8 @@ struct Slot {
     garbage: Vec<Image>,
     garbage_sets: Vec<vk::DescriptorSet>,
     garbage_buffers: Vec<Buffer>,
+    /// Rooms let go of while a frame might still draw them.
+    garbage_cinemas: Vec<Cinema>,
 }
 
 pub struct Renderer {
@@ -186,10 +188,12 @@ pub struct Renderer {
     quad_pipe: vk::Pipeline,
     egui_pl: vk::PipelineLayout,
     egui_pipe: vk::Pipeline,
-    /// Each [`CinemaRoom`] once loaded, while loading, and if it failed to.
+    /// How the video's and the panels' pipelines meet the shading rates.
+    video_rate: ShadingRate,
+    panel_rate: ShadingRate,
+    /// Each [`CinemaRoom`] once loaded, and while loading.
     cinemas: [Option<Cinema>; ROOMS],
     cinema_loads: [Option<JoinHandle<Result<RoomData>>>; ROOMS],
-    cinema_failed: [bool; ROOMS],
     white: Tex,
     dummy: Image,
     panels: Vec<Option<Panel>>,
@@ -414,9 +418,10 @@ impl Renderer {
                 quad_pipe,
                 egui_pl,
                 egui_pipe,
+                video_rate,
+                panel_rate,
                 cinemas: Default::default(),
                 cinema_loads: Default::default(),
-                cinema_failed: [false; ROOMS],
                 white: Tex {
                     image: Image::new(&gpu, 1, 1, &PANEL_FORMATS, usage_sampled(), 1, "white")?,
                     set: vk::DescriptorSet::null(),
@@ -520,6 +525,25 @@ impl Renderer {
         self.color_format
     }
 
+    /// Lets go of every room but `keep`, which a video is about to need,
+    /// so their textures don't stay in memory: one starts loading again
+    /// when [`Self::load_cinema`] asks for it.
+    pub fn keep_cinema(&mut self, keep: Option<CinemaRoom>) {
+        for room in CinemaRoom::ALL {
+            if Some(room) == keep {
+                continue;
+            }
+            // A read in progress finishes on its own and is dropped.
+            self.cinema_loads[room.slot()] = None;
+            if let Some(cinema) = self.cinemas[room.slot()].take() {
+                log::info!("{room:?} cinema let go");
+                let slot = &mut self.slots[self.current];
+                slot.garbage_sets.extend(cinema.pool_sets());
+                slot.garbage_cinemas.push(cinema);
+            }
+        }
+    }
+
     /// Whether `room` is ready to draw. The first call starts reading it on
     /// a thread of its own (opening it, its mesh and decoding its texture take
     /// a while); a call once that is done uploads it. Nothing is drawn of a
@@ -529,7 +553,7 @@ impl Renderer {
         if self.cinemas[i].is_some() {
             return true;
         }
-        if self.cinema_failed[i] || !room.is_available() {
+        if !room.is_available() {
             return false;
         }
         let load = match self.cinema_loads[i].take() {
@@ -546,7 +570,7 @@ impl Renderer {
                     Ok(thread) => self.cinema_loads[i] = Some(thread),
                     Err(e) => {
                         log::warn!("{room:?} cinema not loaded: {e}");
-                        self.cinema_failed[i] = true;
+                        room.fail();
                     }
                 }
                 return false;
@@ -570,18 +594,14 @@ impl Renderer {
             }
             Err(e) => {
                 log::warn!("{room:?} cinema unavailable, showing the flat video: {e}");
-                self.cinema_failed[i] = true;
+                room.fail();
                 false
             }
         }
     }
 
     fn make_cinema(&self, data: RoomData) -> Result<Cinema> {
-        let (video_rate, panel_rate) = if self.gpu.shading_rates.is_some() {
-            (ShadingRate::Attachment, ShadingRate::Full)
-        } else {
-            (ShadingRate::Unused, ShadingRate::Unused)
-        };
+        let (video_rate, panel_rate) = (self.video_rate, self.panel_rate);
         Cinema::new(&self.gpu, |room| {
             room.layout = pipeline::layout(
                 &self.gpu,
@@ -597,7 +617,8 @@ impl Renderer {
                     fragment: c"fs_main",
                     layout: self.scene_pl,
                     color_format: self.color_format,
-                    depth: Depth::Attached,
+                    // Behind the seats in front, at `screen_depth`.
+                    depth: Depth::Tested,
                     vertex_stride: 0,
                     instance_stride: 0,
                     attributes: &[],
@@ -680,6 +701,7 @@ impl Renderer {
                 garbage: Vec::new(),
                 garbage_sets: Vec::new(),
                 garbage_buffers: Vec::new(),
+                garbage_cinemas: Vec::new(),
             })
         }
     }
@@ -872,6 +894,9 @@ impl Renderer {
             }
             for mut i in slot.garbage_imports.drain(..) {
                 i.destroy(&self.gpu);
+            }
+            for room in slot.garbage_cinemas.drain(..) {
+                room.destroy(&self.gpu);
             }
             // Its decoder buffers go back to the decoder.
             slot.frames.clear();
@@ -1636,7 +1661,6 @@ impl Renderer {
         let mut video = *video;
         video.cinema = video.cinema.filter(|cinema| {
             cinema.room.is_available()
-                && !self.cinema_failed[cinema.room.slot()]
                 && video.format.projection == fp_core::format::Projection::Flat
         });
         // Until the room is loaded, the picture has its size and place in it
@@ -1651,7 +1675,7 @@ impl Renderer {
                 "{:?} cinema unavailable, showing the flat video: {e}",
                 cinema.room
             );
-            self.cinema_failed[cinema.room.slot()] = true;
+            cinema.room.fail();
             video.cinema = None;
         }
         self.update_scene_set();
@@ -1675,19 +1699,24 @@ impl Renderer {
             && self.cinemas[cinema.room.slot()].is_some()
             && s.tp10_bound.is_some()
             && let Some(t) = &mut self.tp10_eyes
+            && let Err(e) = t.prepare_cinema(&self.gpu, self.color_format, self.video_rate)
         {
-            let rate = if self.gpu.shading_rates.is_some() {
-                ShadingRate::Attachment
-            } else {
-                ShadingRate::Unused
-            };
-            if let Err(e) = t.prepare_cinema(&self.gpu, self.color_format, rate) {
-                log::warn!("cinema unavailable for this device, showing the flat video: {e}");
-                self.cinema_failed[cinema.room.slot()] = true;
-                video.cinema = None;
-            }
+            log::warn!("cinema unavailable for this device, showing the flat video: {e}");
+            cinema.room.fail();
+            video.cinema = None;
         }
         let mut p = params::build(&video, frame_desc.as_ref(), inv);
+        if video.cinema.is_some() {
+            let depth = eyes.map(|e| {
+                crate::cinema::screen_depth(
+                    e.view * video.screen_pose,
+                    e.proj,
+                    p.screen.xy(),
+                    p.screen.z,
+                )
+            });
+            (p.fill.z, p.fill.w) = (depth[0], depth[1]);
+        }
         p.hdr = params::hdr_levels(self.hdr_peak.peak_nits());
         let want_focus = video.settings.comfort_focus
             && video.format.can_comfort_focus()
@@ -2485,6 +2514,9 @@ impl Drop for Renderer {
                 }
                 for mut b in s.garbage_buffers.drain(..) {
                     b.destroy(&gpu);
+                }
+                for room in s.garbage_cinemas.drain(..) {
+                    room.destroy(&gpu);
                 }
                 for mut b in [s.uniform, s.quad_vb, s.egui_vb, s.egui_ib, s.staging] {
                     b.destroy(&gpu);

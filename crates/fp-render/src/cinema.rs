@@ -418,6 +418,16 @@ impl Cinema {
         }
     }
 
+    /// The room's descriptor sets, from the renderer's pool: [`Self::destroy`]
+    /// leaves them to it.
+    pub fn pool_sets(&self) -> impl Iterator<Item = vk::DescriptorSet> + '_ {
+        self.texture_sets
+            .iter()
+            .copied()
+            .chain([self.detail_set])
+            .filter(|set| *set != vk::DescriptorSet::null())
+    }
+
     pub fn destroy(mut self, gpu: &Gpu) {
         // SAFETY: all passes are idle (or have never used the room).
         unsafe {
@@ -579,15 +589,15 @@ fn upload_atlas(gpu: &Gpu, cmd: vk::CommandBuffer, atlas: &Image, buffer: vk::Bu
     );
 }
 
-/// A conservative raster rectangle around the video, `arc` radians round a
-/// circle towards the viewer. If an edge crosses the near plane, let the
-/// existing ray projection clip it instead.
-pub(crate) fn screen_area(
-    view_proj: Mat4,
-    size: Vec2,
-    arc: f32,
-    full: vk::Rect2D,
-) -> Option<vk::Rect2D> {
+/// How much nearer than the screen's nearest corner the picture is drawn:
+/// enough that the room's own screen behind it never shows through, and
+/// far less than the metres between any row and the screen, so the seats in
+/// front still hide it.
+const SCREEN_DEPTH_MARGIN: f32 = 1.0;
+
+/// The video's outline, `arc` radians round a circle towards the viewer, in
+/// its own metres: the corners, then the middles of the top and bottom.
+fn screen_outline(size: Vec2, arc: f32) -> [Vec3; 6] {
     let h = size * 0.5;
     // A curve's corners come forward and in; its edges' middles stay where
     // the flat screen's are, and its outline runs between them.
@@ -597,15 +607,44 @@ pub(crate) fn screen_area(
     } else {
         (h.x, 0.0)
     };
-    let corners = [
-        (x, h.y, z),
-        (-x, h.y, z),
-        (x, -h.y, z),
-        (-x, -h.y, z),
-        (0.0, h.y, 0.0),
-        (0.0, -h.y, 0.0),
+    [
+        Vec3::new(x, h.y, z),
+        Vec3::new(-x, h.y, z),
+        Vec3::new(x, -h.y, z),
+        Vec3::new(-x, -h.y, z),
+        Vec3::new(0.0, h.y, 0.0),
+        Vec3::new(0.0, -h.y, 0.0),
     ]
-    .map(|(x, y, z)| view_proj * Vec4::new(x, y, z, 1.0));
+}
+
+/// The depth an eye draws the video at in a cinema, so that the room in
+/// front of the screen hides it: its nearest corner's,
+/// [`SCREEN_DEPTH_MARGIN`] nearer. The screen is a straight-sided curve
+/// bowing away from the seats, so no point of it is nearer than a corner.
+/// 0, in front of everything, when the screen reaches behind the eye.
+pub(crate) fn screen_depth(eye_from_screen: Mat4, proj: Mat4, size: Vec2, arc: f32) -> f32 {
+    let nearest = screen_outline(size, arc)[..4]
+        .iter()
+        .map(|&c| eye_from_screen.transform_point3(c).z)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let z = nearest + SCREEN_DEPTH_MARGIN;
+    let clip = proj * Vec4::new(0.0, 0.0, z, 1.0);
+    if z.is_nan() || z >= 0.0 || clip.w <= 0.0 || !clip.is_finite() {
+        return 0.0;
+    }
+    (clip.z / clip.w).clamp(0.0, 1.0)
+}
+
+/// A conservative raster rectangle around the video, `arc` radians round a
+/// circle towards the viewer. If an edge crosses the near plane, let the
+/// existing ray projection clip it instead.
+pub(crate) fn screen_area(
+    view_proj: Mat4,
+    size: Vec2,
+    arc: f32,
+    full: vk::Rect2D,
+) -> Option<vk::Rect2D> {
+    let corners = screen_outline(size, arc).map(|c| view_proj * c.extend(1.0));
     if corners.iter().all(|p| p.w <= 0.0 || p.z < 0.0) {
         return None;
     }
@@ -676,5 +715,25 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_picture_is_behind_the_seats_and_before_the_room_screen() {
+        let (size, arc) = (Vec2::new(8.0, 3.5), 0.6);
+        let proj = crate::math::projection(crate::math::Fov::symmetric(100.0), 0.05, 100.0);
+        // The screen 10 m ahead; its curve brings the corners forward.
+        let eye_from_screen = Mat4::from_translation(Vec3::new(0.0, 0.0, -10.0));
+        let depth = screen_depth(eye_from_screen, proj, size, arc);
+        let at = |z: f32| {
+            let p = proj * Vec4::new(0.0, 0.0, z, 1.0);
+            p.z / p.w
+        };
+        let r = size.x / arc;
+        let corner = -10.0 + r * (1.0 - (arc / 2.0).cos());
+        assert!(depth < at(corner), "in front of the room's screen");
+        assert!(depth > at(-1.5), "behind a seat back 1.5 m away");
+        // Turned away, the screen reaches behind the eye: drawn over all.
+        let behind = Mat4::from_translation(Vec3::new(0.0, 0.0, 2.0));
+        assert_eq!(screen_depth(behind, proj, size, arc), 0.0);
     }
 }

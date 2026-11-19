@@ -93,6 +93,7 @@ settings-height = Altura
 settings-height-desc = Súbete o bájate en los vídeos que no tienen la suya.
 settings-background = Fondo
 settings-background-desc = Alrededor de los vídeos planos y los menús. Tu habitación lo reemplaza mientras se muestra.
+settings-background-menus-desc = Alrededor de los menús y de los vídeos que no son planos. Tu habitación lo reemplaza mientras se muestra.
 background-use-global = Usar global
 background-colour = Color
 background-classic = Clásica

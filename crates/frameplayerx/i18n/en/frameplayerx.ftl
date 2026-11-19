@@ -137,6 +137,7 @@ settings-height = Height
 settings-height-desc = Raise or lower yourself in videos without their own.
 settings-background = Background
 settings-background-desc = Around flat videos and the menus. Your room replaces it while it shows.
+settings-background-menus-desc = Around the menus and videos that aren't flat. Your room replaces it while it shows.
 # Short: a chip. The video follows Settings › Video position.
 background-use-global = Use global
 # Short: a chip.

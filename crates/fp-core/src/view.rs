@@ -338,6 +338,30 @@ impl Keyframes {
             }
         }
     }
+
+    /// `value` of the settings at `time`, blended as [`Self::at`] blends
+    /// numbers: for a value worked out from settings that `at` can only
+    /// step between, such as one that follows a global setting at one
+    /// keyframe and not at the next.
+    pub fn value_at(
+        &self,
+        time: f64,
+        base: &ViewSettings,
+        value: impl Fn(&ViewSettings) -> f32,
+    ) -> f32 {
+        let i = self.frames.partition_point(|(t, _)| *t <= time);
+        match (
+            i.checked_sub(1).map(|i| &self.frames[i]),
+            self.frames.get(i),
+        ) {
+            (None, None) => value(base),
+            (Some((_, s)), None) | (None, Some((_, s))) => value(s),
+            (Some((t0, a)), Some((t1, b))) => {
+                let (a, b) = (value(a), value(b));
+                a + (b - a) * ((time - t0) / (t1 - t0)) as f32
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -408,6 +432,25 @@ mod tests {
         k.insert(10.0, ViewSettings { zoom: 3.0, ..base });
         assert_eq!(k.frames.len(), 2);
         assert_eq!(k.at(10.0, &base).zoom, 3.0);
+    }
+
+    #[test]
+    fn a_value_following_a_global_one_blends_into_its_own() {
+        let base = ViewSettings::default();
+        let curve = |s: &ViewSettings| s.cinema_curvature.unwrap_or(0.2);
+        let mut k = Keyframes::default();
+        assert_eq!(k.value_at(5.0, &base, curve), 0.2);
+        k.insert(0.0, base);
+        k.insert(
+            10.0,
+            ViewSettings {
+                cinema_curvature: Some(0.6),
+                ..base
+            },
+        );
+        assert!((k.value_at(5.0, &base, curve) - 0.4).abs() < 1e-6);
+        assert_eq!(k.value_at(-1.0, &base, curve), 0.2);
+        assert_eq!(k.value_at(20.0, &base, curve), 0.6);
     }
 
     #[test]

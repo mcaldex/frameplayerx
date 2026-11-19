@@ -60,9 +60,9 @@ impl App {
             && p.format.projection == Projection::Flat
             && (p.settings.yaw, p.settings.pitch) != (0.0, 0.0)
         {
+            // Its place isn't kept with the video, so nothing is left to save.
             p.settings.yaw = 0.0;
             p.settings.pitch = 0.0;
-            p.settings_dirty = true;
         }
     }
 
@@ -79,9 +79,9 @@ impl App {
             && p.format.projection == Projection::Flat
             && (p.settings.yaw, p.settings.pitch) != (0.0, 0.0)
         {
+            // Its place isn't kept with the video, so nothing is left to save.
             p.settings.yaw = 0.0;
             p.settings.pitch = 0.0;
-            p.settings_dirty = true;
         }
     }
 
@@ -671,8 +671,10 @@ impl App {
             video.screen_pose = place(player, 0.0, s.screen_distance, 0.0, 0.0);
             video.anchor = anchor_rot;
             let mut subtitles = player;
-            if let Some(room) = p.wanted_room(&self.settings) {
-                // Read while the video opens, to be ready when it shows.
+            // Only the room this video wants stays in memory, and it is read
+            // while the video opens, to be ready when it shows.
+            renderer.keep_cinema(p.wanted_room(&self.settings));
+            if let Some(room) = p.room_to_load(&self.settings, input.passthrough_available) {
                 renderer.load_cinema(room);
             }
             if let Some(v) = p.player.info().video_stream() {

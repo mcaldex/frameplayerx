@@ -93,6 +93,7 @@ settings-height = Hauteur
 settings-height-desc = Montez ou descendez dans les vidéos qui n’ont pas la leur.
 settings-background = Arrière-plan
 settings-background-desc = Autour des vidéos plates et des menus. Votre pièce le remplace tant qu’elle est affichée.
+settings-background-menus-desc = Autour des menus et des vidéos qui ne sont pas plates. Votre pièce le remplace tant qu’elle est affichée.
 background-use-global = Réglages globaux
 background-colour = Couleur
 background-classic = Classique

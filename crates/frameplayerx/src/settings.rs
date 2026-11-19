@@ -307,12 +307,6 @@ impl Settings {
         self.default_view.cinema_row = Some(row);
     }
 
-    /// A video's own setting for sitting in `row` of a room with `rows`:
-    /// none, following this one, where they are the same row.
-    pub fn own_cinema_row(&self, row: u8, rows: u8) -> Option<u8> {
-        (row != self.cinema_row().min(rows)).then_some(row)
-    }
-
     /// The cinema screen's curve for videos that follow Settings › Video
     /// position.
     pub fn cinema_curvature(&self) -> f32 {
@@ -321,12 +315,6 @@ impl Settings {
 
     pub fn set_cinema_curvature(&mut self, curvature: f32) {
         self.default_view.cinema_curvature = Some(curvature);
-    }
-
-    /// A video's own setting for `curvature`: none, following this one,
-    /// where they are the same.
-    pub fn own_cinema_curvature(&self, curvature: f32) -> Option<f32> {
-        ((curvature - self.cinema_curvature()).abs() > 1e-3).then_some(curvature)
     }
 
     /// The most videos Play all takes from `source`'s subfolders, `None`
@@ -528,8 +516,6 @@ mod tests {
         assert_eq!(view.environment, BackgroundEnvironment::UseGlobal);
         assert_eq!(view.cinema_row, None, "a new video follows the global row");
         assert_eq!(view.cinema_curvature, None, "and the global curve");
-        assert_eq!(cinema.own_cinema_curvature(0.5), None);
-        assert_eq!(cinema.own_cinema_curvature(0.8), Some(0.8));
         assert_eq!(p.default_format, fp_core::format::VideoFormat::FALLBACK);
         assert_eq!(p.fisheye_presets, FISHEYE_PRESETS);
         assert_eq!(p.fisheye_start, FISHEYE_START);

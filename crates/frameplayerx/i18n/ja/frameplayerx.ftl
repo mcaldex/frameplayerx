@@ -93,6 +93,7 @@ settings-height = 高さ
 settings-height-desc = 高さ情報のない映像で、自分の位置を上げ下げします。
 settings-background = 背景
 settings-background-desc = フラットな映像とメニューのまわりに。部屋を表示している間は部屋に置き換わります。
+settings-background-menus-desc = メニューとフラットでない映像のまわりに。部屋を表示している間は部屋に置き換わります。
 background-use-global = 全体の設定
 background-colour = 色
 background-classic = クラシック

@@ -1185,9 +1185,7 @@ pub fn adjust_panel(ctx: &egui::Context, v: &mut View) {
                         let moved = v.settings.panel_offsets != Default::default()
                             || (flat && (pb.settings.yaw, pb.settings.pitch) != (0.0, 0.0));
                         position_tab(ui, &mut pb.settings, flat, moved, in_cinema, v.actions);
-                        let rooms = flat
-                            && pb.player.info().video_stream().is_some()
-                            && CinemaRoom::any_available();
+                        let rooms = pb.rooms_offered(v.settings, v.passthrough_available);
                         ui.add_space(6.0);
                         video_background(ui, &mut pb.settings, v.settings, rooms);
                     }
@@ -1992,8 +1990,19 @@ pub(super) fn global_background(ui: &mut egui::Ui, settings: &mut crate::setting
         if let Some(curvature) = curvature {
             settings.set_cinema_curvature(curvature);
         }
+        // The colour is still round the menus and the videos that aren't flat.
+        ui.add_space(6.0);
+        background_controls(
+            ui,
+            &mut settings.default_view.background,
+            tr!("settings-background-menus-desc"),
+        );
     } else {
-        background_controls(ui, &mut settings.default_view.background);
+        background_controls(
+            ui,
+            &mut settings.default_view.background,
+            tr!("settings-background-desc"),
+        );
     }
 }
 
@@ -2041,58 +2050,65 @@ fn seat_sliders(ui: &mut egui::Ui, room: CinemaRoom, seat: Seat) -> (Option<u8>,
     (new_row, new_curvature)
 }
 
+/// A video's background: with `rooms`, a cinema room can be chosen too.
 fn video_background(
     ui: &mut egui::Ui,
     view: &mut ViewSettings,
     settings: &crate::settings::Settings,
-    show_rooms: bool,
+    rooms: bool,
 ) {
     use BackgroundEnvironment::*;
     widgets::section_label(ui, tr!("settings-background"));
-    if show_rooms {
-        if let Some(environment) = environment_picker(ui, view.environment, true) {
-            // Its own colour starts from the one it was following.
-            if environment == Colour && view.environment == UseGlobal {
-                view.background = settings.default_view.background;
-            }
-            view.environment = environment;
+    if rooms && let Some(environment) = environment_picker(ui, view.environment, true) {
+        // Its own colour starts from the one it was following.
+        if environment == Colour && view.environment == UseGlobal {
+            view.background = settings.default_view.background;
         }
-        let environment = match view.environment {
-            UseGlobal => settings.environment(),
-            own => own,
+        view.environment = environment;
+    }
+    let environment = match view.environment {
+        UseGlobal => settings.environment(),
+        own => own,
+    };
+    if let Some(room) = crate::playback::room_for(environment).filter(|_| rooms) {
+        let seat = Seat {
+            row: view.cinema_row.unwrap_or_else(|| settings.cinema_row()),
+            row_default: settings.cinema_row(),
+            curvature: view
+                .cinema_curvature
+                .unwrap_or_else(|| settings.cinema_curvature()),
+            curvature_default: settings.cinema_curvature(),
         };
-        if let Some(room) = crate::playback::room_for(environment) {
-            let seat = Seat {
-                row: view.cinema_row.unwrap_or_else(|| settings.cinema_row()),
-                row_default: settings.cinema_row(),
-                curvature: view
-                    .cinema_curvature
-                    .unwrap_or_else(|| settings.cinema_curvature()),
-                curvature_default: settings.cinema_curvature(),
-            };
-            let (row, curvature) = seat_sliders(ui, room, seat);
-            if let Some(row) = row {
-                view.cinema_row = settings.own_cinema_row(row, room.rows());
-            }
-            if let Some(curvature) = curvature {
-                view.cinema_curvature = settings.own_cinema_curvature(curvature);
-            }
+        let (row, curvature) = seat_sliders(ui, room, seat);
+        if row.is_some() {
+            view.cinema_row = row;
         }
-        if view.environment == Colour {
-            background_controls(ui, &mut view.background);
+        if curvature.is_some() {
+            view.cinema_curvature = curvature;
         }
+        return;
+    }
+    // While it follows the global colour that one shows, and changing it
+    // gives the video its own.
+    let following = view.environment == UseGlobal;
+    let mut colour = if following {
+        settings.default_view.background
     } else {
-        let before = view.background;
-        background_controls(ui, &mut view.background);
-        if view.environment == UseGlobal && view.background != before {
+        view.background
+    };
+    let before = colour;
+    background_controls(ui, &mut colour, tr!("settings-background-desc"));
+    if colour != before {
+        view.background = colour;
+        if following {
             view.environment = Colour;
         }
     }
 }
 
-fn background_controls(ui: &mut egui::Ui, c: &mut [f32; 3]) {
+fn background_controls(ui: &mut egui::Ui, c: &mut [f32; 3], desc: &str) {
     ui.label(
-        RichText::new(tr!("settings-background-desc"))
+        RichText::new(desc)
             .font(theme::font(Weight::Regular, 15.0))
             .color(theme::TEXT_3),
     );

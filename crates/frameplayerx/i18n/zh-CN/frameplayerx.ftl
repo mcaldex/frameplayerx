@@ -93,6 +93,7 @@ settings-height = 高度
 settings-height-desc = 在没有自带高度的视频中升高或降低自己。
 settings-background = 背景
 settings-background-desc = 在平面视频和菜单周围。显示你的房间时会由房间取代。
+settings-background-menus-desc = 在菜单和非平面视频周围。显示你的房间时会由房间取代。
 background-use-global = 使用全局
 background-colour = 颜色
 background-classic = 经典厅
