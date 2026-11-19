@@ -1131,25 +1131,53 @@ pub(super) fn delete_button(ui: &mut egui::Ui, state: &mut UiState, location: &s
         });
         return false;
     }
-    let armed = state
+    let before = state
         .delete_file_armed
         .as_ref()
-        .is_some_and(|(l, at)| l == location && at.elapsed().as_secs_f32() < 4.0);
-    let (label, kind) = if armed {
-        (tr!("delete-file-confirm"), Kind::Danger)
+        .filter(|(l, _)| l == location)
+        .map(|&(_, at)| at);
+    let mut at = before;
+    let confirmed = confirm_button(
+        ui,
+        &mut at,
+        tr!("delete-file"),
+        tr!("delete-file-confirm"),
+        |ui, label, kind| widgets::button(ui, Some(icons::TRASH), label, kind),
+    );
+    // Only a press changes it, and makes it this video's.
+    if at != before {
+        state.delete_file_armed = at.map(|at| (location.to_string(), at));
+    }
+    confirmed
+}
+
+/// How long a button that asks again waits for its second press.
+const CONFIRM_WINDOW: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// A button that asks again: pressed once, at `armed`, it shows `confirm`
+/// in red for [`CONFIRM_WINDOW`]. Whether it was pressed again in that time.
+fn confirm_button(
+    ui: &mut egui::Ui,
+    armed: &mut Option<std::time::Instant>,
+    idle: &str,
+    confirm: &str,
+    button: impl FnOnce(&mut egui::Ui, &str, widgets::Kind) -> egui::Response,
+) -> bool {
+    let left = armed.and_then(|at| CONFIRM_WINDOW.checked_sub(at.elapsed()));
+    let on = left.is_some_and(|d| !d.is_zero());
+    let (label, kind) = if on {
+        (confirm, widgets::Kind::Danger)
     } else {
-        (tr!("delete-file"), Kind::Secondary)
+        (idle, widgets::Kind::Secondary)
     };
-    let pressed = widgets::button(ui, Some(icons::TRASH), label, kind).clicked();
-    if armed {
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(500));
+    let pressed = button(ui, label, kind).clicked();
+    if let Some(left) = left.filter(|_| on) {
+        ui.ctx().request_repaint_after(left);
     }
-    if !pressed {
-        return false;
+    if pressed {
+        *armed = (!on).then(std::time::Instant::now);
     }
-    state.delete_file_armed = (!armed).then(|| (location.to_string(), std::time::Instant::now()));
-    armed
+    pressed && on
 }
 
 #[cfg(test)]

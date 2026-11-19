@@ -1002,16 +1002,7 @@ fn demux_thread(
             for (_, d) in subs.0.iter_mut() {
                 d.flush();
             }
-            sh.demux_eof.store(false, Ordering::Release);
-            sh.video_done.store(!sh.has_video, Ordering::Release);
-            sh.audio_done
-                .store(!sh.has_audio.load(Ordering::Acquire), Ordering::Release);
-            sh.ended.store(false, Ordering::Release);
-            sh.buffering.store(true, Ordering::Release);
-            sh.skipping_damaged.store(false, Ordering::Release);
-            sh.clock.pause();
-            sh.clock.set(req.target);
-            sh.read_to.store(req.target.to_bits(), Ordering::Relaxed);
+            read_again_at(&sh, req.target, true);
             first_video_ts = None;
             await_key = Some(req.target + 20.0);
             sh.frames_cv.notify_all();
@@ -1092,14 +1083,7 @@ fn demux_thread(
                     for (_, d) in subs.0.iter_mut() {
                         d.flush();
                     }
-                    sh.demux_eof.store(false, Ordering::Release);
-                    sh.video_done.store(false, Ordering::Release);
-                    sh.audio_done
-                        .store(!sh.has_audio.load(Ordering::Acquire), Ordering::Release);
-                    sh.ended.store(false, Ordering::Release);
-                    sh.clock.pause();
-                    sh.clock.set(t_good);
-                    sh.read_to.store(t_good.to_bits(), Ordering::Relaxed);
+                    read_again_at(&sh, t_good, false);
                     first_video_ts = None;
                     last_video_ts = t_good;
                     await_key = Some(t_good + 20.0);
@@ -1280,6 +1264,25 @@ enum SearchKey {
     ByTime { media_time: f64 },
     EndOfFile,
     Aborted,
+}
+
+/// Reading starts again at `t`, after a seek or a jump over damage: every
+/// stream unfinished (audio only when there is some), and the clock held at
+/// `t` until the first frame there shows. A `seek` waits to buffer, and ends
+/// a jump in progress.
+fn read_again_at(sh: &Shared, t: f64, seek: bool) {
+    sh.demux_eof.store(false, Ordering::Release);
+    sh.video_done.store(!sh.has_video, Ordering::Release);
+    sh.audio_done
+        .store(!sh.has_audio.load(Ordering::Acquire), Ordering::Release);
+    sh.ended.store(false, Ordering::Release);
+    if seek {
+        sh.buffering.store(true, Ordering::Release);
+        sh.skipping_damaged.store(false, Ordering::Release);
+    }
+    sh.clock.pause();
+    sh.clock.set(t);
+    sh.read_to.store(t.to_bits(), Ordering::Relaxed);
 }
 
 fn jump_aborted(sh: &Shared) -> bool {
