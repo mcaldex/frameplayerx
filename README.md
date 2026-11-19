@@ -134,6 +134,7 @@ FramePlayerX began as a fork of [FramePlayer](https://github.com/yellkell/framep
 - [Frame Control](https://github.com/saphid/frame-control) by saphid installs FramePlayerX from a PC, and FramePlayerX's install links follow its format
 - The DeoVR remote API, the DeoVR feed and the HereSphere API come from those players; FramePlayerX implements them so the servers and phone apps made for them work with it
 - [FFmpeg](https://ffmpeg.org) and [dav1d](https://code.videolan.org/videolan/dav1d) decode the video, and the libraries and fonts in [Technology Stack](#technology-stack) do much of the rest. FramePlayerX uses code of FFmpeg licensed under the LGPL 2.1 or later; where to download its source, and every bundled component with its licence, is in [packaging/licenses](packaging/licenses/THIRD-PARTY.txt)
+- The Luxe cinema's recliners are [Recliner Brown_Leather](https://sketchfab.com/3d-models/recliner-brown-leather-4e3e06cf74fe48c8b7472a3549f6b5d2) by [Puneet Sharma](https://sketchfab.com/Eshi_Nito), licensed under [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/)
 - The pictures and videos in the screenshots are AI-generated
 
 ### Players that inspired FramePlayerX

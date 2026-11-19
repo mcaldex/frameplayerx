@@ -467,6 +467,10 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
   cargo run -p frameplayerx -- --preview /tmp/shots --script /tmp/demo.fps
 ```
 
+`environment classic` (or `luxe`) and `view cinema_row 4` show a
+[cinema room](#cinema-rooms) from that row;
+`tools/ui-preview.sh` ends with such shots.
+
 ### Other modes
 
 | Command | What it does |
@@ -494,6 +498,11 @@ Every 10 s the log has a `frame GPU ms` line beside `frame CPU ms`: the GPU's ti
 printf 'open clip_8k.mp4\nwait-playing 30\nwait 2\ngpu\nwait 10\ngpu\n' > /tmp/gpu.fps
 frameplayerx --preview /tmp/shots --size 2160 --script /tmp/gpu.fps
 ```
+
+To measure what a cinema room costs, play the same flat clip with
+`environment dark` and then `environment classic` in one script, recording
+`gpu` samples once each has settled, and compare the `eyes` medians on the
+headset.
 
 ## On the headset
 
@@ -523,6 +532,50 @@ calling Cargo.
 export FP_OPENSUBTITLES_API_KEY="$(<opensubtitles.key)"
 cargo run -p frameplayerx
 ```
+
+### Cinema rooms
+
+The cinema's rooms, Classic and Luxe, are in `crates/fp-render/rooms/`,
+and `crates/fp-render/build.rs` embeds them in the binary.
+`tools/cinema/make_cinema.py` models them in Blender and bakes their
+lighting into textures (`--preview` renders stills instead). The Luxe's
+recliner is [Recliner Brown_Leather](https://sketchfab.com/3d-models/recliner-brown-leather-4e3e06cf74fe48c8b7472a3549f6b5d2)
+by Puneet Sharma (CC-BY 4.0): download it as glTF from Sketchfab (it needs
+an account), extract it into `target/cinema-models/recliner`, and pass its
+`scene.gltf` with `--seat-model`.
+
+```bash
+blender -b --factory-startup --python tools/cinema/make_cinema.py -- \
+  --room classic --out "$PWD/crates/fp-render/rooms/classic" --export
+blender -b --factory-startup --python tools/cinema/make_cinema.py -- \
+  --room luxe --seat-model "$PWD/target/cinema-models/recliner/scene.gltf" \
+  --out "$PWD/crates/fp-render/rooms/luxe" --export
+```
+
+Each room folder holds `cinema.bin`, `cinema-hall.jpg`, `props.jpg`,
+`detail.png` and `params.json`. `cinema.bin` is `FPXC` version 4: meshes
+each drawn at a list of places, such as one seat at every seat, textured
+from `cinema-hall.jpg` (the room) or `props.jpg` (the seats), with
+`detail.png`'s tiling patterns (fabric, carpet, leather) laid over both,
+finer than the baked textures can hold. `params.json` is in metres with
+the origin at one seat's eyes looking along -Z:
+
+```json
+{
+  "screen_width": 12.6,
+  "screen_height": 6.63,
+  "screen_center": [0.0, 0.15, -11.3],
+  "max_curvature": 0.0403,
+  "seats": [[0.0, -1.55, -4.6], [0.0, 0.0, 0.0], [0.0, 3.05, 8.05]]
+}
+```
+
+`seats` are the eyes of each row's middle seat, on the screen's centre
+line, front row first: the Row setting counts them. `max_curvature` is the
+screen's deepest curve, 1 over its radius in metres, where Curvature is 1:
+the generator stops the masking's edges 10 cm short of the stage's front.
+The screen and its masking are cut into strips and marked to bend, and
+the player bends them and the picture round the same circle.
 
 ### Environment variables
 

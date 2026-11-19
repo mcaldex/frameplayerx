@@ -18,11 +18,14 @@ fp-core.workspace = true
 fp-media.workspace = true
 glam = { workspace = true, features = ["bytemuck"] }
 gpu-allocator = { version = "0.28", default-features = false, features = ["vulkan", "std"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 log.workspace = true
 thiserror.workspace = true
 
-[build-dependencies]
-naga = { version = "28", features = ["wgsl-in", "spv-out"] }
-
 [dev-dependencies]
 png = "0.18"
+
+[build-dependencies]
+naga = { version = "28", features = ["wgsl-in", "spv-out"] }
+serde.workspace = true
+serde_json.workspace = true

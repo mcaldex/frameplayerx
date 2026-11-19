@@ -17,6 +17,8 @@
 
 pub mod backdrop;
 pub mod capture;
+mod cinema;
+mod cinema_mesh;
 mod focus;
 mod foveation;
 pub mod gpu;
@@ -35,7 +37,7 @@ mod video;
 
 pub use foveation::Foveation;
 pub use gpu::{Creator, DirectCreator, Gpu};
-pub use params::VideoParams;
+pub use params::{CinemaParams, CinemaRoom, VideoParams};
 pub use renderer::{EyeTarget, EyeView, PanelId, QuadDraw, QuadTexture, Renderer};
 pub use timing::GpuTimes;
 

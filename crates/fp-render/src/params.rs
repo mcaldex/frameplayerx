@@ -5,7 +5,7 @@ use fp_core::view::ViewSettings;
 use fp_media::PixelLayout;
 use fp_media::frame::{ColorInfo, Matrix};
 use fp_media::info::Transfer;
-use glam::{EulerRot, Mat4, Quat, Vec3, Vec4};
+use glam::{EulerRot, Mat4, Quat, Vec2, Vec3, Vec4};
 
 /// Matches `struct Params` in shaders/scene.wgsl (std140-compatible: every
 /// member is 16-byte aligned).
@@ -45,6 +45,9 @@ pub(crate) struct SceneParams {
     pub eyes: [Vec4; 2],
     /// Each eye's turn apart about the head's up, as a quaternion.
     pub relief: [Vec4; 2],
+    /// x, y: the picture's share of the screen's width and height; black
+    /// fills the rest (a cinema's screen).
+    pub fill: Vec4,
 }
 
 /// Sets `p` up for a Q10C picture of `height` rows sampled where it lies
@@ -87,6 +90,9 @@ pub struct VideoParams {
     /// Background around/behind the video, linear premultiplied RGBA.
     /// Alpha 0 lets passthrough show through.
     pub background: [f32; 4],
+    /// Optional cinema around a flat video. The screen pose is centred on
+    /// [`CinemaRoom::screen_centre`] in the room's local coordinates.
+    pub cinema: Option<CinemaParams>,
     /// The room frame the video was centred in (recentering's anchor): a
     /// 180°/360° picture, its per-eye corrections and the viewer's height
     /// and forward turn with it.
@@ -106,10 +112,126 @@ impl Default for VideoParams {
             settings: ViewSettings::default(),
             screen_pose: Mat4::from_translation(glam::vec3(0.0, 0.0, -4.0)),
             background: [0.008, 0.008, 0.012, 1.0],
+            cinema: None,
             anchor: Quat::IDENTITY,
             rotation: 0,
             pixel_aspect: 1.0,
         }
+    }
+}
+
+/// The cinema drawn round a flat video.
+#[derive(Clone, Copy, Debug)]
+pub struct CinemaParams {
+    pub room: CinemaRoom,
+    /// Room metres to world space, from [`CinemaRoom::pose`].
+    pub pose: Mat4,
+    /// House lights, from fully dimmed (0) to fully lit (1).
+    pub lights: f32,
+    /// How much the screen curves round the seats, 1 over its radius in
+    /// metres, from [`CinemaRoom::curvature`].
+    pub curvature: f32,
+}
+
+/// A cinema room, built into the player when its files are in
+/// `crates/fp-render/rooms` (see docs/DEVELOPMENT.md). Its metres have the
+/// eyes of one seat at the origin, looking along -Z. Everything but
+/// [`Self::is_available`] needs an available room.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CinemaRoom {
+    Classic,
+    Luxe,
+}
+
+impl CinemaRoom {
+    pub const ALL: [CinemaRoom; 2] = [CinemaRoom::Classic, CinemaRoom::Luxe];
+
+    pub(crate) const fn slot(self) -> usize {
+        self as usize
+    }
+
+    pub const fn is_available(self) -> bool {
+        crate::cinema_mesh::asset(self).is_some()
+    }
+
+    /// Whether this build has any room: without one the cinema is left out.
+    pub fn any_available() -> bool {
+        Self::ALL.iter().any(|room| room.is_available())
+    }
+
+    fn asset(self) -> crate::cinema_mesh::CinemaAsset {
+        crate::cinema_mesh::asset(self).expect("an available cinema room")
+    }
+
+    pub fn screen_centre(self) -> Vec3 {
+        Vec3::from_array(self.asset().screen_center)
+    }
+
+    pub(crate) fn screen_size(self) -> Vec2 {
+        let a = self.asset();
+        Vec2::new(a.screen_width, a.screen_height)
+    }
+
+    /// The picture's width and height on the screen, in metres, for a
+    /// picture `aspect` times as wide as it is high: as large as fits.
+    pub fn picture(self, aspect: f32) -> Vec2 {
+        fit(self.screen_size(), aspect)
+    }
+
+    /// The screen's curve for `amount` from 0 (flat) to 1 (as deep as the
+    /// stage allows): 1 over its radius in metres.
+    pub fn curvature(self, amount: f32) -> f32 {
+        amount.clamp(0.0, 1.0) * self.asset().max_curvature
+    }
+
+    /// How many rows of seats it has.
+    pub fn rows(self) -> u8 {
+        self.asset().seats.len().min(u8::MAX as usize) as u8
+    }
+
+    /// The eyes of the middle seat in `row`, 1 being the front row.
+    pub fn seat(self, row: u8) -> Vec3 {
+        row_seat(self.asset().seats, row)
+    }
+
+    /// Room metres to world space: `seat`'s eyes at `viewer`'s origin,
+    /// turned about the vertical so the screen's centre is straight ahead.
+    pub fn pose(self, viewer: Mat4, seat: Vec3) -> Mat4 {
+        room_pose(self.screen_centre(), viewer, seat)
+    }
+}
+
+fn fit(screen: Vec2, aspect: f32) -> Vec2 {
+    let aspect = aspect.max(1e-3);
+    if aspect >= screen.x / screen.y {
+        Vec2::new(screen.x, screen.x / aspect)
+    } else {
+        Vec2::new(screen.y * aspect, screen.y)
+    }
+}
+
+/// `seats` run from the front row back; a row past either end is that end.
+fn row_seat(seats: &[[f32; 3]], row: u8) -> Vec3 {
+    let i = (row.max(1) as usize - 1).min(seats.len() - 1);
+    Vec3::from_array(seats[i])
+}
+
+fn room_pose(centre: Vec3, viewer: Mat4, seat: Vec3) -> Mat4 {
+    let to = centre - seat;
+    viewer * Mat4::from_rotation_y(to.x.atan2(-to.z)) * Mat4::from_translation(-seat)
+}
+
+/// The picture as shown: unsqueezed, then turned upright. Stereo halves are
+/// halves of that.
+fn eye_size(stereo: StereoLayout, tex: (u32, u32), pixel_aspect: f32, rotation: u32) -> (f32, f32) {
+    let pixel_aspect = stereo.eye_pixel_aspect(pixel_aspect as f64) as f32;
+    let turns = rotation / 90 % 4;
+    let (pw, ph) = (tex.0 as f32 * pixel_aspect.max(0.01), tex.1 as f32);
+    let (pw, ph) = if turns % 2 == 1 { (ph, pw) } else { (pw, ph) };
+    match stereo {
+        StereoLayout::SideBySide | StereoLayout::FrameSequential => (pw / 2.0, ph),
+        StereoLayout::TopBottom => (pw, ph / 2.0),
+        StereoLayout::HalfSideBySide | StereoLayout::HalfTopBottom | StereoLayout::Mono => (pw, ph),
     }
 }
 
@@ -238,34 +360,38 @@ pub(crate) fn build(
             (1, 1),
         ),
     };
-    // The picture as shown: unsqueezed, then turned upright. Stereo halves
-    // are halves of that.
-    let pixel_aspect = video
-        .format
-        .stereo
-        .eye_pixel_aspect(video.pixel_aspect as f64) as f32;
     let turns = video.rotation / 90 % 4;
-    let (pw, ph) = (tex.0 as f32 * pixel_aspect.max(0.01), tex.1 as f32);
-    let (pw, ph) = if turns % 2 == 1 { (ph, pw) } else { (pw, ph) };
-    // Per-eye aspect for flat screens.
-    let (ew, eh) = match video.format.stereo {
-        StereoLayout::SideBySide | StereoLayout::FrameSequential => (pw / 2.0, ph),
-        StereoLayout::TopBottom => (pw, ph / 2.0),
-        StereoLayout::HalfSideBySide | StereoLayout::HalfTopBottom | StereoLayout::Mono => (pw, ph),
-    };
+    let (ew, eh) = eye_size(video.format.stereo, tex, video.pixel_aspect, video.rotation);
     // A fisheye's image circle fills the eye image's shorter side, and stays
     // round when the image is not square.
     let circle = Vec4::new((eh / ew).min(1.0), (ew / eh).min(1.0), 0.0, 0.0);
     let [c0, c1] = s.lens_centre;
-    // The screen's width setting is its longer side, so a portrait video
-    // stands as tall as a landscape one is wide.
-    let long = s.screen_width;
-    let (screen_w, screen_h) = if ew >= eh {
-        (long, long * eh / ew.max(1e-3))
+    let cinema = video
+        .cinema
+        .filter(|cinema| cinema.room.is_available() && video.format.projection == Projection::Flat);
+    let mut fill = Vec4::ONE;
+    let (screen_w, screen_h, arc) = if let Some(cinema) = cinema {
+        // The whole screen, bent round the same circle as the room's: black
+        // where the picture doesn't reach, like a television's bars, so the
+        // room's own screen never shows round it.
+        let screen = cinema.room.screen_size();
+        let picture = cinema.room.picture(ew / eh.max(1e-3));
+        fill = (picture / screen).extend(1.0).extend(1.0);
+        (screen.x, screen.y, screen.x * cinema.curvature)
     } else {
-        (long * ew / eh.max(1e-3), long)
+        // The floating screen's width setting names its longer side.
+        let long = s.screen_width;
+        let (w, h) = if ew >= eh {
+            (long, long * eh / ew.max(1e-3))
+        } else {
+            (long * ew / eh.max(1e-3), long)
+        };
+        (
+            w,
+            h,
+            s.screen_curvature.clamp(0.0, 1.0) * std::f32::consts::TAU / 3.0,
+        )
     };
-    let arc = s.screen_curvature.clamp(0.0, 1.0) * std::f32::consts::TAU / 3.0;
     let correction =
         Mat4::from_euler(EulerRot::YXZ, deg(s.yaw), deg(s.pitch), deg(s.roll)).inverse();
     let kc = chroma(s.key_color);
@@ -308,7 +434,11 @@ pub(crate) fn build(
             1.0 / tex.0 as f32,
             1.0 / tex.1 as f32,
         ),
-        bg_color: Vec4::from(video.background),
+        bg_color: if cinema.is_some() {
+            Vec4::ZERO
+        } else {
+            Vec4::from(video.background)
+        },
         key: Vec4::new(kc.x, kc.y, s.key_similarity, s.key_smoothness),
         key2: Vec4::new(
             s.key_spill,
@@ -324,14 +454,15 @@ pub(crate) fn build(
         focus: Vec4::ZERO,
         eyes: [Vec4::ZERO; 2],
         relief: [Vec4::W; 2],
+        fill,
     }
 }
 
 /// Chroma (BT.709 Cb, Cr) of an sRGB-encoded colour, as the shader computes it
 /// from the video's samples.
-pub(crate) fn chroma(rgb: [f32; 3]) -> glam::Vec2 {
+pub(crate) fn chroma(rgb: [f32; 3]) -> Vec2 {
     let [r, g, b] = rgb;
-    glam::Vec2::new(
+    Vec2::new(
         -0.1146 * r - 0.3854 * g + 0.5 * b,
         0.5 * r - 0.4542 * g - 0.0458 * b,
     )
@@ -340,6 +471,49 @@ pub(crate) fn chroma(rgb: [f32; 3]) -> glam::Vec2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Rows 4, 6.5 and 9 m from a screen 1.2 m above the middle row's eyes,
+    /// on a 0.3 m rake.
+    const CENTRE: Vec3 = Vec3::new(0.0, 1.2, -6.5);
+    const SEATS: [[f32; 3]; 3] = [[0.0, -0.3, -2.5], [0.0, 0.0, 0.0], [0.0, 0.3, 2.5]];
+
+    #[test]
+    fn the_picture_fills_the_cinema_screen_one_way() {
+        let picture = fit(Vec2::new(9.0, 4.0), 16.0 / 9.0);
+        assert!(
+            (picture.y - 4.0).abs() < 1e-5 && picture.x < 9.0,
+            "{picture}"
+        );
+    }
+
+    #[test]
+    fn rows_count_from_the_front() {
+        let z = |row| row_seat(&SEATS, row).z;
+        assert_eq!(z(1), -2.5);
+        assert_eq!(z(2), 0.0);
+        assert_eq!(z(3), 2.5);
+        assert_eq!((z(0), z(9)), (-2.5, 2.5), "past either end, that end");
+    }
+
+    #[test]
+    fn the_cinema_screen_is_straight_ahead_of_any_seat() {
+        let viewer = Mat4::from_rotation_translation(Quat::from_rotation_y(0.8), Vec3::Y * 1.6);
+        // Off the screen's centre line, it still faces the screen's middle.
+        for seat in [Vec3::ZERO, Vec3::new(1.4, 0.3, 1.0)] {
+            let pose = room_pose(CENTRE, viewer, seat);
+            assert!(pose.transform_point3(seat).abs_diff_eq(Vec3::Y * 1.6, 1e-5));
+            let ahead = viewer
+                .inverse()
+                .transform_point3(pose.transform_point3(CENTRE));
+            assert!(ahead.x.abs() < 1e-4 && ahead.z < 0.0, "{ahead}");
+            // Level: the room's up is the viewer's.
+            assert!(pose.transform_vector3(Vec3::Y).abs_diff_eq(Vec3::Y, 1e-5));
+        }
+        // Recentred lying back, the room lies back too.
+        let lying = Mat4::from_rotation_x(1.2);
+        let up = room_pose(CENTRE, lying, Vec3::ZERO).transform_vector3(Vec3::Y);
+        assert!(up.abs_diff_eq(lying.transform_vector3(Vec3::Y), 1e-5));
+    }
 
     fn apply(rows: &[Vec4; 3], off: Vec4, yuv: [f32; 3]) -> [f32; 3] {
         let v = Vec3::new(yuv[0], yuv[1], yuv[2]) * off.w - off.truncate();

@@ -8,7 +8,7 @@ use crate::watch::{Reports, Watch};
 use fp_core::format::{self, ContainerHints, DetectedFormat, Evidence, VideoFormat};
 use fp_core::source::{Entry, EntryKind, SubtitleFile};
 use fp_core::sync::lock;
-use fp_core::view::{Keyframes, ViewSettings};
+use fp_core::view::{BackgroundEnvironment, Keyframes, ViewSettings};
 use fp_core::{PlaybackStatus, playback::now_ms};
 use fp_haptics::{Axis, Heatmap, Script};
 use fp_library::{Library, MediaId, SessionId};
@@ -1165,6 +1165,16 @@ fn bookmarked_near(markers: &[Marker], time: f64) -> bool {
         .any(|m| m.bookmark.is_some() && (m.time - time).abs() < BOOKMARK_GAP)
 }
 
+/// The cinema room `environment` names, if this build has it.
+pub fn room_for(environment: BackgroundEnvironment) -> Option<fp_render::CinemaRoom> {
+    let room = match environment {
+        BackgroundEnvironment::Classic => fp_render::CinemaRoom::Classic,
+        BackgroundEnvironment::Luxe => fp_render::CinemaRoom::Luxe,
+        BackgroundEnvironment::Colour | BackgroundEnvironment::UseGlobal => return None,
+    };
+    room.is_available().then_some(room)
+}
+
 impl Playback {
     pub fn active_managed_subtitle(&self) -> Option<&fp_library::UserSubtitle> {
         let file = self.subtitle_files.get(self.active_subtitle_file?)?;
@@ -1233,11 +1243,56 @@ impl Playback {
         self.keyframes.at(self.player.position(), &self.settings)
     }
 
+    /// The cinema room chosen for this flat video, if this build has it.
+    pub fn wanted_room(&self, settings: &Settings) -> Option<fp_render::CinemaRoom> {
+        use BackgroundEnvironment::*;
+        let environment = match self.settings.environment {
+            UseGlobal => settings.environment(),
+            choice => choice,
+        };
+        room_for(environment).filter(|_| self.format.projection == format::Projection::Flat)
+    }
+
+    /// The cinema row this video sits in, its own or the global one.
+    pub fn cinema_row(&self, settings: &Settings) -> u8 {
+        self.settings
+            .cinema_row
+            .unwrap_or_else(|| settings.cinema_row())
+    }
+
+    /// How much the cinema's screen curves for this video, its own or the
+    /// global curve.
+    pub fn cinema_curvature(&self, settings: &Settings) -> f32 {
+        self.settings
+            .cinema_curvature
+            .unwrap_or_else(|| settings.cinema_curvature())
+    }
+
+    /// The cinema room round this video, when it shows: not while
+    /// passthrough shows your room, or for a video whose own background is
+    /// see-through.
+    pub fn cinema_room(
+        &self,
+        settings: &Settings,
+        passthrough_available: bool,
+    ) -> Option<fp_render::CinemaRoom> {
+        self.wanted_room(settings).filter(|_| {
+            self.player.info().video_stream().is_some()
+                && !(settings.passthrough && passthrough_available)
+                && !self.shown_settings(&settings.default_view).chroma_key
+                && self.format.alpha_pack_scale().is_none()
+        })
+    }
+
     /// What is shown now: [`Self::current_settings`] with the global chroma
-    /// key unless this video has its own, and the backdrop's colour once
-    /// found, until a colour is picked for this video.
+    /// key unless this video has its own, the global background while it
+    /// follows that, and the backdrop's colour once found, until a colour is
+    /// picked for this video.
     pub fn shown_settings(&self, global: &ViewSettings) -> ViewSettings {
         let mut s = self.current_settings().with_global_key(global);
+        if self.settings.environment == BackgroundEnvironment::UseGlobal {
+            s.background = global.background;
+        }
         if let Some(c) = self.found_colour() {
             s.key_color = c;
         }

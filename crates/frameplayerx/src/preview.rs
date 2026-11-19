@@ -13,6 +13,10 @@
 //! | `recenter` | recenter on where the head faces |
 //! | `gaze YAW PITCH` / `gaze off` | where the eyes look, in degrees from where the head faces (simulated eye tracking) |
 //! | `foveation off/low/high` | set Settings › General › Display › Foveated rendering |
+//! | `environment classic/luxe/dark` | set the global flat-video background |
+//! | `video-environment classic/luxe/dark/global` | set the open video's background |
+//! | `format-flat` | play the open video on a flat screen, keeping its stereo layout |
+//! | `hide-controls` | hide floating panels and controller rays while a video plays |
 //! | `aim YAW PITCH` | controller ray direction in degrees |
 //! | `point PANEL X Y` | aim at a panel (`main`, `bar`, `adjust`, `keyboard`, `tracks`, `perf`) at fractional X, Y |
 //! | `click` | pull and release the trigger |
@@ -415,6 +419,38 @@ impl Sim {
                     _ => return Err("loop needs video or playlist".into()),
                 };
                 self.app.apply(action);
+                self.run_frames(3)?;
+            }
+            Some("environment" | "video-environment") => {
+                use fp_core::view::BackgroundEnvironment::*;
+                let local = parts[0] == "video-environment";
+                let choice = match parts.get(1).copied() {
+                    Some("classic") => Classic,
+                    Some("luxe") => Luxe,
+                    Some("dark") => Colour,
+                    Some("global") if local => UseGlobal,
+                    _ => {
+                        return Err("expected classic, luxe, dark, or global for a video".into());
+                    }
+                };
+                if local {
+                    let p = self.app.playback.as_mut().ok_or("no video open")?;
+                    p.settings.environment = choice;
+                    p.settings_dirty = true;
+                } else {
+                    self.app.settings.set_environment(choice);
+                }
+                self.run_frames(3)?;
+            }
+            Some("format-flat") => {
+                let p = self.app.playback.as_ref().ok_or("no video open")?;
+                let mut format = p.format;
+                format.projection = fp_core::format::Projection::Flat;
+                self.app.apply(crate::ui::Action::SetFormat(Some(format)));
+                self.run_frames(3)?;
+            }
+            Some("hide-controls") => {
+                self.app.apply(crate::ui::Action::HideControls);
                 self.run_frames(3)?;
             }
             Some("seek") => {

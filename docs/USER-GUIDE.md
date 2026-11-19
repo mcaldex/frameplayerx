@@ -9,8 +9,8 @@ or your network.
   servers on your network, and media servers
 - [Browsing and history](#browsing-and-history), and
   [Up next and playlists](#up-next-and-playlists)
-- [Video formats](#video-formats), [fisheye lenses](#fisheye-lenses) and
-  [adjusting a video](#adjusting-a-video)
+- [Video formats](#video-formats), [fisheye lenses](#fisheye-lenses),
+  [adjusting a video](#adjusting-a-video) and the [cinema](#cinema)
 - [Subtitles](#subtitles)
 - [Hardware decoding](#hardware-decoding) and
   [server transcoding](#server-transcoding)
@@ -818,9 +818,10 @@ Position tab. Its size is its width, so zooming a flat screen with the
 controller makes it wider or narrower, and **Zoom** shows only for 180°,
 360° and fisheye videos.
 
-Around a flat screen, and behind the menus, is a near-black grey.
-Settings › Video position › **Background** picks the colour videos start
-with: black, grey, navy, or any colour with the red/green/blue sliders.
+Around a flat screen, and behind the menus, is a near-black grey, or a
+[cinema](#cinema). Settings › Video position › **Background** picks the
+colour videos start with: black, grey, navy, or any colour with the
+red/green/blue sliders.
 The same at the bottom of the Position tab changes it for the video that
 is playing, and **Save for this video** keeps it with the rest of its
 adjustments. Your room replaces it while it shows.
@@ -842,6 +843,30 @@ It assumes the camera's lenses were 63 mm apart, the average eye spacing.
 Settings › Picture › **3D videos** turns it on for every video; turning it
 on or off for one video keeps that video's choice, and the button beside
 it goes back to the setting.
+
+### Cinema
+
+A flat video can play in a cinema instead of on a floating screen. Pick a
+room under **Background**, in Settings › Video position for every video
+or on the Position tab for the one playing: **Classic**, a stadium hall
+with red velvet seats, or **Luxe**, an open room with neon lights and
+leather recliners. **Use global** there makes a video follow Settings
+again. The picture fills as much of the cinema's screen as its shape
+allows, with black beside or above it, and the house lights dim as it
+plays and come up when you pause.
+
+You sit in the middle of a row, facing the screen. **Row** and
+**Curvature**, under the rooms, pick the row, 1 being the front row, and
+how much the screen curves round you, from flat at 0 to its edges 0.8 m
+nearer at 1. They start at row 2 and flat, and a video follows Settings'
+until you change them on its Position tab. In a cinema, zooming with the
+controller moves you a row forward or back, and the Position tab leaves
+out the floating screen's Distance, Width and Curvature, which stay as
+they are for when the cinema doesn't show. Recentering, **Put back** and
+dragging the picture turn the whole cinema with it, and recentering lying
+back tips it back with you. **Screen follows you** stays off in a cinema.
+
+The cinema doesn't show while your room does, or for a chroma-keyed video.
 
 ### Presets
 

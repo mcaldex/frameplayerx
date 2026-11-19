@@ -2,6 +2,48 @@
 //! draws.
 
 use super::*;
+use fp_render::CinemaParams;
+
+/// The cinema round a flat video: whether it showed last frame, and its
+/// house lights.
+pub(super) struct Cinema {
+    showing: bool,
+    lights: f32,
+    /// How far the zoom control has pulled towards the next row, and when
+    /// it last did.
+    pub(super) row_pull: f32,
+    pub(super) pulled_at: f64,
+}
+
+impl Default for Cinema {
+    fn default() -> Self {
+        Self {
+            showing: false,
+            lights: 1.0,
+            row_pull: 0.0,
+            pulled_at: f64::NEG_INFINITY,
+        }
+    }
+}
+
+/// How much zoom moves a row: half a second of the stick held fully over.
+pub(super) const ROW_PULL: f32 = 0.4;
+
+impl Cinema {
+    /// The house lights `dt` seconds on: going down while a video plays,
+    /// up when it stops, held while it buffers.
+    fn lights_at(&mut self, state: PlayerState, has_frame: bool, dt: f32) -> f32 {
+        let dt = dt.max(0.0);
+        match state {
+            PlayerState::Playing if has_frame => self.lights = (self.lights - dt / 1.4).max(0.0),
+            PlayerState::Playing | PlayerState::Buffering => {}
+            PlayerState::Paused | PlayerState::Ended | PlayerState::Failed => {
+                self.lights = (self.lights + dt / 0.7).min(1.0);
+            }
+        }
+        self.lights
+    }
+}
 
 impl App {
     /// Forward becomes where the head faces, and the browse panel comes
@@ -253,9 +295,11 @@ impl App {
 
     /// Whether the flat screen and panels follow the head: the setting is
     /// on, the video (if any) is flat (around a 180°/360° one you look
-    /// about), and no panel is being moved.
+    /// about) and not in a cinema (a room trailing the head would swim), and
+    /// no panel is being moved.
     fn follows(&self) -> bool {
         self.settings.follow
+            && !self.cinema.showing
             && self.panel_drag.is_none()
             && self
                 .playback
@@ -620,24 +664,56 @@ impl App {
         }
         let anchor_rot = anchor.to_scale_rotation_translation().1;
         let player = self.picture_anchor(anchor);
-        if let (Some(p), Some(s)) = (&self.playback, shown) {
+        let mut showing = false;
+        if let (Some(p), Some(mut s)) = (&self.playback, shown) {
             frame = p.player.current_frame();
             video.format = p.format;
             video.screen_pose = place(player, 0.0, s.screen_distance, 0.0, 0.0);
             video.anchor = anchor_rot;
-            video.settings = s;
+            let mut subtitles = player;
+            if let Some(room) = p.wanted_room(&self.settings) {
+                // Read while the video opens, to be ready when it shows.
+                renderer.load_cinema(room);
+            }
             if let Some(v) = p.player.info().video_stream() {
                 video.rotation = v.rotation;
                 video.pixel_aspect = v.pixel_aspect as f32;
+                if let Some(room) = p.cinema_room(&self.settings, input.passthrough_available) {
+                    showing = true;
+                    let seat = room.seat(p.cinema_row(&self.settings));
+                    let pose = room.pose(player, seat);
+                    let lights = self
+                        .cinema
+                        .lights_at(p.player.state(), frame.is_some(), input.dt);
+                    let curvature = room.curvature(p.cinema_curvature(&self.settings));
+                    video.cinema = Some(CinemaParams {
+                        room,
+                        pose,
+                        lights,
+                        curvature,
+                    });
+                    video.screen_pose = pose * Mat4::from_translation(room.screen_centre());
+                    // Below the screen's middle as below a flat screen's, and
+                    // never behind the screen.
+                    let to = room.screen_centre() - seat;
+                    let flat = Vec2::new(to.x, to.z).length();
+                    subtitles = player * Mat4::from_rotation_x(to.y.atan2(flat));
+                    s.subtitle_distance = s.subtitle_distance.min(flat);
+                }
             }
+            video.settings = s;
             if let Some((_, rot)) = input.head {
                 let rel = anchor_rot.inverse() * rot;
                 p.player.set_head_orientation(rel.to_array());
             }
-            self.subtitles(renderer, input.time, player, &s);
+            self.subtitles(renderer, input.time, subtitles, &s);
         } else {
             self.subs.visible = false;
         }
+        if !showing {
+            self.cinema = Cinema::default();
+        }
+        self.cinema.showing = showing;
         // Once the video plays, so the second read doesn't hold up its start.
         if frame.is_some()
             && let Some(p) = &mut self.playback
@@ -861,6 +937,18 @@ fn perf_video(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn house_lights_dim_for_playback_hold_through_buffering_and_rise_on_pause() {
+        let mut cinema = Cinema::default();
+        assert_eq!(cinema.lights_at(PlayerState::Buffering, false, 0.5), 1.0);
+        assert_eq!(cinema.lights_at(PlayerState::Playing, false, 0.7), 1.0);
+        assert!((cinema.lights_at(PlayerState::Playing, true, 0.7) - 0.5).abs() < 1e-6);
+        assert!((cinema.lights_at(PlayerState::Buffering, true, 0.5) - 0.5).abs() < 1e-6);
+        assert_eq!(cinema.lights_at(PlayerState::Playing, true, 0.7), 0.0);
+        assert!((cinema.lights_at(PlayerState::Paused, true, 0.35) - 0.5).abs() < 1e-6);
+        assert_eq!(cinema.lights_at(PlayerState::Ended, true, 1.0), 1.0);
+    }
 
     #[test]
     fn a_toast_sits_above_the_bar_and_any_picker() {
