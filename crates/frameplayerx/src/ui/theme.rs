@@ -248,6 +248,8 @@ pub fn apply(ctx: &egui::Context) {
     s.scroll.floating = true;
     s.scroll.floating_allocated_width = 0.0;
     style.interaction.tooltip_delay = 0.5;
+    // Only text boxes select text: labels are for reading and pointing past.
+    style.interaction.selectable_labels = false;
     style.visuals = visuals();
     ctx.set_style(style);
 }
@@ -314,6 +316,14 @@ fn visuals() -> Visuals {
 
 #[cfg(test)]
 mod tests {
+    /// Labels can't be selected like text; only text boxes select text.
+    #[test]
+    fn labels_are_not_selectable() {
+        let ctx = egui::Context::default();
+        super::apply(&ctx);
+        assert!(!ctx.style().interaction.selectable_labels);
+    }
+
     /// Every symbol the UI draws must exist in the fonts.
     #[test]
     fn icons_have_glyphs() {
