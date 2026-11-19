@@ -201,12 +201,15 @@ impl Opener {
             || is_local_path(location)
         {
             // Only the headset's own sources name its files: a server that
-            // lists one doesn't get it deleted.
-            let elsewhere = source_id.and_then(|id| self.source(id)).is_some_and(|s| {
-                !matches!(
-                    s.kind(),
-                    fp_sources::SourceKind::Local | fp_sources::SourceKind::Library
-                )
+            // lists one doesn't get it deleted, even once it is removed and
+            // no longer says what it was.
+            let elsewhere = source_id.is_some_and(|id| {
+                self.source(id).is_none_or(|s| {
+                    !matches!(
+                        s.kind(),
+                        fp_sources::SourceKind::Local | fp_sources::SourceKind::Library
+                    )
+                })
             });
             return if elsewhere {
                 DeleteRoute::None
@@ -1067,6 +1070,9 @@ mod tests {
         for named in [path.clone(), format!("file://{path}")] {
             assert_eq!(opener.delete_allowed_in(Some("dav"), &named), Some(false));
             assert!(opener.delete_in(Some("dav"), &named).is_err());
+            // Nor does one since removed.
+            assert_eq!(opener.delete_allowed_in(Some("gone"), &named), Some(false));
+            assert!(opener.delete_in(Some("gone"), &named).is_err());
         }
         assert!(file.exists());
         assert_eq!(opener.delete_allowed_in(None, &path), Some(true));
