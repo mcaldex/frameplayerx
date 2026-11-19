@@ -129,11 +129,7 @@ impl App {
             return;
         }
         let title = subtitle_entry(&p.request, &p.title).name;
-        let language = match self.settings.subtitle_language.as_str() {
-            "pt" => "pt-pt",
-            code => code,
-        }
-        .to_string();
+        let language = api::language_code(&self.settings.subtitle_language).to_string();
         self.refresh_subtitle_account();
         self.ui.subtitle_search = Some(Search::new(title, language));
         self.search_subtitles();
@@ -708,9 +704,11 @@ fn identify(
             && let Ok(Some(hash)) =
                 movie_hash(&*reader, deadline, || cancel.load(Ordering::Relaxed))
         {
-            signature.size = Some(hash.size);
-            // The baseline comes from the same source as at playback open.
-            // A remote HTTP Last-Modified can use a different clock than the media catalog.
+            // Opening the video again compares the size its listing gives,
+            // which can be rounded (a web folder's "1.2G"), so that one stays.
+            // A remote HTTP Last-Modified can use a different clock than the
+            // media catalog, so the mtime stays as at playback open too.
+            signature.size.get_or_insert(hash.size);
             signature.moviehash = Some(hash.hash);
         }
     }
@@ -811,4 +809,29 @@ fn persist_download(
             .map_err(|_| Error::InvalidSubtitle)?
     };
     Ok((attachment, cues))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_download_keeps_the_size_the_listing_gave() {
+        let path = std::env::temp_dir().join(format!("fpx-identify-{}.mp4", std::process::id()));
+        // Big enough for the fingerprint, which reads 64 KiB at each end.
+        std::fs::write(&path, vec![7u8; 256 * 1024]).unwrap();
+        let entry = Entry::new(
+            "clip",
+            format!("file://{}", path.display()),
+            EntryKind::Video,
+        );
+        let listed = OriginalSubtitleSignature {
+            size: Some(1_200_000_000),
+            ..Default::default()
+        };
+        let found = identify(entry, None, true, listed, &AtomicBool::new(false));
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(found.signature.size, Some(1_200_000_000));
+        assert!(found.signature.moviehash.is_some());
+    }
 }

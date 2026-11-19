@@ -41,6 +41,26 @@ const SUB_FORMAT: &str = "srt";
 /// Identity of the conversion parameters saved with an attachment.
 pub const DOWNLOAD_PARAMETERS: &str = "srt:utf-8";
 
+/// The service's code for a language `fp_core::language` names: it tells
+/// Portuguese and Chinese apart by where they are written.
+pub fn language_code(code: &str) -> &str {
+    match code {
+        "pt" => "pt-pt",
+        "zh" => "zh-cn",
+        code => code,
+    }
+}
+
+/// The `fp_core::language` code for one of the service's, the reverse of
+/// [`language_code`].
+pub fn app_language(code: &str) -> &str {
+    match code {
+        "pt-pt" => "pt",
+        "zh-cn" => "zh",
+        code => code,
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// The errors contain no provider messages, credentials, or download links.
@@ -331,6 +351,10 @@ impl Client {
         check_cancelled(&cancelled)?;
         let mut languages = json::<Data<Vec<Language>>>(&reply, |_| Error::InvalidResponse)?.data;
         languages.retain(|language| !language.code.is_empty() && !language.name.is_empty());
+        // Searches send codes in lower case, and the app compares them so.
+        for language in &mut languages {
+            language.code.make_ascii_lowercase();
+        }
         if languages.is_empty() {
             return Err(Error::InvalidResponse);
         }

@@ -311,17 +311,13 @@ fn identified(query: &SearchQuery) -> bool {
 }
 
 fn display_language(languages: &[Language], code: &str) -> String {
-    if code == "pt-br" && languages.iter().all(|l| l.code != code) {
+    if let Some(l) = languages.iter().find(|l| l.code == code) {
+        return l.name.clone();
+    }
+    if code == "pt-br" {
         return tr!("subtitle-language-pt-br").into();
     }
-    if code == "pt-pt" && languages.iter().all(|l| l.code != code) {
-        return super::language_name("pt").unwrap_or_else(|| code.into());
-    }
-    languages
-        .iter()
-        .find(|l| l.code == code)
-        .map(|l| l.name.clone())
-        .or_else(|| super::language_name(code))
+    super::language_name(fp_sources::opensubtitles::app_language(code))
         .unwrap_or_else(|| code.into())
 }
 
@@ -343,10 +339,9 @@ fn language_menu(ui: &mut egui::Ui, search: &mut Search) {
             );
             if search.languages.is_empty() {
                 for (code, _, _) in fp_core::language::LANGUAGES {
-                    let service_code = if *code == "pt" { "pt-pt" } else { code };
                     ui.selectable_value(
                         &mut search.query.language,
-                        Some(service_code.into()),
+                        Some(fp_sources::opensubtitles::language_code(code).into()),
                         display_language(&[], code),
                     );
                 }
