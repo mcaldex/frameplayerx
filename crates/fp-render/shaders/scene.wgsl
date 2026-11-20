@@ -75,10 +75,15 @@ struct Params {
     // of the edge's light; y how far it reaches, metres; z, w the black bars
     // found at the sides and at the top and bottom, shares of the picture
     glow: vec4<f32>,
-    // The picture's edge colours, linear, GLOW_ZONES of them clockwise from
-    // its top left corner: as measured, then spread over their neighbours as
-    // the light is halfway out and at the edge of its reach
-    glow_colours: array<array<vec4<f32>, 64>, 3>,
+    // The picture's edge colours clockwise from its top left corner, each a
+    // u32 of 8-bit square roots of linear red, green and blue (`glow_colour`):
+    // GLOW_ZONES softened a little, as the light is beside the screen; then
+    // spread further over their neighbours as it is halfway out, half as
+    // many; then as at the edge of its reach, a quarter as many. Spread light
+    // holds little detail. On the Frame, with the glow on, 10-bit 4K video
+    // took 1.6 ms more GPU time a frame with 192 vec4s here, about 1 ms with
+    // 112, and 0.6 ms packed like this
+    glow_colours: array<vec4<u32>, 28>,
 };
 
 struct PushConstants {
@@ -570,27 +575,24 @@ fn glow_round(uv: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(min(bg.rgb + light * (params.glow.x * fade), vec3<f32>(bg.a)), bg.a);
 }
 
-// The colour `pos` zones round the edge in params.glow_colours[level]. The
-// zones' colours sit at their middles and go round on a cubic B-spline,
-// which bends nowhere, so no line shows at a zone's middle or a corner: the
-// two either side and the next one out each way are weighed.
+// The colour `pos` zones round the edge in `level` of params.glow_colours,
+// whose colours each cover 2^level zones: between the two either side of
+// it, each at its middle. The colours come softened over their neighbours
+// (src/glow.rs), so the light changes gently from one to the next.
 fn glow_line(level: u32, pos: f32) -> vec3<f32> {
-    let at = pos - 0.5;
+    let count = GLOW_ZONES >> level;
+    let base = 2u * (GLOW_ZONES - count);
+    let at = pos / f32(1u << level) - 0.5;
     let i = floor(at);
-    let t = at - i;
-    let t2 = t * t;
-    let t3 = t2 * t;
-    let w = vec4<f32>(
-        (1.0 - t) * (1.0 - t) * (1.0 - t),
-        3.0 * t3 - 6.0 * t2 + 4.0,
-        -3.0 * t3 + 3.0 * t2 + 3.0 * t + 1.0,
-        t3) / 6.0;
-    let first = u32(i + f32(GLOW_ZONES)) + GLOW_ZONES - 1u;
-    var light = vec3<f32>(0.0);
-    for (var j = 0u; j < 4u; j++) {
-        light += params.glow_colours[level][(first + j) % GLOW_ZONES].rgb * w[j];
-    }
-    return light;
+    let a = u32(i + f32(count)) & (count - 1u);
+    let b = (a + 1u) & (count - 1u);
+    return mix(glow_colour(base + a), glow_colour(base + b), at - i);
+}
+
+// Colour `n` of params.glow_colours, linear.
+fn glow_colour(n: u32) -> vec3<f32> {
+    let c = unpack4x8unorm(params.glow_colours[n / 4u][n % 4u]).rgb;
+    return c * c;
 }
 
 // Where in zone `zone`'s strip a sample goes: `along` (0 to 1) along the

@@ -23,6 +23,9 @@ use std::time::{Duration, Instant};
 /// Colours measured going round the picture: 20 along the top and the
 /// bottom and 12 down each side (`GLOW_ZONES` in scene.wgsl).
 pub(crate) const ZONES: usize = 64;
+/// The colours the eye passes get: softened a little, then spread further,
+/// half and a quarter as many.
+pub(crate) const COLOURS: usize = ZONES + ZONES / 2 + ZONES / 4;
 /// After the colours, the target holds the bars found at the top, bottom,
 /// left and right.
 const TEXELS: usize = ZONES + 4;
@@ -36,9 +39,12 @@ const EASE_SECS: f32 = 0.15;
 const MAX_BRIGHTNESS: f32 = 1.0;
 /// At full spread, it fades out over this share of the screen's longer side.
 const MAX_SPREAD: f32 = 0.55;
-/// How far each strip's light has spread over its neighbours halfway out
-/// and at the edge of the glow's reach: a Gaussian's sigma, in zones.
-const SPREAD_ZONES: [f32; 2] = [2.0, 6.0];
+/// How far each strip's light has spread over its neighbours beside the
+/// screen, halfway out and at the edge of the glow's reach: a Gaussian's
+/// sigma, in zones. Even beside the screen it is softened a little, as an
+/// LED's light is, so the eye passes can blend neighbours in a straight line
+/// without a crease showing between them.
+const SPREAD_ZONES: [f32; 3] = [1.0, 2.0, 6.0];
 /// The deepest bar searched for, a share of the picture (`GLOW_BAR_MAX`).
 const BAR_MAX: f32 = 0.25;
 /// Bars on opposite sides closer than this are one letterbox or pillarbox.
@@ -55,6 +61,21 @@ pub struct ScreenGlow {
 }
 
 type Palette = [Vec4; ZONES];
+
+/// A linear colour as the eye passes read it (`glow_colour`): the square
+/// roots of red, green and blue in 8 bits each, which keeps steps between
+/// dark colours small.
+fn pack(c: Vec4) -> u32 {
+    let byte = |v: f32| (v.clamp(0.0, 1.0).sqrt() * 255.0).round() as u32;
+    byte(c.x) | byte(c.y) << 8 | byte(c.z) << 16 | 255 << 24
+}
+
+/// Each `n` neighbouring colours of `palette` as their mean.
+fn fewer(palette: &Palette, n: usize) -> impl Iterator<Item = Vec4> + '_ {
+    palette
+        .chunks(n)
+        .map(move |c| c.iter().copied().sum::<Vec4>() / n as f32)
+}
 
 /// `palette` blurred round the picture by a Gaussian `sigma` zones wide.
 fn spread_out(palette: &Palette, sigma: f32) -> Palette {
@@ -225,11 +246,14 @@ impl Glow {
         let long = p.screen.x.max(p.screen.y);
         p.glow.x = MAX_BRIGHTNESS * share(look.brightness);
         p.glow.y = MAX_SPREAD * share(look.spread) * long;
-        p.glow_colours = [
-            self.shown,
-            spread_out(&self.shown, SPREAD_ZONES[0]),
-            spread_out(&self.shown, SPREAD_ZONES[1]),
-        ];
+        let colours: Vec<u32> = fewer(&spread_out(&self.shown, SPREAD_ZONES[0]), 1)
+            .chain(fewer(&spread_out(&self.shown, SPREAD_ZONES[1]), 2))
+            .chain(fewer(&spread_out(&self.shown, SPREAD_ZONES[2]), 4))
+            .map(pack)
+            .collect();
+        for (block, chunk) in p.glow_colours.iter_mut().zip(colours.chunks(4)) {
+            block.copy_from_slice(chunk);
+        }
         true
     }
 
