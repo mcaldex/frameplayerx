@@ -615,6 +615,9 @@ fn run_xr(args: &Args) -> Result<(), Error> {
             if let Some(line) = gpu_ms.take_line() {
                 log::info!("{line}");
             }
+            if let Some(line) = renderer.focus_line() {
+                log::info!("{line}");
+            }
             if !gaze_deg.is_empty() {
                 gaze_deg.sort_by(f32::total_cmp);
                 let at = |q: f32| gaze_deg[((gaze_deg.len() - 1) as f32 * q) as usize];

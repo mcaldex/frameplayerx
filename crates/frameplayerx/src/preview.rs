@@ -1136,6 +1136,9 @@ pub fn run(args: &Args, out: &Path) -> Result<(), Error> {
     if let Some(line) = sim.gpu_ms.take_line() {
         println!("{line}");
     }
+    if let Some(line) = sim.renderer.focus_line() {
+        println!("{line}");
+    }
     let Sim {
         app,
         renderer,
