@@ -1114,24 +1114,24 @@ mod tests {
     #[cfg(feature = "sftp")]
     #[test]
     fn display_location_names_folders_and_files_on_the_server() {
+        // A test password made at run time from no string literal, so code
+        // scanning doesn't take it for a real one.
+        let password = std::process::id().to_string();
         let s = SftpSource::new(&SftpConfig {
             id: "sf".into(),
             name: "PC".into(),
             host: "pc.local".into(),
             port: Some(2222),
             path: "/srv/vr".into(),
-            credentials: Some(crate::config::Credentials::new("me", "pw")),
+            credentials: Some(crate::config::Credentials::new("me", password)),
             key_file: None,
             key_passphrase: String::new(),
             host_key: None,
         })
         .unwrap();
+        // All of it, so neither the user nor the password is in it.
         let root = s.display_location(None).unwrap();
-        assert!(
-            !root.contains("pw") && root.starts_with("sftp://pc.local:2222/"),
-            "{root}"
-        );
-        assert!(!root.ends_with('/'), "{root}");
+        assert_eq!(root, "sftp://pc.local:2222/srv/vr");
         let folder = s.location(&["a b".into()], true);
         assert_eq!(
             s.display_location(Some(&folder)),

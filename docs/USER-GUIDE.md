@@ -1246,6 +1246,32 @@ switches it to symbols (`! # $ % ( ) [ ] { }` and the rest) and **abc**
 back. You can also type on your phone through the
 [web remote](#remote-control).
 
+### Hands-free navigation
+
+To use FramePlayerX without a controller, press the hands-free key (a
+person in a frame) in the library's top bar, beside **Room**, and put the
+controllers down; press it again, or rest the dot on it, to turn it off. A
+dot then shows where your head points: rest it on a button, a card or a spot
+on a slider until the ring round it fills, and that is pressed, as the
+trigger would press it. The ring fills only while your head is still, so
+the dot passing over things presses nothing. **Hold time** in Settings ›
+Controller sets how long that takes (0.75 s to start with). Once something is pressed, nothing else
+is until you look away from it, so what opens in its place isn't pressed
+too; to press the same button again, look off it and back.
+
+What doesn't fit scrolls with keys just outside a panel's right edge: up
+and down beside a page, and back and on level with each row of pictures,
+each moving it by most of what shows. While a video plays the control bar hides as usual: look up above
+the picture and **Show controls** appears there; rest the dot on it to
+bring the bar back. It stays out of sight while you watch.
+
+The screen and the menus stay where they are, since you couldn't point at
+them if they followed your head: **Screen follows you** is off, and on the
+control bar **Recenter** takes the bed button's place. FramePlayerX also
+starts facing where you look, so lying down the menus come up where you
+can reach them. Move or press a controller and it works at once; the dot
+comes back once both controllers have been left still for 3 seconds.
+
 ## Passthrough videos
 
 The adjust panel's **Passthrough** tab (the sliders button on the control

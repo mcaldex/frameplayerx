@@ -189,14 +189,43 @@ impl App {
         if input.recentred {
             self.recenter();
         }
+        if self.settings.hands_free != self.hands_free_ui {
+            self.hands_free_ui = self.settings.hands_free;
+            for panel in &mut self.panels {
+                hands_free::set_enabled(&panel.ctx, self.hands_free_ui);
+                panel.request_repaint();
+            }
+        }
+        let head = self.head_pointer.aim(
+            input.head_aim.filter(|_| self.hands_free_ui),
+            &input.hands,
+            self.pointer.pressed().is_some() || self.panel_drag.is_some(),
+            input.dt,
+        );
         let anchor = self.anchor(&input);
         let eye = input.head.map(|h| h.0).unwrap_or(anchor.w_axis.truncate());
         self.update_visibility();
         let kb_target = self.keyboard_target();
         self.panels[KEYBOARD].visible = kb_target.is_some();
         self.place_panels(anchor, kb_target);
-        let buzz = self.route_input(&input, anchor);
+        self.panels[WAKE].visible = self.playback.is_some()
+            && !self.ui_visible
+            && head.is_some_and(|h| looks_near(h, &self.panels[WAKE], WAKE_REVEAL_DEG));
+        for (strip, &owner) in self.scroll_strips.iter_mut().zip(&SCROLLED) {
+            let owner = &self.panels[owner];
+            strip.visible =
+                head.is_some() && owner.visible && !hands_free::lists(&owner.ctx).is_empty();
+        }
+        let mut buzz = Vec::new();
+        let head_hit = self.route_input(&input, anchor, head, &mut buzz);
+        // Faint until the dot is on it.
+        self.panels[WAKE].opacity = if head_hit.is_some_and(|(i, _)| i == WAKE) {
+            1.0
+        } else {
+            0.4
+        };
         self.paint_panels(renderer, &input, kb_target);
+        self.hold_head(head, head_hit, input.dt);
         self.perf_overlay(renderer, &input);
         let (frame, video, passthrough) = self.video(renderer, &input, anchor);
         let (quads, layers) = self.compose(&input, eye);
@@ -265,10 +294,13 @@ impl App {
     fn anchor(&mut self, input: &FrameInput) -> Mat4 {
         if let Some((pos, rot)) = input.head {
             if self.reanchor || self.anchor.is_none() {
-                // Level at start; a recenter faces where you look.
-                self.anchor = Some(match self.anchor {
-                    Some(_) => anchor_facing(pos, rot),
-                    None => anchor_from_head(pos, rot),
+                // Level at start; a recenter faces where you look, and so
+                // does the start with hands-free navigation, which reaches
+                // only what is in front of the head.
+                self.anchor = Some(if self.anchor.is_some() || self.settings.hands_free {
+                    anchor_facing(pos, rot)
+                } else {
+                    anchor_from_head(pos, rot)
                 });
                 self.reanchor = false;
             } else if let Some(anchor) = self.anchor
@@ -300,6 +332,7 @@ impl App {
     fn follows(&self) -> bool {
         self.settings.follow
             && !self.cinema.showing
+            && !self.settings.hands_free
             && self.panel_drag.is_none()
             && self
                 .playback
@@ -324,13 +357,18 @@ impl App {
     /// The player, which the control bar is placed from (see
     /// [`player_frame`]).
     fn player_anchor(&self, anchor: Mat4) -> Mat4 {
+        self.player_turned(anchor, self.offsets.bar)
+    }
+
+    /// [`player_frame`] for the playing video, then turned `bar`.
+    fn player_turned(&self, anchor: Mat4, bar: [f32; 2]) -> Mat4 {
         match &self.playback {
             Some(p) => {
                 let s = p.shown_settings(&self.settings.default_view);
                 let flat = p.format.projection == Projection::Flat;
-                player_frame(anchor, flat, [s.yaw, s.pitch], self.offsets.bar)
+                player_frame(anchor, flat, [s.yaw, s.pitch], bar)
             }
-            None => player_frame(anchor, false, [0.0; 2], self.offsets.bar),
+            None => player_frame(anchor, false, [0.0; 2], bar),
         }
     }
 
@@ -463,6 +501,19 @@ impl App {
         let [ay, ap] = self.offsets.adjust;
         self.panels[MAIN].pose = place_below(anchor, my, mp, 1.5, BELOW_DEG);
         self.panels[BAR].pose = place(bar_anchor, 0.0, 1.05, -0.32, 22.0);
+        // Above the picture, clear of what you watch: a default screen's top
+        // edge is about 23° up.
+        self.panels[WAKE].pose =
+            place_around(self.player_turned(anchor, [0.0; 2]), 0.0, 30.0, 1.05, 0.0);
+        // Each scroll strip's left edge meets its panel's body, which stops
+        // short of the panel's edge by the room for its shadow.
+        for (strip, &owner) in self.scroll_strips.iter_mut().zip(&SCROLLED) {
+            let owner = &self.panels[owner];
+            let metres_per_pt = owner.size.x / owner.points().x;
+            let body = owner.size.x / 2.0 - ui::widgets::SHADOW_ROOM.right as f32 * metres_per_pt;
+            let x = body + strip.size.x / 2.0;
+            strip.pose = owner.pose * Mat4::from_translation(Vec3::new(x, 0.0, 0.0));
+        }
         self.panels[TRACKS].pose = above_bar(&self.panels[BAR], &self.panels[TRACKS]);
         self.panels[TOAST].pose = toast_pose(
             &self.panels[BAR],
@@ -502,17 +553,37 @@ impl App {
         self.perf.pose = place_around(anchor, start + py, pp, PERF_DISTANCE, 0.0);
     }
 
-    /// Pointer rays to panel events, grips moving panels, and controller
-    /// commands; returns the haptic pulses to play.
-    fn route_input(&mut self, input: &FrameInput, anchor: Mat4) -> Vec<(usize, f32, i64)> {
+    /// Pointer rays (or with `head`, the head's) to panel events, grips
+    /// moving panels, and controller commands, adding the haptic pulses to
+    /// play to `buzz`; returns the panel and point the head's dot is on.
+    fn route_input(
+        &mut self,
+        input: &FrameInput,
+        anchor: Mat4,
+        head: Option<(Vec3, Quat)>,
+        buzz: &mut Vec<(usize, f32, i64)>,
+    ) -> Option<(usize, egui::Pos2)> {
         self.pointer.rays_shown = self.any_ui();
-        let routed = {
-            let [a, b, c, d, e, _toast] = &mut self.panels;
-            self.pointer
-                .route(&mut [a, b, c, d, e, &mut self.perf], &input.hands, input.dt)
-        };
-        let mut buzz = Vec::new();
-        self.move_panels(routed.grab, &input.hands, anchor, &mut buzz);
+        let pressing = self.head_pointer.send_click(&mut pointable(
+            &mut self.panels,
+            &mut self.perf,
+            &mut self.scroll_strips,
+        ));
+        if let Some(head) = head {
+            let hit = self.pointer.route_head(
+                &mut pointable(&mut self.panels, &mut self.perf, &mut self.scroll_strips),
+                head,
+                !pressing,
+            );
+            self.controller(input, hit.is_some(), false, anchor, buzz);
+            return hit;
+        }
+        let routed = self.pointer.route(
+            &mut pointable(&mut self.panels, &mut self.perf, &mut self.scroll_strips),
+            &input.hands,
+            input.dt,
+        );
+        self.move_panels(routed.grab, &input.hands, anchor, buzz);
         if let Some(hand) = routed.pressed {
             buzz.push((hand, 0.2, 8));
         }
@@ -521,9 +592,25 @@ impl App {
             routed.over_ui || self.panel_drag.is_some(),
             routed.click_outside,
             anchor,
-            &mut buzz,
+            buzz,
         );
-        buzz
+        None
+    }
+
+    /// Counts the head's hold on what its dot is on (`hit`), now that the
+    /// panel's pass has seen it there. A hold or a press there keeps the
+    /// controls up, as a controller's ray moving on them does.
+    fn hold_head(&mut self, head: Option<(Vec3, Quat)>, hit: Option<(usize, egui::Pos2)>, dt: f32) {
+        let panels = &mut pointable(&mut self.panels, &mut self.perf, &mut self.scroll_strips);
+        let Some(head) = head else {
+            self.head_pointer.reset(panels);
+            return;
+        };
+        let secs = self.settings.hands_free_hold_secs;
+        let pressed = self.head_pointer.hold(panels, head, hit, dt, secs);
+        if pressed || self.head_pointer.holding() {
+            self.last_activity = Instant::now();
+        }
     }
 
     /// Paints the panels that changed (and the keyboard), then carries out
@@ -564,10 +651,12 @@ impl App {
         }
         let devices = self.services.haptic_statuses();
         let passthrough_available = input.passthrough_available;
-        for idx in [MAIN, BAR, ADJUST, TRACKS, TOAST] {
+        let mut painted = [false; 7];
+        for idx in [MAIN, BAR, ADJUST, TRACKS, TOAST, WAKE] {
             if !self.panels[idx].needs_paint() {
                 continue;
             }
+            painted[idx] = true;
             let App {
                 panels,
                 ui: state,
@@ -605,10 +694,32 @@ impl App {
                 }
                 TRACKS => ui::player::tracks_panel(ctx, &mut view),
                 TOAST => ui::player::toast_panel(ctx, &mut view),
+                WAKE => ui::player::wake_panel(ctx, &mut view),
                 _ => ui::player::adjust_panel(ctx, &mut view),
             });
             if let Err(e) = r {
                 log::error!("painting panel: {e}");
+            }
+        }
+        // A strip's keys follow its panel's lists, so it paints after it.
+        for (strip, &owner) in self.scroll_strips.iter_mut().zip(&SCROLLED) {
+            if painted[owner] {
+                strip.request_repaint();
+            }
+            if !strip.needs_paint() {
+                continue;
+            }
+            let lists = hands_free::lists(&self.panels[owner].ctx);
+            let mut asked = None;
+            let r = strip.paint(renderer, input.time, |ctx| {
+                asked = ui::widgets::scroll_strip(ctx, &lists);
+            });
+            if let Err(e) = r {
+                log::error!("painting a scroll strip: {e}");
+            }
+            if let Some((list, dir)) = asked {
+                hands_free::scroll(&self.panels[owner].ctx, list, dir);
+                self.panels[owner].request_repaint();
             }
         }
         for a in actions {
@@ -758,15 +869,22 @@ impl App {
                 quads.push(q);
             }
         }
-        for p in self.panels.iter_mut().chain([&mut self.perf]) {
+        for p in self
+            .panels
+            .iter_mut()
+            .chain([&mut self.perf])
+            .chain(&mut self.scroll_strips)
+        {
             p.update_fade(input.dt);
         }
+        let strips = (SCROLL_LAYER..).zip(&self.scroll_strips);
         let mut order: Vec<(u64, &Panel)> = self
             .panels
             .iter()
             .enumerate()
             .map(|(i, p)| (i as u64, p))
             .chain([(PERF_LAYER, &self.perf)])
+            .chain(strips)
             .filter(|(_, p)| p.shown())
             .collect();
         let distance = |p: &Panel| (p.pose.w_axis.truncate() - eye).length();
@@ -866,6 +984,26 @@ pub(super) fn key(key: egui::Key) -> egui::Event {
         repeat: false,
         modifiers: egui::Modifiers::NONE,
     }
+}
+
+/// What a pointer can land on, in the order of its panel indices: the
+/// panels up to the toast, which rays pass through, the performance overlay
+/// at [`PERF`], then the scroll strips.
+fn pointable<'a>(
+    panels: &'a mut [Panel; 7],
+    perf: &'a mut Panel,
+    strips: &'a mut [Panel; 3],
+) -> [&'a mut Panel; 10] {
+    let [a, b, c, d, e, wake, _toast] = panels;
+    let [s0, s1, s2] = strips;
+    [a, b, c, d, e, wake, perf, s0, s1, s2]
+}
+
+/// The head (`head`, its position and turn) points within `deg` degrees of
+/// the middle of `panel`.
+fn looks_near((pos, rot): (Vec3, Quat), panel: &Panel, deg: f32) -> bool {
+    let to = (panel.pose.w_axis.truncate() - pos).normalize_or_zero();
+    (rot * Vec3::NEG_Z).angle_between(to) < deg.to_radians()
 }
 
 /// Where the audio and subtitles picker goes: on the control bar's plane,

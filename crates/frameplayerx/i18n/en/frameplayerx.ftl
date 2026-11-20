@@ -239,6 +239,21 @@ settings-update-check = Check now
 
 # A heading over the controls that can't be changed.
 settings-controls-fixed = Always
+# A heading in Settings › Controller, and the tooltip of its key in the
+# library's top bar.
+settings-hands-free = Hands-free navigation
+# Under the heading in Settings › Controller.
+settings-hands-free-note = Turn it on or off with its key in the top bar, beside Room. Point with your head and rest the dot on a button until its ring fills. The screen and menus stay where they are, and a controller works as soon as you move or press it.
+settings-hands-free-hold = Hold time
+settings-hands-free-hold-desc = How long the dot rests on a button before it is pressed.
+# A tooltip: scrolls the list a page, with hands-free navigation.
+hands-free-scroll-up = Scroll up
+# A tooltip: scrolls the list a page, with hands-free navigation.
+hands-free-scroll-down = Scroll down
+# A tooltip: scrolls the row a page, with hands-free navigation.
+hands-free-scroll-left = Scroll left
+# A tooltip: scrolls the row a page, with hands-free navigation.
+hands-free-scroll-right = Scroll right
 # Short: a chip, subtitles at the start of a video.
 settings-subtitles-off = Off
 # Short: a chip, subtitles at the start of a video.
@@ -386,6 +401,9 @@ player-last-video = Last video in this list
 player-close = Close
 # A tooltip: hides the controls.
 player-hide = Hide
+# A key above the picture, shown when you look up to it, that brings
+# back the hidden controls with hands-free navigation.
+player-show-controls = Show controls
 # A tooltip: shows your room round the video.
 player-room = Room
 # A tooltip.
@@ -1020,6 +1038,10 @@ toast-muted = Muted
 toast-no-room = This headset can't show your room
 toast-room-mask = Room on: through the video's mask
 toast-room-off = Room off
+# Said when its key in the library's top bar turns it on.
+toast-hands-free-on = Hands-free navigation on
+# Said when its key in the library's top bar turns it off.
+toast-hands-free-off = Hands-free navigation off
 toast-room-on = Room on
 toast-room-on-flat = Room on: shows with flat videos
 toast-view-reset = View reset

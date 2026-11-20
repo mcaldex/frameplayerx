@@ -15,6 +15,7 @@ mod controls;
 mod crash;
 mod drives;
 mod folder_playback;
+mod hands_free;
 mod image_cache;
 mod jobs;
 mod libraries;
@@ -517,6 +518,7 @@ fn run_xr(args: &Args) -> Result<(), Error> {
                 time: start.elapsed().as_secs_f64(),
                 dt,
                 head: frame.head,
+                head_aim: frame.head_aim,
                 hands: input.hands,
                 passthrough_available: session.supports_passthrough_blend(),
                 layers,
