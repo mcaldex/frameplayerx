@@ -369,7 +369,7 @@ fn comfort_focus_keeps_what_is_looked_at_in_one_piece_with_the_head_on_its_side(
     // the disc's 65 mm baseline reads with the 63 mm assumed.
     eprintln!("{line}");
     assert!(line.starts_with("comfort focus: "), "{line}");
-    assert!(line.contains("100% at the aim"), "{line}");
+    assert!(line.contains(" read back, 100% gave a distance"), "{line}");
     assert!(line.contains("now 0.39 m, eased "), "{line}");
     assert!(
         off.1.abs() > 12.0,

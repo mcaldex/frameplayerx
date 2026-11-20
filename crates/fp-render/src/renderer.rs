@@ -936,7 +936,8 @@ impl Renderer {
             self.hdr_peak.add(&hist);
         }
         if let Some((scores, along)) = self.focus.as_mut().and_then(|f| f.take(self.current)) {
-            self.comfort_focus.ingest(&scores, along);
+            let gave = self.comfort_focus.ingest(&scores, along);
+            self.focus_log.read_back(gave);
         }
         self.glow.read(self.current);
         if let Some(t) = self.timer.as_mut() {
@@ -959,16 +960,12 @@ impl Renderer {
     }
 
     /// What comfort focus did since the last call, as one line for the log:
-    /// how often what is looked at could be read, how often the distance in
-    /// focus and the easing changed, what the aim followed and what a
-    /// measurement costs. `None` when no frame was drawn with it.
+    /// how often it measured and how many of those gave a distance, what is
+    /// in focus, how often the eyes aimed and what a measurement costs.
+    /// `None` when no frame was drawn with it.
     pub fn focus_line(&mut self) -> Option<String> {
-        let tally = self.comfort_focus.take_tally();
-        self.focus_log.take_line(
-            std::time::Instant::now(),
-            tally,
-            self.comfort_focus.in_focus(),
-        )
+        self.focus_log
+            .take_line(std::time::Instant::now(), self.comfort_focus.in_focus())
     }
 
     fn stamp(&mut self, mark: Mark) {
@@ -1815,12 +1812,10 @@ impl Renderer {
                 .follows_eyes(self.focus_aim.from() != crate::focus::AimFrom::Head);
             let focus = self.comfort_focus.step(now, lever);
             let up = room((to_world[0].y_axis + to_world[1].y_axis).truncate());
-            let angles = crate::focus::aim_angles(&p, aim);
-            let settled = self.focus_aim.settled();
-            if let Some([along, tilt]) = angles
+            if let Some([along, tilt]) = crate::focus::aim_angles(&p, aim)
                 && self.focus.is_some()
                 // Not while the aim sweeps across a jump of the eyes.
-                && settled
+                && self.focus_aim.settled()
                 // Something new to read: another frame, the eyes elsewhere, or
                 // a still picture not read for a while.
                 && self.focus_measured.is_none_or(|(t, at, frame)| {
@@ -1834,13 +1829,8 @@ impl Renderer {
                 self.focus_measured = Some((now, aim, self.shown_frame));
                 measure = Some(along);
             }
-            self.focus_log.frame(
-                now,
-                self.focus_aim.from(),
-                settled,
-                angles.is_some(),
-                measure.is_some(),
-            );
+            self.focus_log
+                .frame(now, self.focus_aim.from(), measure.is_some());
             self.focus_drawn[slot_idx] = Some(measure.is_some());
             // The measurement reads the video as filmed, without it.
             params::set_comfort_focus(
