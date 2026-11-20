@@ -274,9 +274,8 @@ pub fn control_bar(ctx: &egui::Context, v: &mut View) {
                 ui,
                 pb,
                 v.state,
-                v.settings.passthrough,
+                v.settings,
                 v.passthrough_available,
-                v.settings.follow,
                 v.actions,
             );
         });
@@ -351,6 +350,27 @@ fn title_row(
                 }
             });
         });
+    });
+}
+
+/// Show controls, where the hidden control bar was: with hands-free
+/// navigation there's no trigger to bring it back. All of it is the key, so
+/// the head finds it easily.
+pub fn wake_panel(ctx: &egui::Context, v: &mut View) {
+    let frame = egui::Frame::NONE.outer_margin(widgets::SHADOW_ROOM);
+    egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
+        let (_, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click());
+        let (face, fg) = widgets::key_face(ui, &resp, 24.0, false);
+        ui.painter().text(
+            face.center(),
+            egui::Align2::CENTER_CENTER,
+            tr!("player-show-controls"),
+            theme::font(Weight::SemiBold, 22.0),
+            fg,
+        );
+        if resp.clicked() {
+            v.actions.push(Action::ShowControls);
+        }
     });
 }
 
@@ -642,16 +662,17 @@ fn queue_key(
     }
 }
 
-/// Close, hide, room, follow, bookmark and adjust.
+/// Close, hide, room, follow (recenter with hands-free navigation),
+/// bookmark and adjust.
 fn view_keys(
     ui: &mut egui::Ui,
     pb: &crate::playback::Playback,
     state: &mut super::UiState,
-    passthrough: bool,
+    settings: &crate::settings::Settings,
     passthrough_available: bool,
-    follow: bool,
     actions: &mut Vec<Action>,
 ) {
+    let passthrough = settings.passthrough;
     if widgets::key(ui, icons::X, 52.0, false)
         .tip(tr!("player-close"))
         .clicked()
@@ -682,9 +703,18 @@ fn view_keys(
             actions.push(Action::SetFormat(Some(f)));
         }
     }
-    // Only a flat screen follows: around 180°/360° video you look about.
-    if pb.format.projection == Projection::Flat
-        && widgets::key(ui, icons::BED, 52.0, follow)
+    // Pointing with the head, the panels stay put, so the way to bring
+    // them in front is a recenter. Otherwise only a flat screen follows:
+    // around 180°/360° video you look about.
+    if settings.hands_free {
+        if widgets::key(ui, icons::FRAME_CORNERS, 52.0, false)
+            .tip(tr!("action-recenter"))
+            .clicked()
+        {
+            actions.push(Action::Recenter);
+        }
+    } else if pb.format.projection == Projection::Flat
+        && widgets::key(ui, icons::BED, 52.0, settings.follow)
             .tip(tr!("settings-follow"))
             .clicked()
     {

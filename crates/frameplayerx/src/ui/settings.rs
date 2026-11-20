@@ -197,6 +197,7 @@ fn note(ui: &mut egui::Ui, text: &str) {
 
 fn controller(ui: &mut egui::Ui, v: &mut View) {
     use crate::bindings::Bindings;
+    use crate::settings::{DEFAULT_HANDS_FREE_HOLD_SECS, HANDS_FREE_HOLD_SECS};
     super::controller_map::controller_map(ui, v);
     heading(ui, tr!("settings-controls-fixed"));
     widgets::rows(ui, |r| {
@@ -235,6 +236,20 @@ fn controller(ui: &mut egui::Ui, v: &mut View) {
             v.settings.controls = defaults;
             v.state.remap_open = None;
         }
+    });
+    heading(ui, tr!("settings-hands-free"));
+    note(ui, tr!("settings-hands-free-note"));
+    ui.add_space(6.0);
+    widgets::rows(ui, |r| {
+        r.slider(
+            tr!("settings-hands-free-hold"),
+            Some(tr!("settings-hands-free-hold-desc")),
+            &mut v.settings.hands_free_hold_secs,
+            HANDS_FREE_HOLD_SECS,
+            DEFAULT_HANDS_FREE_HOLD_SECS,
+            " s",
+            2,
+        );
     });
 }
 
@@ -295,10 +310,14 @@ fn general(ui: &mut egui::Ui, v: &mut View) {
             "×",
             2,
         );
-        r.switch(
+        // Panels that trail the head can't be pointed at with it.
+        let hands_free = s.hands_free;
+        r.row(
             tr!("settings-follow"),
             Some(tr!("settings-follow-desc")),
-            &mut s.follow,
+            |ui| {
+                ui.add_enabled_ui(!hands_free, |ui| widgets::switch(ui, &mut s.follow));
+            },
         );
         r.switch(
             tr!("settings-haptic-devices"),
