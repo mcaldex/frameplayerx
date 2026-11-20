@@ -224,7 +224,9 @@ impl App {
         } else {
             0.4
         };
-        self.paint_panels(renderer, &input, kb_target);
+        let opening = self.open_seq;
+        let hover = self.paint_panels(renderer, &input, kb_target);
+        self.paint_seek_preview(renderer, &input, hover.filter(|_| opening == self.open_seq));
         self.hold_head(head, head_hit, input.dt);
         self.perf_overlay(renderer, &input);
         let (frame, video, passthrough) = self.video(renderer, &input, anchor);
@@ -620,8 +622,10 @@ impl App {
         renderer: &mut Renderer,
         input: &FrameInput,
         kb_target: Option<usize>,
-    ) {
+    ) -> Option<ui::player::SeekHover> {
         let mut actions = Vec::new();
+        let mut hover = None;
+        let picture_shown = self.seek_preview_shown();
         if self.thumbs.poll(&self.panels[MAIN].ctx) {
             self.panels[MAIN].request_repaint();
         }
@@ -688,7 +692,7 @@ impl App {
             };
             let r = panels[idx].paint(renderer, input.time, |ctx| match idx {
                 MAIN => ui::library::browser(ctx, &mut view),
-                BAR => ui::player::control_bar(ctx, &mut view),
+                BAR => hover = ui::player::control_bar(ctx, &mut view, picture_shown),
                 TRACKS if view.state.subtitle_search.is_some() => {
                     ui::subtitle_search::panel(ctx, &mut view);
                 }
@@ -729,6 +733,7 @@ impl App {
             self.close_subtitle_search();
         }
         self.sync_settings();
+        hover
     }
 
     /// The video frame and how to draw it, and whether the room shows.
@@ -876,6 +881,16 @@ impl App {
             .chain(&mut self.scroll_strips)
         {
             p.update_fade(input.dt);
+        }
+        // Draw the compact preview into the eyes. An XR quad layer would
+        // also allocate swapchain images that live past the hover.
+        if let Some(preview) = self.seek_preview.as_mut() {
+            preview.panel.update_fade(input.dt);
+            if preview.panel.visible
+                && let Some(q) = preview.panel.quad()
+            {
+                quads.push(q);
+            }
         }
         let strips = (SCROLL_LAYER..).zip(&self.scroll_strips);
         let mut order: Vec<(u64, &Panel)> = self
