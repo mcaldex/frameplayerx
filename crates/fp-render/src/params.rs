@@ -53,9 +53,11 @@ pub(crate) struct SceneParams {
     /// Screen glow ([`crate::glow`]): x its brightness beside the edge, as a
     /// share of the edge's light; y how far it reaches, metres.
     pub glow: Vec4,
-    /// The picture's edge colours, linear, clockwise from its top left: as
-    /// measured, then spread as the light is halfway out and at its reach.
-    pub glow_colours: [[Vec4; crate::glow::ZONES]; 3],
+    /// The picture's edge colours clockwise from its top left, each packed
+    /// as 8-bit square roots of linear red, green and blue: as measured,
+    /// then spread as the light is halfway out and at its reach, half and a
+    /// quarter as many ([`crate::glow::COLOURS`] in all).
+    pub glow_colours: [[u32; 4]; crate::glow::COLOURS / 4],
 }
 
 /// Sets `p` up for a Q10C picture of `height` rows sampled where it lies
@@ -474,7 +476,7 @@ pub(crate) fn build(
         relief: [Vec4::W; 2],
         fill,
         glow: Vec4::ZERO,
-        glow_colours: [[Vec4::ZERO; crate::glow::ZONES]; 3],
+        glow_colours: [[0; 4]; crate::glow::COLOURS / 4],
     }
 }
 
