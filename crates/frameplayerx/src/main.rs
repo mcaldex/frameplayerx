@@ -31,6 +31,7 @@ mod services;
 mod settings;
 mod shuffle;
 mod subtitles;
+mod trickplay;
 mod ui;
 mod watch;
 mod world;

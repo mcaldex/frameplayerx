@@ -1174,7 +1174,11 @@ picture. Play/pause and seeking are under either thumb.
 | Trigger | Click; on empty space, show or hide the controls | The same |
 
 On the control bar, point at the speaker for the volume slider above it;
-press the speaker to mute. What a controller shortcut changes, such as the
+press the speaker to mute. Pointing along the seek bar shows the time there,
+and a picture of that moment where the server has made them: Jellyfin's
+trickplay images, Emby's and Plex's video preview thumbnails, or a DeoVR
+feed's timeline preview. **Settings › Playback › Seek bar previews** turns
+the pictures off. What a controller shortcut changes, such as the
 volume or a minute's skip, shows for a moment in a small message above where
 the control bar sits.
 

@@ -132,6 +132,8 @@ pub struct Settings {
     pub fisheye_start: f32,
     /// Seconds of inactivity before the playback UI hides.
     pub auto_hide_secs: f32,
+    /// Pointing along the seek bar shows the server's picture of that moment.
+    pub seek_previews: bool,
     /// Point with the head; holding the dot on a control presses it.
     pub hands_free: bool,
     pub hands_free_hold_secs: f32,
@@ -298,6 +300,7 @@ impl Default for Settings {
             fisheye_presets: FISHEYE_PRESETS.to_vec(),
             fisheye_start: FISHEYE_START,
             auto_hide_secs: 4.0,
+            seek_previews: true,
             hands_free: false,
             hands_free_hold_secs: DEFAULT_HANDS_FREE_HOLD_SECS,
             seek_step: 10.0,

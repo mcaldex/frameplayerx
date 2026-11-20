@@ -6,6 +6,7 @@ mod frame;
 mod input;
 mod plex;
 mod remote;
+mod seek_preview;
 mod sources;
 mod subtitle_search;
 mod tasks;
@@ -194,6 +195,7 @@ pub struct App {
     pub ui: UiState,
     thumbs: ui::thumbs::Thumbs,
     panels: [Panel; 7],
+    seek_preview: Option<seek_preview::SeekPreview>,
     subs: Panel,
     /// Beside each of [`SCROLLED`], in that order.
     scroll_strips: [Panel; 3],
@@ -372,6 +374,7 @@ impl App {
             ui: UiState::default(),
             thumbs,
             panels,
+            seek_preview: None,
             subs,
             scroll_strips,
             perf,
@@ -448,6 +451,9 @@ impl App {
             p.set_scale(scale);
         }
         self.perf.set_scale(scale);
+        if let Some(preview) = self.seek_preview.as_mut() {
+            preview.panel.set_scale(scale);
+        }
     }
 
     pub fn set_about(&mut self, about: Vec<(String, String)>) {
@@ -513,6 +519,7 @@ impl App {
             "subs" => &self.subs,
             "perf" => &self.perf,
             "scroll" => &self.scroll_strips[0],
+            "seek-preview" => &self.seek_preview.as_ref()?.panel,
             _ => &self.panels[Self::panel_index(name)?],
         };
         p.visible.then_some(p.id).flatten()

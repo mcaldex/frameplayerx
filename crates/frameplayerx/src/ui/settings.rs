@@ -461,6 +461,11 @@ fn playback(ui: &mut egui::Ui, v: &mut View) {
             " s",
             0,
         );
+        r.switch(
+            tr!("settings-seek-previews"),
+            Some(tr!("settings-seek-previews-desc")),
+            &mut s.seek_previews,
+        );
     });
     heading(ui, tr!("settings-default-format"));
     note(ui, tr!("settings-default-format-desc"));

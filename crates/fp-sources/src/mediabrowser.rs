@@ -8,7 +8,6 @@
 //! Video details (subtitles and chapter markers) are resolved in [`Source::details`].
 //! Playback progress can be reported back to the server using the session API.
 
-use crate::Source;
 use crate::config::{Credentials, MediaBrowserConfig, SourceKind};
 use crate::dir_entry;
 use crate::error::{Error, Result};
@@ -21,6 +20,7 @@ use crate::sidecar::Sidecars;
 use crate::transcode::{self, Streamed, TranscodeTarget};
 use crate::urlutil::{encode_form_value, redact};
 use crate::watch::{WatchEvent, WatchKind, WatchSession};
+use crate::{Source, Trickplay};
 use fp_core::format::{Projection, StereoLayout, VideoFormat, detect_from_name};
 use fp_core::source::{ByteSource, Entry, EntryKind};
 use fp_core::sync::lock;
@@ -31,6 +31,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 mod catalog;
+mod trickplay;
 pub use catalog::{MbFacets, MbFilter, MbHome, MbItem, MbKind, MbPage, MbQuery, MbSort, MbVersion};
 
 /// Largest JSON document accepted from a MediaBrowser API endpoint (64 MiB).
@@ -1364,6 +1365,20 @@ impl Source for MediaBrowserSource {
         }
         let url = crate::location::resolve_url(&self.base_url, &reference.key)?;
         Some((self.client().ok()?.0, url))
+    }
+
+    fn has_trickplay(&self, entry: &Entry) -> bool {
+        entry.kind == EntryKind::Video
+            && self
+                .resolved_location(&entry.location)
+                .ok()
+                .as_deref()
+                .and_then(decode_location)
+                .is_some_and(|(kind, _)| kind == "item")
+    }
+
+    fn trickplay(&self, entry: &Entry) -> Result<Option<Trickplay>> {
+        self.trickplay_for(entry)
     }
 
     fn parent(&self, location: &str) -> Option<String> {
