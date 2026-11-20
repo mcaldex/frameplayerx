@@ -1065,18 +1065,31 @@ fn seek_bar(
     let pos = state.scrub.unwrap_or_else(|| pb.player.position());
     let frac = (pos / duration).clamp(0.0, 1.0) as f32;
     let to_x = |f: f32| track.left() + track.width() * f;
-    // Where the pointer would seek to, previewed in a lighter tone.
-    if let Some(p) = resp.hover_pos()
-        && !resp.dragged()
-    {
-        let hx = p.x.clamp(track.left(), track.right());
-        if hx > to_x(frac) {
-            let ahead = egui::Rect::from_min_max(
-                egui::pos2(to_x(frac), track.top()),
-                egui::pos2(hx, track.bottom()),
-            );
-            painter.rect_filled(ahead, round, Color32::from_white_alpha(40));
+    // Where the pointer settled on the bar, kept while it only trembles
+    // there: the time, the preview and a click show and go there. The dot
+    // itself stays on the ray. A drag follows the pointer.
+    let held_id = resp.id.with("held");
+    let held = match resp.hover_pos().filter(|_| !resp.dragged()) {
+        Some(p) => {
+            let x = p.x.clamp(track.left(), track.right());
+            let held = held_point(ui.data(|d| d.get_temp::<f32>(held_id)), x);
+            ui.data_mut(|d| d.insert_temp(held_id, held));
+            Some(held)
         }
+        None => {
+            ui.data_mut(|d| d.remove::<f32>(held_id));
+            None
+        }
+    };
+    // Where the pointer would seek to, previewed in a lighter tone.
+    if let Some(hx) = held
+        && hx > to_x(frac)
+    {
+        let ahead = egui::Rect::from_min_max(
+            egui::pos2(to_x(frac), track.top()),
+            egui::pos2(hx, track.bottom()),
+        );
+        painter.rect_filled(ahead, round, Color32::from_white_alpha(40));
     }
     let done = egui::Rect::from_min_max(track.min, egui::pos2(to_x(frac), track.bottom()));
     widgets::rail_fill(painter, track, done);
@@ -1088,10 +1101,15 @@ fn seek_bar(
     widgets::knob(painter, knob, 8.0 + t * 4.0);
 
     let to_time = |x: f32| ((x - track.left()) / track.width()).clamp(0.0, 1.0) as f64 * duration;
-    let hover = resp.hover_pos().or(resp.interact_pointer_pos()).map(|p| {
-        let tm = to_time(p.x);
+    let shown = if resp.dragged() {
+        resp.interact_pointer_pos().map(|p| p.x)
+    } else {
+        held
+    };
+    let hover = shown.map(|x| {
+        let tm = to_time(x);
         let marker = pb.markers.iter().find(|m| {
-            ((m.time / duration) as f32 * track.width() - (p.x - track.left())).abs() < 8.0
+            ((m.time / duration) as f32 * track.width() - (x - track.left())).abs() < 8.0
         });
         let label = match marker {
             Some(m) => format!("{} · {}", fmt_time(tm), m.name),
@@ -1109,9 +1127,9 @@ fn seek_bar(
                 room.width() - 16.0,
             );
             let size = g.size() + Vec2::new(16.0, 8.0);
-            let x = widgets::fit(p.x - size.x / 2.0, size.x, room.left(), room.right());
+            let left = widgets::fit(x - size.x / 2.0, size.x, room.left(), room.right());
             let bubble =
-                egui::Rect::from_min_size(egui::pos2(x, track.top() - size.y - 10.0), size);
+                egui::Rect::from_min_size(egui::pos2(left, track.top() - size.y - 10.0), size);
             let top = ui.ctx().layer_painter(egui::LayerId::new(
                 egui::Order::Tooltip,
                 egui::Id::new("seek-time"),
@@ -1119,36 +1137,34 @@ fn seek_bar(
             top.rect_filled(bubble, egui::CornerRadius::same(8), theme::TEXT);
             top.galley(bubble.min + Vec2::new(8.0, 4.0), g, theme::BG);
         }
-        SeekHover {
-            time: tm,
-            x: p.x,
-            label,
-        }
+        SeekHover { time: tm, x, label }
     });
     if resp.dragged()
         && let Some(p) = resp.interact_pointer_pos()
     {
         state.scrub = Some(to_time(p.x));
     }
-    // A click seeks to where it was pressed: by the let-go the ray has moved
-    // on a little, which along this bar could be minutes.
+    // A click seeks to what the bar showed as it was pressed: by the
+    // let-go the ray has moved on a little, which along this bar could be
+    // minutes.
     let pressed_at = resp.id.with("pressed-at");
     if resp.is_pointer_button_down_on()
-        && let Some(origin) = ui.input(|i| i.pointer.press_origin())
+        && ui.data(|d| d.get_temp::<f32>(pressed_at)).is_none()
+        && let Some(x) = held.or_else(|| ui.input(|i| i.pointer.press_origin()).map(|p| p.x))
     {
-        ui.data_mut(|d| d.insert_temp(pressed_at, origin));
+        ui.data_mut(|d| d.insert_temp(pressed_at, x));
     }
     if resp.drag_stopped() {
         if let Some(t) = state.scrub.take() {
             actions.push(Action::Seek(t));
         }
     } else if resp.clicked()
-        && let Some(p) = ui
-            .data(|d| d.get_temp::<egui::Pos2>(pressed_at))
-            .or(resp.interact_pointer_pos())
+        && let Some(x) = ui
+            .data(|d| d.get_temp::<f32>(pressed_at))
+            .or(resp.interact_pointer_pos().map(|p| p.x))
     {
         // Snap to a marker when clicking right on it.
-        let t = to_time(p.x);
+        let t = to_time(x);
         let snap = pb
             .markers
             .iter()
@@ -1156,7 +1172,22 @@ fn seek_bar(
             .find(|m| ((m - t) / duration).abs() * (track.width() as f64) < 8.0);
         actions.push(Action::Seek(snap.unwrap_or(t)));
     }
+    if !resp.is_pointer_button_down_on() {
+        ui.data_mut(|d| d.remove::<f32>(pressed_at));
+    }
     hover
+}
+
+/// How far, in points, the pointer may wander along the seek bar and leave
+/// what it shows where it settled: a hand held still trembles a few points
+/// (a trigger pull tips the ray about 15), a deliberate move goes past it at
+/// once.
+const SEEK_HOLD: f32 = 12.0;
+
+/// Where the seek bar shows the pointer at `x`, having last shown it at
+/// `held`: still there while the pointer stays within [`SEEK_HOLD`] of it.
+fn held_point(held: Option<f32>, x: f32) -> f32 {
+    held.filter(|h| (h - x).abs() <= SEEK_HOLD).unwrap_or(x)
 }
 
 fn tabs() -> [(&'static str, &'static str); 7] {
@@ -2938,6 +2969,22 @@ fn stereo_pictures(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_seek_bar_holds_where_a_trembling_pointer_settled_and_follows_a_move() {
+        let mut held = None;
+        let mut shown = Vec::new();
+        // Settles at 400, trembles there, then moves on deliberately.
+        for x in [400.0, 404.0, 396.0, 409.0, 391.0, 430.0, 433.0, 460.0] {
+            let at = held_point(held, x);
+            held = Some(at);
+            shown.push(at);
+        }
+        assert_eq!(
+            shown,
+            [400.0, 400.0, 400.0, 400.0, 400.0, 430.0, 430.0, 460.0]
+        );
+    }
 
     fn collect_texts(shape: &egui::epaint::Shape, out: &mut Vec<String>) {
         match shape {
